@@ -127,11 +127,32 @@ async function applyMigrations(database: Database): Promise<void> {
   const applied = await database.select<Array<{ version: number }>>(
     "SELECT version FROM schema_migrations ORDER BY version ASC",
   );
-  const currentVersion = applied.at(-1)?.version ?? 0;
+  let currentVersion = 0;
+
+  for (const row of applied) {
+    if (row.version !== currentVersion + 1) {
+      throw new Error(
+        `Database migration history is incomplete at version ${currentVersion + 1}.`,
+      );
+    }
+    currentVersion = row.version;
+  }
+
+  const latestKnownVersion = migrations.at(-1)?.version ?? 0;
+  if (currentVersion > latestKnownVersion) {
+    throw new Error(
+      `Database version ${currentVersion} is newer than this application supports.`,
+    );
+  }
 
   for (const migration of migrations) {
     if (migration.version <= currentVersion) {
       continue;
+    }
+    if (migration.version !== currentVersion + 1) {
+      throw new Error(
+        `No migration is available for database version ${currentVersion + 1}.`,
+      );
     }
 
     await executeNativeTransaction([
@@ -142,6 +163,7 @@ async function applyMigrations(database: Database): Promise<void> {
         expectedRowsAffected: 1,
       },
     ]);
+    currentVersion = migration.version;
   }
 }
 

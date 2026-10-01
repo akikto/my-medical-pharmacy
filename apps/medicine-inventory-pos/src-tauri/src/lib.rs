@@ -76,7 +76,7 @@ fn execute_sql_transaction(
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| format!("Could not enable database foreign keys: {error}"))?;
     connection
-        .pragma_update(None, "journal_mode", "WAL")
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get::<_, String>(0))
         .map_err(|error| format!("Could not enable the SQLite write-ahead log: {error}"))?;
 
     let transaction = connection
