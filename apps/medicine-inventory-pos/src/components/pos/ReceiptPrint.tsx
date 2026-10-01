@@ -1,6 +1,7 @@
 import { Printer, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { SaleDetails } from "../../types";
+import { getStoreSettings } from "../../services/settingsService";
+import type { SaleDetails, StoreSettings } from "../../types";
 import { formatDateTime, formatMoney } from "../../utils/money";
 
 interface ReceiptPrintProps {
@@ -17,6 +18,9 @@ export function ReceiptPrint({
   onClose,
 }: ReceiptPrintProps) {
   const [width, setWidth] = useState<ReceiptWidth>("80");
+  const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
   const didAutoPrint = useRef(false);
   const { sale: invoice, items } = sale;
   const itemDiscountTotal = items.reduce(
@@ -25,13 +29,40 @@ export function ReceiptPrint({
   );
 
   useEffect(() => {
-    if (!autoPrint || didAutoPrint.current) {
+    let cancelled = false;
+    setSettingsLoaded(false);
+    setSettingsLoadError(null);
+    getStoreSettings()
+      .then((settings) => {
+        if (!cancelled) setStoreSettings(settings);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setSettingsLoadError(
+            error instanceof Error ? error.message : "Store receipt settings could not be loaded.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSettingsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice.id]);
+
+  useEffect(() => {
+    if (!autoPrint || !settingsLoaded || didAutoPrint.current) {
       return;
     }
     didAutoPrint.current = true;
     const timer = window.setTimeout(() => window.print(), 350);
     return () => window.clearTimeout(timer);
-  }, [autoPrint, invoice.invoice_no]);
+  }, [autoPrint, invoice.invoice_no, settingsLoaded]);
+
+  const pharmacyName = storeSettings?.pharmacy_name.trim() || "PHARMACY";
+  const pharmacyMark = pharmacyName.charAt(0).toUpperCase() || "P";
+  const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
 
   return (
     <div className="receipt-overlay" data-testid="dialog-receipt">
@@ -42,6 +73,11 @@ export function ReceiptPrint({
           <h2>{autoPrint ? "Receipt ready" : "Invoice"}</h2>
           <p>{invoice.invoice_no}</p>
         </div>
+        {settingsLoadError && (
+          <p className="receipt-settings-warning" role="alert">
+            Store receipt details could not be loaded: {settingsLoadError}
+          </p>
+        )}
         <div className="receipt-action-controls">
           <label className="receipt-width-select">
             Paper width
@@ -80,9 +116,19 @@ export function ReceiptPrint({
         data-testid="receipt-paper"
       >
         <header className="receipt-brand">
-          <span className="receipt-brand-mark">P</span>
-          <h1>PHARMACY</h1>
-          <p>MEDICINE & WELLNESS</p>
+          <span className="receipt-brand-mark">{pharmacyMark}</span>
+          <h1>{pharmacyName}</h1>
+          {storeSettings?.address && (
+            <p className="receipt-store-line">{storeSettings.address}</p>
+          )}
+          {storeSettings?.contact_number && (
+            <p className="receipt-store-line">Contact: {storeSettings.contact_number}</p>
+          )}
+          {storeSettings?.drug_license_number && (
+            <p className="receipt-store-line">
+              D.L. No.: {storeSettings.drug_license_number}
+            </p>
+          )}
         </header>
 
         <div className="receipt-divider" />
@@ -173,10 +219,11 @@ export function ReceiptPrint({
         </div>
 
         <div className="receipt-divider" />
-        <footer className="receipt-thanks">
-          <strong>Thank you for choosing us.</strong>
-          <span>Please retain this receipt for your records.</span>
-        </footer>
+        {footerNote && (
+          <footer className="receipt-thanks">
+            <span>{footerNote}</span>
+          </footer>
+        )}
       </article>
     </div>
   );

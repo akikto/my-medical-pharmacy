@@ -120,6 +120,18 @@ const migrations: readonly Migration[] = [
       "CREATE INDEX idx_stock_adjustments_batch ON stock_adjustments(batch_id, created_at DESC)",
     ],
   },
+  {
+    version: 4,
+    statements: [
+      `ALTER TABLE sale_items
+       ADD COLUMN purchase_rate_at_sale REAL
+       CHECK (purchase_rate_at_sale IS NULL OR purchase_rate_at_sale >= 0)`,
+      `CREATE TABLE app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL
+      )`,
+    ],
+  },
 ];
 
 let databasePromise: Promise<Database> | null = null;

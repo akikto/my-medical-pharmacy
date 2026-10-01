@@ -1,25 +1,29 @@
 import {
+  AlertCircle,
   BarChart3,
   Boxes,
   ClipboardList,
-  FileBarChart,
   Pill,
   Settings2,
   ShieldCheck,
   UsersRound,
   Receipt,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import type { AppSection } from "./types";
 import { POSBilling } from "./components/pos/POSBilling";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
+import { ReportsView } from "./components/reports/ReportsView";
+import { StoreSettings } from "./components/settings/StoreSettings";
 import "./components/workspace/workspace.css";
 
 type UnavailableSectionId = Exclude<
   AppSection,
-  "pos" | "inventory" | "purchases" | "suppliers"
+  "pos" | "inventory" | "purchases" | "suppliers" | "reports" | "settings"
 >;
 
 const navigation: Array<{
@@ -45,16 +49,6 @@ const sectionDetails: Record<
     description: "Open recent invoices from the POS Billing screen.",
     icon: ClipboardList,
   },
-  reports: {
-    title: "Reports",
-    description: "Sales reporting is not part of the current billing slice.",
-    icon: FileBarChart,
-  },
-  settings: {
-    title: "Settings",
-    description: "Pharmacy and printer settings are not part of the current billing slice.",
-    icon: Settings2,
-  },
 };
 
 function UnavailableSection({ section }: { section: UnavailableSectionId }) {
@@ -77,6 +71,29 @@ function UnavailableSection({ section }: { section: UnavailableSectionId }) {
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("pos");
+  const [autoBackupError, setAutoBackupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<string>("pharmadesk:auto-backup-failed", (event) => {
+      setAutoBackupError(event.payload);
+    })
+      .then((unsubscribe) => {
+        if (disposed) {
+          unsubscribe();
+        } else {
+          unlisten = unsubscribe;
+        }
+      })
+      .catch(() => {
+        // The page may also be opened outside the Tauri window during development.
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <div className="app-shell">
@@ -133,6 +150,34 @@ export default function App() {
             Local database
           </div>
         </div>
+        {autoBackupError && (
+          <div className="auto-backup-alert" role="alert" data-testid="status-auto-backup-error">
+            <AlertCircle aria-hidden="true" size={17} />
+            <div>
+              <strong>Automatic backup failed. The app remains open.</strong>
+              <span>{autoBackupError}</span>
+            </div>
+            <button
+              className="button button-secondary"
+              data-testid="button-open-backup-settings"
+              onClick={() => {
+                setActiveSection("settings");
+                setAutoBackupError(null);
+              }}
+              type="button"
+            >
+              Open backup settings
+            </button>
+            <button
+              aria-label="Dismiss automatic backup error"
+              className="icon-button"
+              onClick={() => setAutoBackupError(null)}
+              type="button"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
         {activeSection === "pos" ? (
           <POSBilling />
         ) : activeSection === "inventory" ? (
@@ -141,6 +186,14 @@ export default function App() {
           <PurchasesPage />
         ) : activeSection === "suppliers" ? (
           <SuppliersPage />
+        ) : activeSection === "reports" ? (
+          <ReportsView />
+        ) : activeSection === "settings" ? (
+          <StoreSettings
+            onDatabaseRestored={() => {
+              window.setTimeout(() => window.location.reload(), 500);
+            }}
+          />
         ) : (
           <UnavailableSection section={activeSection} />
         )}

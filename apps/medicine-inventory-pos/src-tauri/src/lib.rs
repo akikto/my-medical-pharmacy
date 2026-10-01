@@ -1,12 +1,22 @@
-use std::time::Duration;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use rusqlite::{
-    params, params_from_iter, types::Value as SqliteValue, Connection, OptionalExtension,
-    TransactionBehavior,
+    params, params_from_iter, types::Value as SqliteValue, Connection, OpenFlags,
+    OptionalExtension, TransactionBehavior,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+
+const LATEST_DATABASE_VERSION: i64 = 4;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +90,12 @@ struct PurchaseResult {
     total_cents: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseBackupResult {
+    path: String,
+}
+
 fn to_sqlite_value(value: &Value) -> Result<SqliteValue, String> {
     match value {
         Value::Null => Ok(SqliteValue::Null),
@@ -104,7 +120,7 @@ fn to_sqlite_value(value: &Value) -> Result<SqliteValue, String> {
     }
 }
 
-fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
+fn pharmacy_database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_config_dir = app
         .path()
         .app_config_dir()
@@ -112,7 +128,11 @@ fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
     std::fs::create_dir_all(&app_config_dir)
         .map_err(|error| format!("Could not create the app configuration directory: {error}"))?;
 
-    let connection = Connection::open(app_config_dir.join("pharmacy.db"))
+    Ok(app_config_dir.join("pharmacy.db"))
+}
+
+fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
+    let connection = Connection::open(pharmacy_database_path(app)?)
         .map_err(|error| format!("Could not open the local pharmacy database: {error}"))?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -126,6 +146,593 @@ fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
         })
         .map_err(|error| format!("Could not enable the SQLite write-ahead log: {error}"))?;
     Ok(connection)
+}
+
+fn database_timestamp(database_path: &Path) -> Result<String, String> {
+    let connection = Connection::open(database_path)
+        .map_err(|error| format!("Could not read the local database clock: {error}"))?;
+    connection
+        .query_row(
+            "SELECT strftime('%Y-%m-%d_%H-%M-%S', 'now', 'localtime')",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("Could not create a local backup timestamp: {error}"))
+}
+
+fn unique_internal_path(directory: &Path, prefix: &str, extension: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    directory.join(format!(".{prefix}-{nanos}.{extension}"))
+}
+
+fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn require_backup_columns(
+    connection: &Connection,
+    table: &str,
+    required_columns: &[&str],
+) -> Result<(), String> {
+    let query = format!("PRAGMA table_info({table})");
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|error| format!("Could not inspect the backup's {table} table: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Could not inspect the backup's {table} columns: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the backup's {table} columns: {error}"))?;
+
+    if let Some(missing) = required_columns
+        .iter()
+        .find(|required| !columns.iter().any(|column| column == **required))
+    {
+        return Err(format!(
+            "The selected backup is missing the {table}.{missing} field."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_backup_database(database_path: &Path) -> Result<(), String> {
+    if !database_path.is_file() {
+        return Err("The selected backup is not a database file.".to_owned());
+    }
+
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Could not open the selected backup: {error}"))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("Could not configure backup validation: {error}"))?;
+
+    let integrity_results = {
+        let mut statement = connection
+            .prepare("PRAGMA integrity_check")
+            .map_err(|error| format!("Could not check backup integrity: {error}"))?;
+        let mapped_rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not check backup integrity: {error}"))?;
+        let results = mapped_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read backup integrity results: {error}"))?;
+        results
+    };
+    if integrity_results.len() != 1 || integrity_results[0] != "ok" {
+        let detail = integrity_results
+            .first()
+            .map(String::as_str)
+            .unwrap_or("SQLite returned no integrity result.");
+        return Err(format!("The selected backup failed its integrity check: {detail}"));
+    }
+
+    let foreign_key_errors = {
+        let mut statement = connection
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(|error| format!("Could not check backup relationships: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| format!("Could not check backup relationships: {error}"))?;
+        let results = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read backup relationship results: {error}"))?;
+        results
+    };
+    if let Some((table, row_id, parent_table)) = foreign_key_errors.first() {
+        return Err(format!(
+            "The selected backup has an invalid relationship in {table} row {} referencing {parent_table}.",
+            row_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "without a row id".to_owned())
+        ));
+    }
+
+    for table in [
+        "schema_migrations",
+        "medicines",
+        "medicine_batches",
+        "suppliers",
+        "purchases",
+        "purchase_items",
+        "sales",
+        "sale_items",
+    ] {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type = 'table' AND name = ?1
+                 )",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not validate the backup's {table} table: {error}"))?;
+        if !exists {
+            return Err(format!(
+                "The selected file is not a PharmaDesk backup: {table} is missing."
+            ));
+        }
+    }
+
+    let versions = {
+        let mut statement = connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .map_err(|error| format!("Could not read the backup's schema version: {error}"))?;
+        let mapped_rows = statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("Could not read the backup's schema version: {error}"))?;
+        let results = mapped_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read the backup's schema version: {error}"))?;
+        results
+    };
+    if versions.is_empty() {
+        return Err("The selected database has no PharmaDesk migration history.".to_owned());
+    }
+    for (index, version) in versions.iter().enumerate() {
+        if *version != index as i64 + 1 {
+            return Err("The selected backup has an incomplete migration history.".to_owned());
+        }
+    }
+    let version = *versions.last().expect("validated non-empty migration history");
+    if version > LATEST_DATABASE_VERSION {
+        return Err(format!(
+            "This backup was created by a newer PharmaDesk database version ({version})."
+        ));
+    }
+
+    require_backup_columns(
+        &connection,
+        "schema_migrations",
+        &["version", "applied_at"],
+    )?;
+    require_backup_columns(
+        &connection,
+        "medicines",
+        &[
+            "id",
+            "name",
+            "generic_name",
+            "company",
+            "rack_location",
+            "min_stock_alert",
+            "created_at",
+        ],
+    )?;
+    require_backup_columns(
+        &connection,
+        "medicine_batches",
+        &[
+            "id",
+            "medicine_id",
+            "batch_no",
+            "expiry_date",
+            "purchase_rate",
+            "mrp",
+            "sale_rate",
+            "current_stock",
+            "barcode",
+        ],
+    )?;
+    require_backup_columns(
+        &connection,
+        "suppliers",
+        &["id", "name", "phone", "address", "balance_due"],
+    )?;
+    require_backup_columns(
+        &connection,
+        "purchases",
+        &["id", "invoice_no", "supplier_id", "total_amount", "purchase_date"],
+    )?;
+    require_backup_columns(
+        &connection,
+        "purchase_items",
+        &["id", "purchase_id", "batch_id", "quantity", "rate", "total"],
+    )?;
+    require_backup_columns(
+        &connection,
+        "sales",
+        &[
+            "id",
+            "invoice_no",
+            "customer_name",
+            "customer_phone",
+            "subtotal",
+            "discount",
+            "grand_total",
+            "payment_mode",
+            "created_at",
+        ],
+    )?;
+    require_backup_columns(
+        &connection,
+        "sale_items",
+        &["id", "sale_id", "batch_id", "quantity", "unit_price", "total_price"],
+    )?;
+    if version >= 2 {
+        require_backup_columns(
+            &connection,
+            "sales",
+            &["flat_discount", "cash_tendered", "change_due"],
+        )?;
+        require_backup_columns(&connection, "sale_items", &["item_discount"])?;
+    }
+    if version >= 3 {
+        require_backup_columns(
+            &connection,
+            "stock_adjustments",
+            &["id", "medicine_id", "batch_id", "reason", "created_at"],
+        )?;
+    }
+    if version >= 4 {
+        require_backup_columns(&connection, "sale_items", &["purchase_rate_at_sale"])?;
+        require_backup_columns(
+            &connection,
+            "app_settings",
+            &["setting_key", "setting_value"],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn create_snapshot(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.is_file() {
+        return Err("The local pharmacy database does not exist yet.".to_owned());
+    }
+    if destination.exists() || fs::symlink_metadata(destination).is_ok() {
+        return Err("A file already exists at the selected backup location.".to_owned());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Choose a valid backup folder.".to_owned())?;
+    if !parent.is_dir() {
+        return Err("The selected backup folder does not exist or is unavailable.".to_owned());
+    }
+    let destination_text = destination
+        .to_str()
+        .ok_or_else(|| "The backup path cannot be represented as a valid file path.".to_owned())?;
+
+    let snapshot_result = (|| {
+        let connection = Connection::open(source)
+            .map_err(|error| format!("Could not open the pharmacy database for backup: {error}"))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("Could not configure the database backup: {error}"))?;
+        connection
+            .execute("VACUUM INTO ?1", [destination_text])
+            .map_err(|error| format!("Could not create the database snapshot: {error}"))?;
+        drop(connection);
+        validate_backup_database(destination)
+    })();
+
+    if snapshot_result.is_err() {
+        let _ = fs::remove_file(destination);
+    }
+    snapshot_result
+}
+
+fn next_dated_backup_path(
+    directory: &Path,
+    prefix: &str,
+    timestamp: &str,
+) -> Result<PathBuf, String> {
+    let base_name = format!("{prefix}_{timestamp}.db");
+    let candidate = directory.join(&base_name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    for suffix in 2..=999 {
+        let candidate = directory.join(format!("{prefix}_{timestamp}_{suffix}.db"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Could not choose a unique internal backup filename.".to_owned())
+}
+
+fn create_internal_snapshot(
+    app: &AppHandle,
+    prefix: &str,
+) -> Result<Option<PathBuf>, String> {
+    let database_path = pharmacy_database_path(app)?;
+    if !database_path.is_file() {
+        return Ok(None);
+    }
+    let backup_directory = database_path
+        .parent()
+        .ok_or_else(|| "Could not locate the internal backup folder.".to_owned())?
+        .join("backups");
+    fs::create_dir_all(&backup_directory)
+        .map_err(|error| format!("Could not create the internal backup folder: {error}"))?;
+    let timestamp = database_timestamp(&database_path)?;
+    let destination = next_dated_backup_path(&backup_directory, prefix, &timestamp)?;
+    create_snapshot(&database_path, &destination)?;
+    Ok(Some(destination))
+}
+
+fn validate_database_extension(path: &Path) -> Result<(), String> {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))
+    {
+        return Err("Choose a PharmaDesk .db backup file.".to_owned());
+    }
+    Ok(())
+}
+
+fn selected_backup_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("The selected backup path is not absolute.".to_owned());
+    }
+    validate_database_extension(path)?;
+    fs::canonicalize(path).map_err(|error| format!("Could not access the selected backup: {error}"))
+}
+
+fn backup_destination_path(
+    active_database: &Path,
+    destination: &Path,
+) -> Result<PathBuf, String> {
+    if !destination.is_absolute() {
+        return Err("Choose an absolute path for the backup file.".to_owned());
+    }
+    validate_database_extension(destination)?;
+    if destination.exists() || fs::symlink_metadata(destination).is_ok() {
+        return Err("A file already exists at the selected backup location.".to_owned());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Choose a valid backup folder.".to_owned())?;
+    if !parent.is_dir() {
+        return Err("The selected backup folder does not exist or is unavailable.".to_owned());
+    }
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| "Choose a valid backup filename.".to_owned())?;
+    let normalized_destination = fs::canonicalize(parent)
+        .map_err(|error| format!("Could not access the selected backup folder: {error}"))?
+        .join(file_name);
+    let active_database = fs::canonicalize(active_database)
+        .map_err(|error| format!("Could not locate the local pharmacy database: {error}"))?;
+    if normalized_destination == active_database {
+        return Err("The backup destination cannot replace the active pharmacy database.".to_owned());
+    }
+    Ok(normalized_destination)
+}
+
+#[tauri::command]
+fn create_database_backup(
+    app: AppHandle,
+    destination_path: String,
+) -> Result<DatabaseBackupResult, String> {
+    let active_database = pharmacy_database_path(&app)?;
+    if !active_database.is_file() {
+        return Err("The local pharmacy database does not exist yet.".to_owned());
+    }
+    let destination =
+        backup_destination_path(&active_database, Path::new(&destination_path))?;
+    create_snapshot(&active_database, &destination)?;
+    Ok(DatabaseBackupResult {
+        path: destination.display().to_string(),
+    })
+}
+
+fn rollback_database_replacement(
+    active_database: &Path,
+    previous_database: &Path,
+    moved_sidecars: &[(PathBuf, PathBuf)],
+    previous_database_moved: bool,
+    replacement_installed: bool,
+) {
+    if replacement_installed {
+        let _ = fs::remove_file(active_database);
+        for suffix in ["-wal", "-shm"] {
+            let _ = fs::remove_file(sqlite_sidecar_path(active_database, suffix));
+        }
+    }
+    for (original_sidecar, previous_sidecar) in moved_sidecars.iter().rev() {
+        if previous_sidecar.exists() {
+            let _ = fs::rename(previous_sidecar, original_sidecar);
+        }
+    }
+    if previous_database_moved && previous_database.exists() {
+        let _ = fs::rename(previous_database, active_database);
+    }
+}
+
+#[tauri::command]
+fn restore_database_backup(app: AppHandle, source_path: String) -> Result<(), String> {
+    let active_database = pharmacy_database_path(&app)?;
+    if !active_database.is_file() {
+        return Err("The local pharmacy database is not available to restore.".to_owned());
+    }
+
+    let source = selected_backup_path(Path::new(&source_path))?;
+    let active_canonical = fs::canonicalize(&active_database)
+        .map_err(|error| format!("Could not locate the local pharmacy database: {error}"))?;
+    if source == active_canonical {
+        return Err("Choose a backup file other than the active pharmacy database.".to_owned());
+    }
+    validate_backup_database(&source)?;
+
+    let config_directory = active_database
+        .parent()
+        .ok_or_else(|| "Could not locate the local pharmacy database folder.".to_owned())?;
+    let staged_database = unique_internal_path(config_directory, "restore-stage", "db");
+    create_snapshot(&source, &staged_database)?;
+    if let Err(error) = validate_backup_database(&staged_database) {
+        let _ = fs::remove_file(&staged_database);
+        return Err(error);
+    }
+
+    if create_internal_snapshot(&app, "before-restore")?.is_none() {
+        let _ = fs::remove_file(&staged_database);
+        return Err("A safety backup could not be created before restore.".to_owned());
+    }
+
+    let current_connection = open_pharmacy_connection(&app)?;
+    let (checkpoint_busy, _, _): (i64, i64, i64) = current_connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|error| {
+            let _ = fs::remove_file(&staged_database);
+            format!("Could not safely close the current database: {error}")
+        })?;
+    if checkpoint_busy != 0 {
+        let _ = fs::remove_file(&staged_database);
+        return Err("The database is busy. Close other database activity and try again.".to_owned());
+    }
+    drop(current_connection);
+
+    let previous_database = unique_internal_path(config_directory, "restore-previous", "db");
+    if let Err(error) = fs::rename(&active_database, &previous_database) {
+        let _ = fs::remove_file(&staged_database);
+        return Err(format!("Could not prepare the current database for restore: {error}"));
+    }
+
+    let mut moved_sidecars = Vec::new();
+    for suffix in ["-wal", "-shm"] {
+        let original_sidecar = sqlite_sidecar_path(&active_database, suffix);
+        if !original_sidecar.exists() {
+            continue;
+        }
+        let previous_sidecar = sqlite_sidecar_path(&previous_database, suffix);
+        if let Err(error) = fs::rename(&original_sidecar, &previous_sidecar) {
+            rollback_database_replacement(
+                &active_database,
+                &previous_database,
+                &moved_sidecars,
+                true,
+                false,
+            );
+            let _ = fs::remove_file(&staged_database);
+            return Err(format!("Could not safely move the current database files: {error}"));
+        }
+        moved_sidecars.push((original_sidecar, previous_sidecar));
+    }
+
+    if let Err(error) = fs::rename(&staged_database, &active_database) {
+        rollback_database_replacement(
+            &active_database,
+            &previous_database,
+            &moved_sidecars,
+            true,
+            false,
+        );
+        let _ = fs::remove_file(&staged_database);
+        return Err(format!("Could not install the selected database backup: {error}"));
+    }
+
+    let restored_connection = match open_pharmacy_connection(&app) {
+        Ok(connection) => connection,
+        Err(error) => {
+            rollback_database_replacement(
+                &active_database,
+                &previous_database,
+                &moved_sidecars,
+                true,
+                true,
+            );
+            return Err(format!(
+                "The restored database could not be opened; the original database was put back: {error}"
+            ));
+        }
+    };
+    drop(restored_connection);
+
+    let _ = fs::remove_file(&previous_database);
+    for (_, previous_sidecar) in moved_sidecars {
+        let _ = fs::remove_file(previous_sidecar);
+    }
+    Ok(())
+}
+
+fn register_auto_backup_on_close(
+    app: &mut tauri::App,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found"))?;
+    let app_handle = app.handle().clone();
+    let backup_started = Arc::new(AtomicBool::new(false));
+    let backup_complete = Arc::new(AtomicBool::new(false));
+    let started_state = Arc::clone(&backup_started);
+    let complete_state = Arc::clone(&backup_complete);
+    let window_for_closing = window.clone();
+
+    window.on_window_event(move |event| {
+        let WindowEvent::CloseRequested { api, .. } = event else {
+            return;
+        };
+        if complete_state.load(Ordering::SeqCst) {
+            return;
+        }
+
+        api.prevent_close();
+        if started_state.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let app_handle = app_handle.clone();
+        let closing_window = window_for_closing.clone();
+        let started_state = Arc::clone(&started_state);
+        let complete_state = Arc::clone(&complete_state);
+        std::thread::spawn(move || {
+            match create_internal_snapshot(&app_handle, "backup") {
+                Ok(Some(path)) => eprintln!("Automatic pharmacy backup saved to {}", path.display()),
+                Ok(None) => {}
+                Err(error) => {
+                    started_state.store(false, Ordering::SeqCst);
+                    if let Err(emit_error) =
+                        app_handle.emit("pharmadesk:auto-backup-failed", error.clone())
+                    {
+                        eprintln!("Could not report the automatic backup failure: {emit_error}");
+                    }
+                    return;
+                }
+            }
+
+            complete_state.store(true, Ordering::SeqCst);
+            if let Err(error) = closing_window.close() {
+                eprintln!("Could not close the pharmacy window after backup: {error}");
+            }
+        });
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -313,6 +920,16 @@ fn complete_sale(
             ));
         }
 
+        let purchase_rate_cents: i64 = transaction
+            .query_row(
+                r#"SELECT CAST(round(purchase_rate * 100) AS INTEGER)
+                   FROM medicine_batches
+                   WHERE id = ?1 AND medicine_id = ?2"#,
+                params![item.batch_id, item.medicine_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not capture the batch cost for the sale: {error}"))?;
+
         let line_gross_cents = item
             .unit_price_cents
             .checked_mul(item.quantity)
@@ -321,8 +938,9 @@ fn complete_sale(
         transaction
             .execute(
                 r#"INSERT INTO sale_items (
-                     sale_id, batch_id, quantity, unit_price, item_discount, total_price
-                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                     sale_id, batch_id, quantity, unit_price, item_discount, total_price,
+                     purchase_rate_at_sale
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
                 params![
                     sale_id,
                     item.batch_id,
@@ -330,6 +948,7 @@ fn complete_sale(
                     item.unit_price_cents as f64 / 100.0,
                     item.item_discount_cents as f64 / 100.0,
                     line_total_cents as f64 / 100.0,
+                    purchase_rate_cents as f64 / 100.0,
                 ],
             )
             .map_err(|error| format!("Could not add a sale item: {error}"))?;
@@ -559,11 +1178,15 @@ fn complete_purchase(app: AppHandle, purchase: PurchaseRequest) -> Result<Purcha
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
+        .setup(register_auto_backup_on_close)
         .invoke_handler(tauri::generate_handler![
             execute_sql_transaction,
             complete_sale,
-            complete_purchase
+            complete_purchase,
+            create_database_backup,
+            restore_database_backup
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Medicine Inventory POS");
@@ -723,5 +1346,85 @@ mod purchase_tests {
         assert_eq!(purchase_rate, 13.0);
         assert_eq!(purchase_count, 2);
         assert_eq!(item_count, 2);
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    #[test]
+    fn vacuum_snapshot_preserves_pharmacy_schema_and_data() {
+        let directory = unique_internal_path(&std::env::temp_dir(), "pharmadesk-backup-test", "dir");
+        fs::create_dir_all(&directory).expect("create temporary backup directory");
+        let source = directory.join("pharmacy.db");
+        let destination = directory.join("backup.db");
+        let connection = Connection::open(&source).expect("open source database");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO schema_migrations (version) VALUES (1);
+                CREATE TABLE medicines (
+                    id INTEGER PRIMARY KEY, name TEXT, generic_name TEXT, company TEXT,
+                    rack_location TEXT, min_stock_alert INTEGER, created_at TEXT
+                );
+                CREATE TABLE medicine_batches (
+                    id INTEGER PRIMARY KEY, medicine_id INTEGER, batch_no TEXT, expiry_date TEXT,
+                    purchase_rate REAL, mrp REAL, sale_rate REAL, current_stock INTEGER, barcode TEXT
+                );
+                CREATE TABLE suppliers (
+                    id INTEGER PRIMARY KEY, name TEXT, phone TEXT, address TEXT, balance_due REAL
+                );
+                CREATE TABLE purchases (
+                    id INTEGER PRIMARY KEY, invoice_no TEXT, supplier_id INTEGER,
+                    total_amount REAL, purchase_date TEXT
+                );
+                CREATE TABLE purchase_items (
+                    id INTEGER PRIMARY KEY, purchase_id INTEGER, batch_id INTEGER,
+                    quantity INTEGER, rate REAL, total REAL
+                );
+                CREATE TABLE sales (
+                    id INTEGER PRIMARY KEY,
+                    invoice_no TEXT NOT NULL,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    subtotal REAL NOT NULL,
+                    discount REAL NOT NULL DEFAULT 0,
+                    grand_total REAL NOT NULL,
+                    payment_mode TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE sale_items (
+                    id INTEGER PRIMARY KEY,
+                    sale_id INTEGER NOT NULL,
+                    batch_id INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_price REAL NOT NULL,
+                    total_price REAL NOT NULL
+                );
+                INSERT INTO sales (
+                    invoice_no, customer_name, subtotal, grand_total, payment_mode, created_at
+                ) VALUES ('INV-TEST', 'Test customer', 100, 100, 'CASH', '2026-10-01 10:00:00');
+                "#,
+            )
+            .expect("create source pharmacy schema");
+        drop(connection);
+
+        create_snapshot(&source, &destination).expect("create SQLite snapshot");
+        validate_backup_database(&destination).expect("validate SQLite snapshot");
+
+        let backup = Connection::open_with_flags(&destination, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open backup database");
+        let invoice_count: i64 = backup
+            .query_row("SELECT COUNT(*) FROM sales", [], |row| row.get(0))
+            .expect("read backed up invoices");
+        assert_eq!(invoice_count, 1);
+
+        drop(backup);
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
     }
 }
