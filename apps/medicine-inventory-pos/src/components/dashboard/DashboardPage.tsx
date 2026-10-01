@@ -404,7 +404,46 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
       </section>
 
       <div className="dash-main-grid">
-        <div className="dash-primary-column">
+        <div className="dash-column dash-column--activity">
+          <section className="dash-card dash-recent-card" aria-labelledby="dash-recent-title">
+            <div className="dash-card-header">
+              <div className="dash-section-heading">
+                <span className="dash-heading-mark dash-heading-mark--teal"><Clock3 size={16} /></span>
+                <div><h2 id="dash-recent-title">Recent sales</h2><p>Latest invoices recorded on this device</p></div>
+              </div>
+              <button className="dash-text-link" data-testid="button-recent-sales-pos" onClick={() => onNavigate("pos")} type="button">Go to billing <ArrowRight size={14} /></button>
+            </div>
+            {snapshot.recent_sales.length > 0 ? (
+              <div className="dash-recent-list">{snapshot.recent_sales.map((sale) => <RecentSaleRow key={sale.sale.id} sale={sale} />)}</div>
+            ) : (
+              <EmptyList title="No sales recorded yet" detail="Completed bills will appear here." />
+            )}
+          </section>
+
+          <section className="dash-card dash-today-card" aria-labelledby="dash-today-title">
+            <div className="dash-card-header">
+              <div className="dash-section-heading">
+                <span className="dash-heading-mark dash-heading-mark--blue"><Wallet size={16} /></span>
+                <div><h2 id="dash-today-title">Today’s summary</h2><p>{localDateLabel(snapshot.date)}</p></div>
+              </div>
+            </div>
+            <div className="dash-summary-lines">
+              <div className="dash-summary-row"><span>Sales revenue</span><strong data-testid="value-summary-revenue">{formatMoney(sales.total_revenue)}</strong></div>
+              <div className="dash-summary-row"><span>Gross profit</span><strong data-testid="value-gross-profit">{formatMoney(sales.gross_profit)}</strong></div>
+              <div className="dash-profit-note">
+                <span>Gross profit is based on saved sale-time purchase costs.</span>
+                {sales.profit_unavailable_invoices > 0 && <strong data-testid="value-profit-unavailable">{sales.profit_unavailable_invoices} {sales.profit_unavailable_invoices === 1 ? "invoice" : "invoices"} excluded: cost unavailable</strong>}
+              </div>
+              <div className="dash-summary-row"><span>Cash</span><strong data-testid="value-cash-revenue">{formatMoney(sales.cash_revenue)}</strong></div>
+              <div className="dash-summary-row"><span>Card &amp; UPI</span><strong data-testid="value-card-upi-revenue">{formatMoney(sales.card_upi_revenue)}</strong></div>
+              {sales.other_invoices > 0 && <div className="dash-summary-row"><span>Other payments</span><strong data-testid="value-other-revenue">{formatMoney(sales.other_revenue)}</strong></div>}
+              <div className="dash-payment-count">{sales.cash_invoices} cash · {sales.card_upi_invoices} card/UPI{sales.other_invoices > 0 ? ` · ${sales.other_invoices} other` : ""} invoices</div>
+            </div>
+            <button className="dash-summary-link" data-testid="button-summary-reports" onClick={() => onNavigate("reports")} type="button">See sales reports <ArrowRight size={14} /></button>
+          </section>
+        </div>
+
+        <div className="dash-column dash-column--inventory">
           <section className="dash-card dash-stock-card" aria-labelledby="dash-stock-title">
             <div className="dash-card-header">
               <div className="dash-section-heading">
@@ -424,25 +463,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                 <div className="dash-stock-legend-row"><span className="dash-legend-label"><i className="dash-legend-dot dash-legend-dot--low" />Low stock</span><strong data-testid="value-stock-low">{inventory.low_stock_medicines.toLocaleString("en-IN")}</strong><small>{stockTotal ? `${((inventory.low_stock_medicines / stockTotal) * 100).toFixed(1)}%` : "—"}</small></div>
                 <div className="dash-stock-legend-row"><span className="dash-legend-label"><i className="dash-legend-dot dash-legend-dot--out" />Out of stock</span><strong data-testid="value-stock-out">{inventory.out_of_stock_medicines.toLocaleString("en-IN")}</strong><small>{stockTotal ? `${((inventory.out_of_stock_medicines / stockTotal) * 100).toFixed(1)}%` : "—"}</small></div>
               </div>
-              <div className="dash-stock-value">
-                <span>Stock value</span><strong data-testid="value-stock-value-secondary">{formatMoney(inventory.stock_value_at_cost)}</strong><small>at purchase cost</small>
-              </div>
             </div>
-          </section>
-
-          <section className="dash-card dash-recent-card" aria-labelledby="dash-recent-title">
-            <div className="dash-card-header">
-              <div className="dash-section-heading">
-                <span className="dash-heading-mark dash-heading-mark--teal"><Clock3 size={16} /></span>
-                <div><h2 id="dash-recent-title">Recent sales</h2><p>Latest invoices recorded on this device</p></div>
-              </div>
-              <button className="dash-text-link" data-testid="button-recent-sales-pos" onClick={() => onNavigate("pos")} type="button">Go to billing <ArrowRight size={14} /></button>
-            </div>
-            {snapshot.recent_sales.length > 0 ? (
-              <div className="dash-recent-list">{snapshot.recent_sales.map((sale) => <RecentSaleRow key={sale.sale.id} sale={sale} />)}</div>
-            ) : (
-              <EmptyList title="No sales recorded yet" detail="Completed bills will appear here." />
-            )}
           </section>
 
           <section className="dash-card dash-top-card" aria-labelledby="dash-top-title">
@@ -471,29 +492,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           </section>
         </div>
 
-        <aside className="dash-secondary-column" aria-label="Alerts and daily totals">
-          <section className="dash-card dash-today-card" aria-labelledby="dash-today-title">
-            <div className="dash-card-header">
-              <div className="dash-section-heading">
-                <span className="dash-heading-mark dash-heading-mark--blue"><Wallet size={16} /></span>
-                <div><h2 id="dash-today-title">Today’s summary</h2><p>{localDateLabel(snapshot.date)}</p></div>
-              </div>
-            </div>
-            <div className="dash-summary-lines">
-              <div className="dash-summary-row"><span>Sales revenue</span><strong data-testid="value-summary-revenue">{formatMoney(sales.total_revenue)}</strong></div>
-              <div className="dash-summary-row"><span>Gross profit</span><strong data-testid="value-gross-profit">{formatMoney(sales.gross_profit)}</strong></div>
-              <div className="dash-profit-note">
-                <span>Gross profit is based on saved sale-time purchase costs.</span>
-                {sales.profit_unavailable_invoices > 0 && <strong data-testid="value-profit-unavailable">{sales.profit_unavailable_invoices} {sales.profit_unavailable_invoices === 1 ? "invoice" : "invoices"} excluded: cost unavailable</strong>}
-              </div>
-              <div className="dash-summary-row"><span>Cash</span><strong data-testid="value-cash-revenue">{formatMoney(sales.cash_revenue)}</strong></div>
-              <div className="dash-summary-row"><span>Card &amp; UPI</span><strong data-testid="value-card-upi-revenue">{formatMoney(sales.card_upi_revenue)}</strong></div>
-              {sales.other_invoices > 0 && <div className="dash-summary-row"><span>Other payments</span><strong data-testid="value-other-revenue">{formatMoney(sales.other_revenue)}</strong></div>}
-              <div className="dash-payment-count">{sales.cash_invoices} cash · {sales.card_upi_invoices} card/UPI{sales.other_invoices > 0 ? ` · ${sales.other_invoices} other` : ""} invoices</div>
-            </div>
-            <button className="dash-summary-link" data-testid="button-summary-reports" onClick={() => onNavigate("reports")} type="button">See sales reports <ArrowRight size={14} /></button>
-          </section>
-
+        <aside className="dash-column dash-column--alerts" aria-label="Inventory alerts">
           <section className={`dash-card dash-alert-card ${lowAlerts.length > 0 ? "dash-alert-card--risk" : ""}`} aria-labelledby="dash-low-title">
             <div className="dash-card-header">
               <div className="dash-section-heading">
