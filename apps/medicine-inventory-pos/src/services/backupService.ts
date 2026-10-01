@@ -3,7 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { DatabaseBackupResult } from "../types";
 import { closeDatabase, getDatabase } from "./db";
 
-const databaseFilter = [{ name: "PharmaDesk database backup", extensions: ["db"] }];
+const databaseFilter = [{ name: "MY MEDICAL database backup", extensions: ["db"] }];
 
 function localDateStamp(): string {
   const now = new Date();
@@ -15,7 +15,7 @@ function localDateStamp(): string {
 
 export async function selectBackupDestination(): Promise<string | null> {
   const path = await save({
-    defaultPath: `pharmadesk-backup-${localDateStamp()}.db`,
+    defaultPath: `my-medical-backup-${localDateStamp()}.db`,
     filters: databaseFilter,
   });
   return typeof path === "string" && path.length > 0 ? path : null;

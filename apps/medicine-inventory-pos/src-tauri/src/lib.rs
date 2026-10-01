@@ -280,7 +280,7 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
             .map_err(|error| format!("Could not validate the backup's {table} table: {error}"))?;
         if !exists {
             return Err(format!(
-                "The selected file is not a PharmaDesk backup: {table} is missing."
+                "The selected file is not a MY MEDICAL backup: {table} is missing."
             ));
         }
     }
@@ -298,7 +298,7 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
         results
     };
     if versions.is_empty() {
-        return Err("The selected database has no PharmaDesk migration history.".to_owned());
+        return Err("The selected database has no MY MEDICAL migration history.".to_owned());
     }
     for (index, version) in versions.iter().enumerate() {
         if *version != index as i64 + 1 {
@@ -308,7 +308,7 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
     let version = *versions.last().expect("validated non-empty migration history");
     if version > LATEST_DATABASE_VERSION {
         return Err(format!(
-            "This backup was created by a newer PharmaDesk database version ({version})."
+            "This backup was created by a newer MY MEDICAL database version ({version})."
         ));
     }
 
@@ -489,7 +489,7 @@ fn validate_database_extension(path: &Path) -> Result<(), String> {
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))
     {
-        return Err("Choose a PharmaDesk .db backup file.".to_owned());
+        return Err("Choose a MY MEDICAL .db backup file.".to_owned());
     }
     Ok(())
 }
