@@ -1,0 +1,101 @@
+We have clarified an important point:
+
+This is a NEW pharmacy management application.
+There is NO existing/old pharmacy database and NO previous pharmacy data.
+
+Therefore, stop looking for an existing populated database.
+
+The SQLite database is supposed to be created as part of this new
+application.
+
+IMPORTANT:
+
+- Keep the existing database architecture.
+- Keep the existing migrations.
+- Do not search for an old pharmacy.db anymore.
+- Do not assume that previous pharmacy data exists.
+- Do not change the database architecture unnecessarily.
+
+For Dashboard development and visual verification only, create a SAFE,
+DEVELOPMENT-ONLY demo/seed dataset.
+
+The demo data must:
+
+- Be clearly marked as development/demo data.
+- Never be presented as real customer/pharmacy data.
+- Never be automatically inserted into a production installation.
+- Never overwrite existing user data.
+- Only run when explicitly enabled for development/testing.
+- Be easy to remove/disable.
+
+Create enough realistic Indian pharmacy data to exercise the Dashboard:
+
+Medicines:
+- Multiple medicines
+- Different categories
+- Different companies
+- Salt/generic names
+- HSN where supported
+- Different batches
+- Different expiry dates
+- Different stock quantities
+- Different reorder levels
+- Different purchase prices
+- Different selling/MRP values
+
+Transactions:
+- Several purchase records
+- Several sales/bills
+- Different quantities
+- Different dates
+- Different customers where the existing model supports customers
+- Different suppliers where supported
+
+Dashboard test conditions:
+- Normal stock
+- Low stock
+- Out of stock
+- Near-expiry batch
+- Expired batch
+- Recent sales
+- Top-selling medicine
+- Today's sales
+- Today's purchase
+- Gross profit using the application's existing profit logic
+
+IMPORTANT:
+Do not invent unsupported fields or change the existing schema just to make
+the dashboard look populated.
+
+Reuse the application's existing models, migrations, services and business
+logic.
+
+After adding the development-only seed mechanism:
+
+1. Start the actual Tauri application.
+2. Initialize the new database normally.
+3. Enable the development seed explicitly.
+4. Verify the seeded records appear.
+5. Verify the Home Dashboard uses those records.
+6. Verify POS Billing works with the seeded medicines.
+7. Verify Inventory shows the seeded batches.
+8. Verify low-stock and expiry alerts.
+9. Verify Recent Sales.
+10. Verify Top Selling Medicines.
+11. Verify Today's Sales/Purchase/Profit.
+
+Then verify the desktop UI at:
+
+- 1366×768
+- 1440×900
+- 1920×1080
+
+Do NOT call the demo data "real existing data".
+It is ONLY development test data.
+
+Finally report:
+- how the new database is initialized
+- how the development seed is enabled
+- what dashboard sections were verified
+- whether production startup remains free of demo data
+- typecheck/build/git diff --check results
