@@ -1,0 +1,1 @@
+- [Tauri SQLite transactions](tauri-sqlite-transactions.md) — Use one native transaction command for atomic updates; the SQL plugin exposes pooled queries, not a transaction handle.
