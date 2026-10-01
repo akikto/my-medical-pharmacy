@@ -106,6 +106,20 @@ const migrations: readonly Migration[] = [
       "CREATE INDEX idx_sales_created_at ON sales(created_at DESC, id DESC)",
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE stock_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE RESTRICT,
+        batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+        quantity_change INTEGER NOT NULL CHECK (quantity_change != 0),
+        reason TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      "CREATE INDEX idx_stock_adjustments_batch ON stock_adjustments(batch_id, created_at DESC)",
+    ],
+  },
 ];
 
 let databasePromise: Promise<Database> | null = null;

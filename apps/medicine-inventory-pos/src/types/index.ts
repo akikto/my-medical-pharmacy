@@ -12,6 +12,23 @@ export interface Medicine {
   created_at: ISODateTime;
 }
 
+export interface MedicineInventoryRow extends Medicine {
+  available_stock: number;
+  expired_stock: number;
+  near_expiry_stock: number;
+  batch_count: number;
+}
+
+export type InventoryFilter = "all" | "low-stock" | "expired" | "near-expiry";
+
+export interface MedicineFormValues {
+  name: string;
+  generic_name: string;
+  company: string;
+  rack_location: string;
+  min_stock_alert: number;
+}
+
 export interface MedicineBatch {
   id: EntityId;
   medicine_id: EntityId;
@@ -32,12 +49,51 @@ export interface Supplier {
   balance_due: number;
 }
 
+export interface SupplierFormValues {
+  name: string;
+  phone: string;
+  address: string;
+}
+
 export interface Purchase {
   id: EntityId;
   invoice_no: string;
   supplier_id: EntityId | null;
   total_amount: number;
   purchase_date: ISODate;
+}
+
+export interface PurchaseLineInput {
+  medicine_id: EntityId;
+  batch_no: string;
+  expiry_date: ISODate;
+  purchase_rate: number;
+  mrp: number;
+  sale_rate: number;
+  quantity: number;
+}
+
+export interface CreatePurchaseInput {
+  supplier_id: EntityId;
+  invoice_no: string;
+  purchase_date: ISODate;
+  items: PurchaseLineInput[];
+}
+
+export interface CompletePurchaseResponse {
+  purchaseId: EntityId;
+  totalCents: number;
+}
+
+export interface RecentPurchase {
+  id: EntityId;
+  invoice_no: string;
+  supplier_id: EntityId | null;
+  supplier_name: string | null;
+  total_amount: number;
+  purchase_date: ISODate;
+  item_count: number;
+  total_units: number;
 }
 
 export interface PurchaseItem {

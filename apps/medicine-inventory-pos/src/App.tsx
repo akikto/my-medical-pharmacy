@@ -12,6 +12,15 @@ import {
 import { useState } from "react";
 import type { AppSection } from "./types";
 import { POSBilling } from "./components/pos/POSBilling";
+import { InventoryPage } from "./components/inventory/InventoryPage";
+import { PurchasesPage } from "./components/purchases/PurchasesPage";
+import { SuppliersPage } from "./components/purchases/SuppliersPage";
+import "./components/workspace/workspace.css";
+
+type UnavailableSectionId = Exclude<
+  AppSection,
+  "pos" | "inventory" | "purchases" | "suppliers"
+>;
 
 const navigation: Array<{
   id: AppSection;
@@ -28,24 +37,9 @@ const navigation: Array<{
 ];
 
 const sectionDetails: Record<
-  Exclude<AppSection, "pos">,
+  UnavailableSectionId,
   { title: string; description: string; icon: typeof Pill }
 > = {
-  inventory: {
-    title: "Inventory & Batches",
-    description: "Medicine and batch management is not part of the current billing slice.",
-    icon: Boxes,
-  },
-  purchases: {
-    title: "Purchases",
-    description: "Supplier purchase entry is not part of the current billing slice.",
-    icon: Pill,
-  },
-  suppliers: {
-    title: "Suppliers",
-    description: "Supplier records are not part of the current billing slice.",
-    icon: Pill,
-  },
   sales: {
     title: "Sales",
     description: "Open recent invoices from the POS Billing screen.",
@@ -63,7 +57,7 @@ const sectionDetails: Record<
   },
 };
 
-function UnavailableSection({ section }: { section: Exclude<AppSection, "pos"> }) {
+function UnavailableSection({ section }: { section: UnavailableSectionId }) {
   const details = sectionDetails[section];
   const Icon = details.icon;
 
@@ -141,6 +135,12 @@ export default function App() {
         </div>
         {activeSection === "pos" ? (
           <POSBilling />
+        ) : activeSection === "inventory" ? (
+          <InventoryPage />
+        ) : activeSection === "purchases" ? (
+          <PurchasesPage />
+        ) : activeSection === "suppliers" ? (
+          <SuppliersPage />
         ) : (
           <UnavailableSection section={activeSection} />
         )}
