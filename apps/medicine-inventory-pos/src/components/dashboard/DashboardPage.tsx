@@ -51,9 +51,9 @@ const quickActions: Array<{
 }> = [
   { label: "New sale", detail: "Open counter billing", section: "pos", icon: ShoppingCart, tone: "blue" },
   { label: "Add medicine", detail: "Update medicine list", section: "inventory", icon: PackagePlus, tone: "teal" },
-  { label: "Purchase entry", detail: "Record incoming stock", section: "purchases", icon: ShoppingBag, tone: "violet" },
+  { label: "Purchase entry", detail: "Receive stock", section: "purchases", icon: ShoppingBag, tone: "violet" },
   { label: "Suppliers", detail: "View supplier records", section: "suppliers", icon: Truck, tone: "amber" },
-  { label: "Backup settings", detail: "Open local backup options", section: "settings", icon: Database, tone: "slate" },
+  { label: "Backup settings", detail: "Manage backups", section: "settings", icon: Database, tone: "slate" },
 ];
 
 function localDateLabel(value: string): string {

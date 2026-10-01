@@ -727,3 +727,38 @@
     box-shadow: none !important;
   }
 }
+
+@media screen and (min-width: 681px) {
+  .reports-page .reports-local-badge,
+  .reports-page .report-control-heading p,
+  .reports-page .report-card-title p,
+  .reports-page .report-preset,
+  .reports-page .report-date-separator,
+  .reports-page .report-range-caption,
+  .reports-page .report-surface-toolbar strong span,
+  .reports-page .report-actions .button,
+  .reports-page .report-metric-label,
+  .reports-page .payment-breakdown-line > span,
+  .reports-page .payment-breakdown-line > strong,
+  .reports-page .report-profit-note,
+  .reports-page .report-inventory-heading p,
+  .reports-page .report-expiry-status strong,
+  .reports-page .report-alert-empty,
+  .reports-page .report-inline-error,
+  .reports-page .report-date-inputs label,
+  .reports-page .report-section-kicker,
+  .reports-page .report-metric > small,
+  .reports-page .payment-breakdown-line > small,
+  .reports-page .report-date-stamp,
+  .reports-page .report-payment-tag,
+  .reports-page .report-alert-main span,
+  .reports-page .report-stock-quantity span,
+  .reports-page .report-expiry-status span,
+  .reports-page .report-horizon-select {
+    font-size: 10px;
+  }
+
+  .reports-page .report-sales-table td {
+    font-size: 10px;
+  }
+}

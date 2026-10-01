@@ -22,7 +22,12 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 22px;
-  margin: 0 0 18px;
+  margin: -7px -12px 16px;
+  padding: 9px 12px;
+  background: linear-gradient(110deg, #e8f5fd 0%, #f4faff 58%, #fff 100%);
+  border: 1px solid #dbeaf6;
+  border-radius: 11px;
+  box-shadow: 0 3px 11px rgb(34 74 110 / 4%);
 }
 
 .dash-heading {
@@ -470,7 +475,7 @@
   align-content: start;
   padding: 15px 16px 13px;
   overflow: hidden;
-  background: #fff;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--metric-color) 7%, #fff), #fff 78%);
   border: 1px solid #e2ebf2;
   border-radius: 10px;
   box-shadow: 0 3px 11px rgb(34 74 110 / 4%);
