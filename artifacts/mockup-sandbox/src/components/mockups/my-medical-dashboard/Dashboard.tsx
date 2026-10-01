@@ -219,13 +219,13 @@ export function Dashboard() {
             <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
               <div>
                 <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[1.35px] text-[#6b9178]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-[#75a783]" /> Wednesday, 18 June 2025
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#75a783]" /> Thursday, 1 October 2026
                 </div>
                 <h1 className="text-[26px] font-semibold tracking-[-0.85px] text-[#20392c]">Good morning, Dr. Shah</h1>
                 <p className="mt-1 text-[12px] text-[#829087]">Here’s your store at a glance. Let’s make today a good one.</p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => showNotice("Showing activity for Tuesday, 18 June 2024")} type="button" className="flex h-9 items-center gap-2 rounded-lg border border-[#e1e9e2] bg-white px-3 text-[11px] font-medium text-[#516458] hover:border-[#b9d0bf]">
+                <button onClick={() => showNotice("Showing activity for Thursday, 1 October 2026")} type="button" className="flex h-9 items-center gap-2 rounded-lg border border-[#e1e9e2] bg-white px-3 text-[11px] font-medium text-[#516458] hover:border-[#b9d0bf]">
                   <CalendarDays size={14} className="text-[#718f7a]" /> Today <ChevronDown size={12} className="text-[#93a097]" />
                 </button>
                 <button onClick={() => showNotice("New bill started — ready for medicine lookup.")} type="button" className="flex h-9 items-center gap-2 rounded-lg bg-[#2e684a] px-3.5 text-[11px] font-semibold text-white shadow-sm hover:bg-[#25583e]">
@@ -240,7 +240,7 @@ export function Dashboard() {
             </div>
 
             <section aria-label="Store summary" className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-[520px]:grid-cols-1">
-              <StatCard title="Sales today" value="₹18,460" change="12.8%" positive icon={Wallet} iconTone="bg-[#e8f3eb] text-[#4b8c66]" caption="vs. previous Tuesday" />
+              <StatCard title="Sales today" value="₹18,460" change="12.8%" positive icon={Wallet} iconTone="bg-[#e8f3eb] text-[#4b8c66]" caption="vs. previous Thursday" />
               <StatCard title="Bills generated" value="36" change="8.3%" positive icon={FileText} iconTone="bg-[#edf1f8] text-[#6f83a2]" caption="5 more than usual" />
               <StatCard title="Items in stock" value="2,418" change="3 items" positive={false} icon={Boxes} iconTone="bg-[#f7efe2] text-[#bc8950]" caption="need reordering" />
               <StatCard title="To receive" value="₹24,780" change="2 orders" positive icon={Truck} iconTone="bg-[#f1ebf4] text-[#9875a5]" caption="awaiting delivery" />
@@ -252,7 +252,7 @@ export function Dashboard() {
                   <div>
                   <div className="flex items-center gap-2"><h2 className="text-[13px] font-semibold text-[#2b4034]">Sales overview</h2><span className="rounded-md bg-[#f0f5f1] px-1.5 py-0.5 text-[9px] font-medium text-[#668471]">Illustrative</span></div>
                     <div className="mt-2 flex items-baseline gap-2"><span className="text-[23px] font-semibold tracking-[-0.7px] text-[#233c2f]">₹18,460</span><span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-[#498661]"><TrendingUp size={12} /> 12.8%</span></div>
-                    <p className="mt-0.5 text-[10px] text-[#94a097]">Sales by time · Wednesday, 18 June</p>
+                    <p className="mt-0.5 text-[10px] text-[#94a097]">Sales by time · Thursday, 1 October</p>
                   </div>
                   <div className="flex rounded-lg bg-[#f4f7f4] p-0.5">
                     {(Object.keys(salesByRange) as Array<keyof typeof salesByRange>).map((option) => <button key={option} onClick={() => setRange(option)} type="button" className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium transition-colors ${range === option ? "bg-white text-[#3d694e] shadow-sm" : "text-[#8b9890] hover:text-[#4f6758]"}`}>{option}</button>)}

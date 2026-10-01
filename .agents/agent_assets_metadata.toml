@@ -14,3 +14,17 @@ mtime_ms = 1790848851808
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:42bb87ce-8106-4c28-a498-8751c9a8665a/092e719d-b910-4828-85fd-7c9a440baaac/4a9aac94-ae4b-404e-8aa6-881ab401d72b"
 storage_version_token = "1790848885110855"
 content_type = "image/png"
+
+[[outputs]]
+id = "46UKaiLBA6bVyBiV2pAEE"
+uri = "file://screenshots/my-medical-dashboard-mockup.jpg"
+type = "image"
+title = "MY MEDICAL — Home/Dashboard mockup"
+description = "1440×1200 screenshot of the new desktop dashboard mockup, using illustrative INR data."
+logical_id = "5281391e-0385-4feb-bf7a-c09349d039d3"
+content_hash = "sha256:5cbef77b211ebd5862f6b0e34424ea9cb86e9ac7ff49d26a8f8df82d5beb3a96"
+size = 105373
+mtime_ms = 1790849492312
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:42bb87ce-8106-4c28-a498-8751c9a8665a/5281391e-0385-4feb-bf7a-c09349d039d3/c89edfd4-39a3-48d5-b097-35a2038fe36f"
+storage_version_token = "1790849524276548"
+content_type = "image/jpeg"

@@ -1,0 +1,623 @@
+Redesign and implement the Home / Dashboard page of my existing
+“My Medical Pharmacy” Windows desktop pharmacy management software.
+
+IMPORTANT:
+Use the attached reference image as the PRIMARY VISUAL DESIGN REFERENCE.
+Recreate the same overall professional look, layout hierarchy, spacing,
+card structure, sidebar style, colors, typography, and information density,
+but DO NOT blindly copy the image or invent functionality that does not exist
+in the application.
+
+GOAL:
+Create a polished, professional, modern Indian pharmacy-management
+dashboard suitable for a real Windows desktop application.
+
+==================================================
+1. FIRST: INSPECT THE EXISTING PROJECT
+==================================================
+
+Before making any code changes:
+
+- Inspect the complete existing project structure.
+- Identify the current Home/Dashboard page.
+- Identify the existing routing/navigation system.
+- Identify existing database models/services/APIs.
+- Identify existing medicine, inventory, batch, purchase, sales,
+  supplier, customer, billing, GST/report, notification and settings data.
+- Identify existing reusable UI components.
+- Identify the existing theme, fonts, icons and design system.
+- Understand how the local/offline database works.
+- Do NOT create duplicate database logic.
+- Do NOT create duplicate business logic.
+- Reuse existing APIs, hooks, services, queries and components wherever possible.
+
+Do not modify unrelated pages unless required for the Dashboard navigation
+to work correctly.
+
+==================================================
+2. IMPORTANT FUNCTIONALITY RULE
+==================================================
+
+This is a UI/UX redesign, NOT a rewrite of the pharmacy system.
+
+DO NOT remove existing functionality.
+
+DO NOT change existing business rules.
+
+DO NOT change database schemas unless absolutely necessary.
+
+DO NOT change existing routes unnecessarily.
+
+DO NOT replace working functionality with dummy/static data.
+
+Every Dashboard number/card/table must use REAL DATA from the existing
+application/database wherever that data already exists.
+
+If a required metric does not currently exist, first determine whether it
+can safely be calculated from existing data.
+
+Do not invent fake backend APIs just to make the UI look complete.
+
+==================================================
+3. OVERALL VISUAL DIRECTION
+==================================================
+
+Follow the attached reference image.
+
+Design language:
+
+- Professional pharmacy-management software
+- Windows desktop application
+- Clean and modern
+- Premium but practical
+- Blue + white primary theme
+- Subtle green/teal accents
+- Red only for warnings/errors
+- Soft shadows
+- Rounded cards
+- Clean borders
+- Excellent spacing
+- Clear visual hierarchy
+- Professional typography
+- Compact enough for real pharmacy use
+- Avoid excessive decoration
+- Avoid excessive gradients
+- Avoid oversized cards
+
+The interface should look like a production-ready pharmacy ERP/POS
+application, not a generic admin template.
+
+==================================================
+4. LEFT SIDEBAR
+==================================================
+
+Create a professional dark-blue pharmacy sidebar similar to the reference.
+
+Top:
+
+- My Medical Pharmacy logo
+- “My Medical”
+- “pharmacy shop”
+- Keep the existing application branding if already implemented.
+
+Navigation should use the application's EXISTING routes/features.
+
+Expected navigation hierarchy:
+
+- Home
+- Sales / Billing
+- Purchase
+- Medicine Inventory
+- GST & Reports
+- Customers
+- Suppliers
+- Due Management
+- Expiry Alerts
+- Settings
+
+IMPORTANT:
+If some of these already have different names/routes in the project,
+preserve the existing route and functionality.
+
+Use clear icons.
+
+Active page:
+- Bright blue highlighted background
+- Rounded active item
+- White icon
+- White text
+
+Sidebar bottom:
+- Database status
+- Connection/offline status
+- Application version
+
+Do not add navigation items that have no actual functionality.
+
+==================================================
+5. TOP HEADER
+==================================================
+
+Create a clean top header.
+
+Left:
+- Global medicine search
+
+Search placeholder:
+
+“Search medicine, salt, batch, HSN, company...”
+
+Search should connect to the existing search functionality if available.
+
+Right:
+- Current date/time
+- Notifications
+- Logged-in user
+- User role
+- Dropdown/profile menu
+
+Do not create fake authentication.
+
+==================================================
+6. WELCOME / HERO SECTION
+==================================================
+
+Create a compact welcome banner below the header.
+
+Example:
+
+“Welcome Back,”
+“Admin”
+
+Subtitle:
+
+“Manage your pharmacy with ease.”
+
+Use the existing logged-in user's name/role dynamically.
+
+Add a subtle pharmacy/medicine visual on the right side.
+
+Do not make the banner excessively tall.
+
+==================================================
+7. KPI / SUMMARY CARDS
+==================================================
+
+Create a clean row of important pharmacy metrics.
+
+Use real database values.
+
+Cards:
+
+1. Total Medicines
+2. Total Stock Value
+3. Today's Sales
+4. Today's Purchase
+5. Low Stock Items
+6. Total Customers / Suppliers
+
+Depending on existing data availability, use the most meaningful metrics.
+
+Each card should contain:
+
+- Icon
+- Label
+- Large value
+- Small supporting information
+- Appropriate status indicator
+
+Examples:
+
+Total Medicines
+1,248
+
+Stock Value
+₹1,85,420
+
+Today's Sales
+₹42,860
+
+Today's Purchase
+₹28,750
+
+Low Stock Items
+18
+
+Use ₹ for Indian currency.
+
+Do NOT hard-code these example numbers.
+
+==================================================
+8. QUICK ACTIONS
+==================================================
+
+Create a prominent “Quick Actions” section.
+
+Actions should connect to EXISTING application functionality.
+
+Examples:
+
+- New Sale
+- Purchase Entry
+- Add Medicine
+- Stock Adjustment
+- Manage Suppliers
+- Customer Ledger
+- GST Reports
+- Backup Database
+
+Use actual routes/actions from the project.
+
+If an action does not exist, do not pretend that it works.
+
+==================================================
+9. STOCK OVERVIEW
+==================================================
+
+Create a Stock Overview card.
+
+Show:
+
+- Total Items
+- In Stock
+- Low Stock
+- Out of Stock
+
+Use a clean donut/pie chart or similarly lightweight visualization.
+
+The values must come from the actual inventory database.
+
+Clicking “View All” should navigate to the existing inventory page.
+
+==================================================
+10. ALERTS
+==================================================
+
+Create a right-side Alerts area.
+
+Important pharmacy alerts:
+
+- Low Stock
+- Near Expiry
+- Expired Medicines
+- Other existing system alerts
+
+Use clear severity:
+
+Red = urgent
+Orange = warning
+Green = normal
+
+Each alert should show useful information such as:
+
+Medicine
+Batch
+Expiry
+Stock
+Days remaining
+
+Clicking an alert should open the relevant existing page/details.
+
+Do not create fake alerts.
+
+==================================================
+11. RECENT SALES
+==================================================
+
+Create a Recent Sales table.
+
+Columns can include:
+
+- Date & Time
+- Bill No.
+- Customer
+- Items
+- Amount
+- Status
+
+Use actual recent sales from the database.
+
+Add “View All” linked to the existing Sales/Billing page.
+
+==================================================
+12. TOP SELLING MEDICINES
+==================================================
+
+Create a “Top Selling Medicines” section.
+
+Show:
+
+- Rank
+- Medicine name
+- Quantity sold
+- Revenue
+
+Calculate from existing sales data.
+
+Do not hard-code the ranking.
+
+==================================================
+13. TODAY'S SUMMARY
+==================================================
+
+Create a compact summary section containing:
+
+- Today's Sales
+- Today's Purchase
+- Today's Profit
+- Customer Due
+- Supplier Due
+
+Use real values.
+
+If profit calculation already exists, reuse it.
+
+Do not invent a new profit calculation that conflicts with existing business
+logic.
+
+==================================================
+14. LOW STOCK / NEAR EXPIRY TABLE
+==================================================
+
+Create a practical pharmacy alert table:
+
+Medicine | Current Stock | Reorder Level | Expiry Date | Status
+
+Highlight:
+
+- Low stock
+- Near expiry
+- Expired
+
+Use actual batch-level data where available.
+
+==================================================
+15. QUICK TOOLS
+==================================================
+
+Add a small utility panel if the application already supports these:
+
+- Barcode Scan
+- Database Backup
+- Restore Database
+- GST Reports
+
+These must connect to actual functionality.
+
+Do not create dummy buttons.
+
+==================================================
+16. RESPONSIVE DESKTOP LAYOUT
+==================================================
+
+Optimize primarily for Windows desktop screens.
+
+Target:
+
+1366×768
+1440×900
+1920×1080
+
+The Dashboard should not feel overcrowded.
+
+Use:
+
+- CSS Grid/Flexbox appropriately
+- Consistent card heights
+- Consistent spacing
+- Proper scrolling
+- Sticky sidebar/header only if appropriate
+- No horizontal overflow
+
+At smaller desktop resolutions, the content should gracefully reorganize.
+
+==================================================
+17. COLORS
+==================================================
+
+Use a professional pharmacy palette:
+
+Primary:
+Deep Blue
+
+Secondary:
+Bright Blue
+
+Accent:
+Teal / Green
+
+Warning:
+Orange
+
+Danger:
+Red
+
+Background:
+Very light blue/gray
+
+Cards:
+White
+
+Text:
+Dark navy/gray
+
+Do not use too many unrelated colors.
+
+The interface should remain professional.
+
+==================================================
+18. ICONS
+==================================================
+
+Use the project's existing icon library if one exists.
+
+Otherwise use a consistent modern icon library.
+
+Do NOT mix multiple icon styles.
+
+All icons should have consistent:
+
+- Size
+- Stroke weight
+- Visual style
+
+==================================================
+19. UX DETAILS
+==================================================
+
+Add:
+
+- Hover states
+- Active states
+- Loading states
+- Empty states
+- Error states
+- Tooltips where useful
+- Proper keyboard accessibility
+- Clear focus states
+
+Do not make animations excessive.
+
+Use subtle transitions only.
+
+==================================================
+20. DATA / PERFORMANCE
+==================================================
+
+Dashboard must be efficient.
+
+Avoid unnecessary database queries.
+
+Avoid fetching the entire medicine table just to calculate a small metric.
+
+Use existing optimized queries/services where available.
+
+If multiple dashboard metrics can be fetched efficiently together,
+prefer an appropriate aggregated query/service.
+
+Do not introduce obvious N+1 queries.
+
+Dashboard should load quickly even with a large medicine inventory.
+
+==================================================
+21. WINDOWS DESKTOP QUALITY
+==================================================
+
+This must feel like a real Windows pharmacy application.
+
+Pay attention to:
+
+- Window-sized layout
+- Desktop spacing
+- Sidebar width
+- Header height
+- Table readability
+- Keyboard usability
+- Mouse interaction
+- Search usability
+- Dense but comfortable information presentation
+
+Avoid making it look like a mobile website stretched to desktop.
+
+==================================================
+22. BRANDING
+==================================================
+
+Use:
+
+“My Medical Pharmacy”
+
+Primary branding text:
+
+“My Medical”
+
+Secondary:
+
+“pharmacy shop”
+
+Use the existing logo if available.
+
+Do not replace the logo unnecessarily.
+
+==================================================
+23. DO NOT DO THESE THINGS
+==================================================
+
+DO NOT:
+
+- Rewrite the entire application
+- Replace the existing database
+- Replace existing APIs unnecessarily
+- Delete existing functionality
+- Change unrelated pages
+- Change working business rules
+- Create fake data
+- Hard-code dashboard statistics
+- Create fake navigation routes
+- Add meaningless animations
+- Overload the page with cards
+- Use giant typography
+- Use excessive gradients
+- Use random colors
+- Introduce a second design system
+- Break existing POS/Billing functionality
+- Break Inventory/Batches
+- Break Purchase
+- Break Sales
+- Break GST/Reports
+- Break Customer/Supplier management
+- Break offline/local database functionality
+
+==================================================
+24. IMPLEMENTATION PROCESS
+==================================================
+
+Work in this order:
+
+1. Inspect project.
+2. Identify current Home/Dashboard implementation.
+3. Identify reusable components.
+4. Identify real data sources.
+5. Plan the new dashboard structure.
+6. Implement the UI.
+7. Connect every metric to real data.
+8. Connect every action to existing routes/functions.
+9. Add loading/empty/error states.
+10. Test at 1366×768.
+11. Test at 1440×900.
+12. Test at 1920×1080.
+13. Check for horizontal overflow.
+14. Check navigation.
+15. Check database queries/performance.
+16. Run lint/typecheck/build/tests.
+17. Fix all issues.
+18. Give me a concise implementation summary.
+
+==================================================
+FINAL DESIGN TARGET
+==================================================
+
+The final result should visually feel similar to the attached reference:
+
+- Dark blue professional sidebar
+- White/light dashboard background
+- Blue pharmacy branding
+- Clean top search/header
+- Welcome banner
+- KPI cards
+- Quick Actions
+- Stock Overview
+- Recent Sales
+- Top Selling Medicines
+- Low Stock Alerts
+- Expiry Alerts
+- Today's Summary
+- Due Management
+- System/Database Status
+
+But the implementation must be based on the EXISTING application's
+real functionality and data.
+
+Do not merely create a screenshot-like static UI.
+
+Build a fully functional production-ready Home/Dashboard page.
