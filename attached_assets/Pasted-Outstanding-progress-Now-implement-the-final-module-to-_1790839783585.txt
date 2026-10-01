@@ -1,0 +1,26 @@
+Outstanding progress. Now implement the final module to complete the application: **Reports & Analytics Dashboard, Store Settings, and Database Backup & Restore**.
+
+### 1. Reports & Analytics (`src/components/reports/ReportsView.tsx` and subcomponents)
+- **Date-Range Sales Report:**
+  - Filter by predefined ranges (Today, This Week, This Month, Custom Date Range).
+  - Metrics summary cards: Total Revenue, Gross Profit (Sale Price - Purchase Cost), Total Invoices, and Payment Mode breakdown (Cash vs UPI/Card).
+  - Detailed sales list with invoice number, customer, payment mode, and total.
+- **Inventory & Alert Reports:**
+  - Exportable / printable list for Current Low Stock items.
+  - Exportable / printable list for Expired and Near-Expiry batches (30/60/90 days).
+  - CSV / Print export button for daily reconciliation.
+
+### 2. Store Profile & Thermal Receipt Customization (`src/components/settings/StoreSettings.tsx`)
+- Store settings stored in SQLite (key-value `app_settings` table):
+  - Pharmacy Name, Address, Contact Number, Drug License (D.L.) No., and Receipt Footer Note.
+- Update `ReceiptPrint.tsx` so the printed thermal receipt dynamically uses these store details in the header.
+
+### 3. Database Backup & Restore System (`src/services/backupService.ts` and Rust Tauri commands)
+- **Manual Backup:** Single-click button to export/copy a safe snapshot (`VACUUM INTO` or raw file copy) of `pharmacy.db` to a user-selected folder or pen drive.
+- **Restore:** Ability to select a valid `.db` backup file and restore it with confirmation and integrity checks.
+- **Auto-Backup on Close:** Hook into the Tauri window close requested event (`tauri::WindowEvent::CloseRequested`) to automatically save a dated backup copy (e.g., `backup_YYYY-MM-DD.db`) into an internal `backups/` directory before exiting.
+
+### 4. Final Wiring & Verification
+- Connect `Reports` and `Settings` to the main navigation in `src/App.tsx`.
+- Ensure all routes, state managers, and modals work smoothly.
+- Run complete verification: TypeScript typecheck, Vite build, and `cargo check` to guarantee the entire project compiles cleanly with zero errors.
