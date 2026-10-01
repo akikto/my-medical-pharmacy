@@ -1,1 +1,2 @@
 - [Tauri SQLite transactions](tauri-sqlite-transactions.md) — Use one native transaction command for atomic updates; the SQL plugin exposes pooled queries, not a transaction handle.
+- [Tauri Rust build environment](tauri-rust-build-environment.md) — Rust 1.90 works here; cargo test linking needs zlib's Nix libdir in `LIBRARY_PATH`.

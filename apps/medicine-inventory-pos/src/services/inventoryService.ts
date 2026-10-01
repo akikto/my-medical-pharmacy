@@ -1,4 +1,5 @@
 import {
+  executeSql,
   runInTransaction,
   selectSql,
   type SqlValue,
@@ -9,9 +10,12 @@ import type {
   ExpiryAlert,
   ExpiryHorizonDays,
   FefoAllocation,
+  InventoryFilter,
   LowStockAlert,
   Medicine,
   MedicineBatch,
+  MedicineFormValues,
+  MedicineInventoryRow,
   MedicineSearchResult,
 } from "../types";
 
@@ -41,10 +45,215 @@ export class InventoryError extends Error {
   }
 }
 
+function escapeLikeTerm(term: string): string {
+  return `%${term.replace(/[!%_]/g, "!$&")}%`;
+}
+
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new InventoryError(`${label} must be a positive whole number.`);
   }
+}
+
+function normalizeMedicineInput(input: MedicineFormValues): SqlValue[] {
+  const name = input.name.trim();
+  const genericName = input.generic_name.trim();
+  const company = input.company.trim();
+  const rackLocation = input.rack_location.trim();
+  if (!name || name.length > 120) {
+    throw new InventoryError("Medicine name is required and must be 120 characters or fewer.");
+  }
+  if (genericName.length > 150 || company.length > 120 || rackLocation.length > 80) {
+    throw new InventoryError("Generic name, company, or rack location exceeds its character limit.");
+  }
+  if (!Number.isSafeInteger(input.min_stock_alert) || input.min_stock_alert < 0 || input.min_stock_alert > 1_000_000_000) {
+    throw new InventoryError("Low-stock alert must be a whole number from 0 to 1,000,000,000.");
+  }
+  return [
+    name,
+    genericName || null,
+    company || null,
+    rackLocation || null,
+    input.min_stock_alert,
+  ];
+}
+
+function normalizeRate(value: number, label: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new InventoryError(`${label} must be a valid non-negative amount.`);
+  }
+  const cents = Math.round((value + Number.EPSILON) * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new InventoryError(`${label} exceeds the supported amount.`);
+  }
+  return cents / 100;
+}
+
+export async function getInventoryMedicines(
+  searchTerm = "",
+): Promise<MedicineInventoryRow[]> {
+  const term = searchTerm.trim();
+  const pattern = term ? escapeLikeTerm(term) : null;
+  return selectSql<MedicineInventoryRow[]>(
+    `SELECT
+       m.id,
+       m.name,
+       m.generic_name,
+       m.company,
+       m.rack_location,
+       m.min_stock_alert,
+       m.created_at,
+       COALESCE(SUM(CASE
+         WHEN b.expiry_date >= date('now', 'localtime')
+         THEN b.current_stock ELSE 0 END), 0) AS available_stock,
+       COALESCE(SUM(CASE
+         WHEN b.expiry_date < date('now', 'localtime')
+         THEN b.current_stock ELSE 0 END), 0) AS expired_stock,
+       COALESCE(SUM(CASE
+         WHEN b.expiry_date >= date('now', 'localtime')
+          AND b.expiry_date <= date('now', 'localtime', '+30 days')
+         THEN b.current_stock ELSE 0 END), 0) AS near_expiry_stock,
+       COUNT(b.id) AS batch_count
+     FROM medicines AS m
+     LEFT JOIN medicine_batches AS b ON b.medicine_id = m.id
+     WHERE $1 IS NULL
+        OR m.name LIKE $1 ESCAPE '!'
+        OR COALESCE(m.generic_name, '') LIKE $1 ESCAPE '!'
+        OR COALESCE(m.company, '') LIKE $1 ESCAPE '!'
+        OR COALESCE(m.rack_location, '') LIKE $1 ESCAPE '!'
+     GROUP BY m.id
+     ORDER BY m.name COLLATE NOCASE ASC, m.id ASC`,
+    [pattern],
+  );
+}
+
+export async function createMedicine(input: MedicineFormValues): Promise<EntityId> {
+  const [name, genericName, company, rackLocation, minStockAlert] =
+    normalizeMedicineInput(input);
+  const result = await executeSql(
+    `INSERT INTO medicines (name, generic_name, company, rack_location, min_stock_alert)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [name, genericName, company, rackLocation, minStockAlert],
+  );
+  const medicineId = result.lastInsertId;
+  if (
+    result.rowsAffected !== 1 ||
+    typeof medicineId !== "number" ||
+    !Number.isSafeInteger(medicineId) ||
+    medicineId <= 0
+  ) {
+    throw new InventoryError("The medicine could not be saved.");
+  }
+  return medicineId;
+}
+
+export async function updateMedicine(
+  medicineId: EntityId,
+  input: MedicineFormValues,
+): Promise<void> {
+  assertPositiveInteger(medicineId, "Medicine id");
+  const [name, genericName, company, rackLocation, minStockAlert] =
+    normalizeMedicineInput(input);
+  await runInTransaction([
+    {
+      query: `UPDATE medicines
+              SET name = $1, generic_name = $2, company = $3,
+                  rack_location = $4, min_stock_alert = $5
+              WHERE id = $6`,
+      values: [name, genericName, company, rackLocation, minStockAlert, medicineId],
+      expectedRowsAffected: 1,
+    },
+  ]);
+}
+
+export async function deleteMedicine(medicineId: EntityId): Promise<void> {
+  assertPositiveInteger(medicineId, "Medicine id");
+  await runInTransaction([
+    {
+      query: "DELETE FROM medicines WHERE id = $1",
+      values: [medicineId],
+      expectedRowsAffected: 1,
+    },
+  ]);
+}
+
+export async function getMedicineBatches(
+  medicineId: EntityId,
+): Promise<MedicineBatch[]> {
+  assertPositiveInteger(medicineId, "Medicine id");
+  return selectSql<MedicineBatch[]>(
+    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
+            sale_rate, current_stock, barcode
+     FROM medicine_batches
+     WHERE medicine_id = $1
+     ORDER BY expiry_date ASC, batch_no COLLATE NOCASE ASC, id ASC`,
+    [medicineId],
+  );
+}
+
+export async function updateBatchDetails(input: {
+  batchId: EntityId;
+  medicineId: EntityId;
+  mrp: number;
+  saleRate: number;
+  rackLocation: string;
+}): Promise<void> {
+  assertPositiveInteger(input.batchId, "Batch id");
+  assertPositiveInteger(input.medicineId, "Medicine id");
+  const mrp = normalizeRate(input.mrp, "MRP");
+  const saleRate = normalizeRate(input.saleRate, "Sale rate");
+  const rackLocation = input.rackLocation.trim();
+  if (rackLocation.length > 80) {
+    throw new InventoryError("Rack location must be 80 characters or fewer.");
+  }
+  await runInTransaction([
+    {
+      query: "UPDATE medicine_batches SET mrp = $1, sale_rate = $2 WHERE id = $3 AND medicine_id = $4",
+      values: [mrp, saleRate, input.batchId, input.medicineId],
+      expectedRowsAffected: 1,
+    },
+    {
+      query: "UPDATE medicines SET rack_location = $1 WHERE id = $2",
+      values: [rackLocation || null, input.medicineId],
+      expectedRowsAffected: 1,
+    },
+  ]);
+}
+
+export async function adjustBatchStock(input: {
+  batchId: EntityId;
+  medicineId: EntityId;
+  quantityChange: number;
+  reason: string;
+}): Promise<void> {
+  assertPositiveInteger(input.batchId, "Batch id");
+  assertPositiveInteger(input.medicineId, "Medicine id");
+  if (!Number.isSafeInteger(input.quantityChange) || input.quantityChange === 0) {
+    throw new InventoryError("Enter a non-zero whole-number stock adjustment.");
+  }
+  if (Math.abs(input.quantityChange) > 1_000_000_000) {
+    throw new InventoryError("A single stock adjustment cannot exceed 1,000,000,000 units.");
+  }
+  const reason = input.reason.trim();
+  if (!reason || reason.length > 250) {
+    throw new InventoryError("Enter an adjustment reason of 1 to 250 characters.");
+  }
+  await runInTransaction([
+    {
+      query: `UPDATE medicine_batches
+              SET current_stock = current_stock + $1
+              WHERE id = $2 AND medicine_id = $3
+                AND current_stock + $1 BETWEEN 0 AND 1000000000`,
+      values: [input.quantityChange, input.batchId, input.medicineId],
+      expectedRowsAffected: 1,
+    },
+    {
+      query: `INSERT INTO stock_adjustments (medicine_id, batch_id, quantity_change, reason)
+              VALUES ($1, $2, $3, $4)`,
+      values: [input.medicineId, input.batchId, input.quantityChange, reason],
+      expectedRowsAffected: 1,
+    },
+  ]);
 }
 
 function toMedicineBatch(row: MedicineSearchRow): MedicineBatch | null {
@@ -86,7 +295,7 @@ export async function searchMedicines(
     throw new InventoryError("Search limit must be between 1 and 100.");
   }
 
-  const pattern = `%${term.replace(/[\\%_]/g, "\\$&")}%`;
+  const pattern = escapeLikeTerm(term);
   const rows = await selectSql<MedicineSearchRow[]>(
     `SELECT
        m.id,
@@ -125,15 +334,15 @@ export async function searchMedicines(
             candidate.id ASC
          LIMIT 1
        )
-     WHERE m.name LIKE $1 ESCAPE '\\'
-        OR COALESCE(m.generic_name, '') LIKE $1 ESCAPE '\\'
-        OR COALESCE(m.company, '') LIKE $1 ESCAPE '\\'
+      WHERE m.name LIKE $1 ESCAPE '!'
+         OR COALESCE(m.generic_name, '') LIKE $1 ESCAPE '!'
+         OR COALESCE(m.company, '') LIKE $1 ESCAPE '!'
         OR EXISTS (
           SELECT 1 FROM medicine_batches AS barcode_batch
           WHERE barcode_batch.medicine_id = m.id
             AND (
               barcode_batch.barcode = $2
-              OR barcode_batch.barcode LIKE $1 ESCAPE '\\'
+              OR barcode_batch.barcode LIKE $1 ESCAPE '!'
             )
         )
      ORDER BY
