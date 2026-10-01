@@ -96,6 +96,16 @@ const migrations: readonly Migration[] = [
       "CREATE INDEX idx_batches_barcode ON medicine_batches(barcode) WHERE barcode IS NOT NULL",
     ],
   },
+  {
+    version: 2,
+    statements: [
+      "ALTER TABLE sales ADD COLUMN flat_discount REAL NOT NULL DEFAULT 0 CHECK (flat_discount >= 0)",
+      "ALTER TABLE sales ADD COLUMN cash_tendered REAL NOT NULL DEFAULT 0 CHECK (cash_tendered >= 0)",
+      "ALTER TABLE sales ADD COLUMN change_due REAL NOT NULL DEFAULT 0 CHECK (change_due >= 0)",
+      "ALTER TABLE sale_items ADD COLUMN item_discount REAL NOT NULL DEFAULT 0 CHECK (item_discount >= 0)",
+      "CREATE INDEX idx_sales_created_at ON sales(created_at DESC, id DESC)",
+    ],
+  },
 ];
 
 let databasePromise: Promise<Database> | null = null;

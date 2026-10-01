@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.0",
