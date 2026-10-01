@@ -100,7 +100,7 @@ export async function searchMedicines(
          SELECT SUM(stock_batch.current_stock)
          FROM medicine_batches AS stock_batch
          WHERE stock_batch.medicine_id = m.id
-           AND stock_batch.expiry_date >= date('now')
+            AND stock_batch.expiry_date >= date('now', 'localtime')
        ), 0) AS available_stock,
        b.id AS batch_id,
        b.medicine_id AS batch_medicine_id,
@@ -118,8 +118,11 @@ export async function searchMedicines(
          FROM medicine_batches AS candidate
          WHERE candidate.medicine_id = m.id
            AND candidate.current_stock > 0
-           AND candidate.expiry_date >= date('now')
-         ORDER BY candidate.expiry_date ASC, candidate.id ASC
+            AND candidate.expiry_date >= date('now', 'localtime')
+          ORDER BY
+            CASE WHEN candidate.barcode = $2 THEN 0 ELSE 1 END,
+            candidate.expiry_date ASC,
+            candidate.id ASC
          LIMIT 1
        )
      WHERE m.name LIKE $1 ESCAPE '\\'
@@ -169,12 +172,28 @@ export async function getFefoBatch(
      FROM medicine_batches
      WHERE medicine_id = $1
        AND current_stock > 0
-       AND expiry_date >= date('now')
+       AND expiry_date >= date('now', 'localtime')
      ORDER BY expiry_date ASC, id ASC
      LIMIT 1`,
     [medicineId],
   );
   return batches[0] ?? null;
+}
+
+export async function getSellableBatches(
+  medicineId: EntityId,
+): Promise<MedicineBatch[]> {
+  assertPositiveInteger(medicineId, "Medicine id");
+  return selectSql<MedicineBatch[]>(
+    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
+            sale_rate, current_stock, barcode
+     FROM medicine_batches
+     WHERE medicine_id = $1
+       AND current_stock > 0
+       AND expiry_date >= date('now', 'localtime')
+     ORDER BY expiry_date ASC, id ASC`,
+    [medicineId],
+  );
 }
 
 export async function allocateFefoStock(
@@ -189,7 +208,7 @@ export async function allocateFefoStock(
      FROM medicine_batches
      WHERE medicine_id = $1
        AND current_stock > 0
-       AND expiry_date >= date('now')
+       AND expiry_date >= date('now', 'localtime')
      ORDER BY expiry_date ASC, id ASC`,
     [medicineId],
   );
@@ -242,7 +261,7 @@ export async function deductStockFromBatches(
               SET current_stock = current_stock - $1
               WHERE id = $2
                 AND current_stock >= $1
-                AND expiry_date >= date('now')`,
+                AND expiry_date >= date('now', 'localtime')`,
       values: [quantity, batchId],
       expectedRowsAffected: 1,
     }),
@@ -282,7 +301,7 @@ export async function getLowStockAlerts(): Promise<LowStockAlert[]> {
      FROM medicines AS m
      LEFT JOIN medicine_batches AS b
        ON b.medicine_id = m.id
-      AND b.expiry_date >= date('now')
+       AND b.expiry_date >= date('now', 'localtime')
      GROUP BY m.id
      HAVING COALESCE(SUM(b.current_stock), 0) <= m.min_stock_alert
      ORDER BY available_stock ASC, m.name COLLATE NOCASE ASC`,
@@ -305,16 +324,16 @@ export async function getExpiryAlerts(
        b.current_stock,
        b.barcode,
        m.name AS medicine_name,
-       CAST(julianday(b.expiry_date) - julianday(date('now')) AS INTEGER)
+       CAST(julianday(b.expiry_date) - julianday(date('now', 'localtime')) AS INTEGER)
          AS days_until_expiry,
        CASE
-         WHEN b.expiry_date < date('now') THEN 'expired'
+         WHEN b.expiry_date < date('now', 'localtime') THEN 'expired'
          ELSE 'expiring'
        END AS status
      FROM medicine_batches AS b
      INNER JOIN medicines AS m ON m.id = b.medicine_id
      WHERE b.current_stock > 0
-       AND b.expiry_date <= date('now', $1)
+       AND b.expiry_date <= date('now', 'localtime', $1)
      ORDER BY b.expiry_date ASC, m.name COLLATE NOCASE ASC, b.id ASC`,
     [modifier],
   );

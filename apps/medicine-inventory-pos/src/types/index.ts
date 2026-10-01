@@ -58,8 +58,11 @@ export interface Sale {
   customer_phone: string | null;
   subtotal: number;
   discount: number;
+  flat_discount: number;
   grand_total: number;
   payment_mode: PaymentMode;
+  cash_tendered: number;
+  change_due: number;
   created_at: ISODateTime;
 }
 
@@ -69,7 +72,42 @@ export interface SaleItem {
   batch_id: EntityId;
   quantity: number;
   unit_price: number;
+  item_discount: number;
   total_price: number;
+}
+
+export interface SaleItemDetail extends SaleItem {
+  medicine_name: string;
+  generic_name: string | null;
+  batch_no: string;
+  expiry_date: ISODate;
+}
+
+export interface SaleDetails {
+  sale: Sale;
+  items: SaleItemDetail[];
+}
+
+export interface RecentSale {
+  sale: Sale;
+  item_count: number;
+}
+
+export interface CheckoutSaleItem {
+  medicine_id: EntityId;
+  batch_id: EntityId;
+  quantity: number;
+  unit_price: number;
+  item_discount: number;
+}
+
+export interface CheckoutSaleInput {
+  customer_name: string | null;
+  customer_phone: string | null;
+  payment_mode: PaymentMode;
+  flat_discount: number;
+  cash_tendered: number;
+  items: CheckoutSaleItem[];
 }
 
 export interface FefoAllocation {
@@ -112,6 +150,8 @@ export interface CartItem {
   expiry_date: ISODate;
   quantity: number;
   unit_price: number;
+  item_discount: number;
+  available_in_batch: number;
   line_total: number;
 }
 
