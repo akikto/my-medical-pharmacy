@@ -1,0 +1,74 @@
+The Home Dashboard implementation and visual polish are complete.
+
+Do NOT make any new design or functionality changes yet.
+
+Perform a REAL Tauri desktop-app visual verification of the populated
+Home Dashboard using the actual local database/native SQL bridge.
+
+IMPORTANT:
+
+- Do NOT use plain Chromium as the final visual verification environment.
+- Do NOT add mock data.
+- Do NOT modify production business logic just for screenshots.
+- Do NOT replace the native SQL bridge with a browser workaround.
+- Use the actual Tauri desktop runtime used by the application.
+- Use the existing local pharmacy database/data.
+
+Verification checklist:
+
+1. Launch the actual Tauri desktop application.
+2. Open the Home Dashboard.
+3. Verify that real data loads successfully.
+4. Verify KPI cards.
+5. Verify Today's Sales.
+6. Verify Gross Profit.
+7. Verify Purchase data.
+8. Verify Stock Value.
+9. Verify Recent Sales.
+10. Verify Top-selling Medicines.
+11. Verify Low Stock alerts.
+12. Verify Expiry alerts.
+13. Verify Quick Actions.
+14. Verify medicine search.
+15. Verify clicking a medicine search result opens POS Billing correctly.
+16. Verify alert rows open Inventory correctly.
+17. Verify Backup opens the existing Settings screen.
+18. Verify the dashboard does not show blank/error states when the native
+    database is available.
+19. Verify there is no horizontal overflow.
+20. Verify the layout at:
+    - 1366×768
+    - 1440×900
+    - 1920×1080
+
+Also verify:
+
+- INR formatting
+- Text readability
+- Card alignment
+- Sidebar alignment
+- Alert visibility
+- Table readability
+- Scrolling behavior
+- Loading state
+- Empty state
+- Database/native bridge errors
+
+If anything is visually incorrect, fix ONLY the Dashboard presentation
+unless the problem is caused by an existing data-loading bug.
+
+Do not introduce mock data.
+
+After verification run:
+
+- workspace typecheck
+- production build
+- git diff --check
+
+Finally report:
+
+A. What was visually verified successfully
+B. Any issues found
+C. Any fixes made
+D. Confirmation that business logic, database schema, routes, POS Billing,
+   Inventory, Purchase and other existing screens were not changed
