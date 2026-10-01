@@ -1,0 +1,160 @@
+export type EntityId = number;
+export type ISODate = string;
+export type ISODateTime = string;
+
+export interface Medicine {
+  id: EntityId;
+  name: string;
+  generic_name: string | null;
+  company: string | null;
+  rack_location: string | null;
+  min_stock_alert: number;
+  created_at: ISODateTime;
+}
+
+export interface MedicineBatch {
+  id: EntityId;
+  medicine_id: EntityId;
+  batch_no: string;
+  expiry_date: ISODate;
+  purchase_rate: number;
+  mrp: number;
+  sale_rate: number;
+  current_stock: number;
+  barcode: string | null;
+}
+
+export interface Supplier {
+  id: EntityId;
+  name: string;
+  phone: string | null;
+  address: string | null;
+  balance_due: number;
+}
+
+export interface Purchase {
+  id: EntityId;
+  invoice_no: string;
+  supplier_id: EntityId | null;
+  total_amount: number;
+  purchase_date: ISODate;
+}
+
+export interface PurchaseItem {
+  id: EntityId;
+  purchase_id: EntityId;
+  batch_id: EntityId;
+  quantity: number;
+  rate: number;
+  total: number;
+}
+
+export type PaymentMode = "CASH" | "CARD" | "UPI" | "CREDIT" | "OTHER";
+
+export interface Sale {
+  id: EntityId;
+  invoice_no: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  subtotal: number;
+  discount: number;
+  grand_total: number;
+  payment_mode: PaymentMode;
+  created_at: ISODateTime;
+}
+
+export interface SaleItem {
+  id: EntityId;
+  sale_id: EntityId;
+  batch_id: EntityId;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+}
+
+export interface FefoAllocation {
+  batch: MedicineBatch;
+  quantity: number;
+}
+
+export interface MedicineSearchResult {
+  medicine: Medicine;
+  available_stock: number;
+  fefo_batch: MedicineBatch | null;
+}
+
+export interface LowStockAlert {
+  medicine_id: EntityId;
+  name: string;
+  generic_name: string | null;
+  company: string | null;
+  rack_location: string | null;
+  min_stock_alert: number;
+  available_stock: number;
+}
+
+export type ExpiryAlertStatus = "expired" | "expiring";
+export type ExpiryHorizonDays = 30 | 60 | 90;
+
+export interface ExpiryAlert {
+  batch: MedicineBatch;
+  medicine_name: string;
+  days_until_expiry: number;
+  status: ExpiryAlertStatus;
+}
+
+export interface CartItem {
+  medicine_id: EntityId;
+  batch_id: EntityId;
+  medicine_name: string;
+  generic_name: string | null;
+  batch_no: string;
+  expiry_date: ISODate;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+}
+
+export interface CartState {
+  items: CartItem[];
+  customer_name: string;
+  customer_phone: string;
+  discount: number;
+  payment_mode: PaymentMode;
+  cash_tendered: number;
+}
+
+export type AppSection =
+  | "pos"
+  | "inventory"
+  | "purchases"
+  | "suppliers"
+  | "sales"
+  | "reports"
+  | "settings";
+
+export type AsyncStatus = "idle" | "loading" | "ready" | "error";
+
+export interface AsyncState<T> {
+  status: AsyncStatus;
+  data: T | null;
+  error: string | null;
+}
+
+export interface UiState {
+  activeSection: AppSection;
+  isSidebarCollapsed: boolean;
+  activeDialog: "medicine" | "batch" | "purchase" | "supplier" | null;
+  isSaving: boolean;
+  notification: {
+    kind: "success" | "error" | "warning";
+    message: string;
+  } | null;
+}
+
+export interface PosState {
+  searchQuery: string;
+  selectedResultIndex: number;
+  cart: CartState;
+  isCompletingSale: boolean;
+}

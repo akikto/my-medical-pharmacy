@@ -1,0 +1,26 @@
+{
+  "name": "@workspace/medicine-inventory-pos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.1",
+    "@tauri-apps/plugin-sql": "^2.5.0",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "catalog:",
+    "@tauri-apps/cli": "^2.12.1",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "^5.9.3",
+    "vite": "catalog:"
+  }
+}

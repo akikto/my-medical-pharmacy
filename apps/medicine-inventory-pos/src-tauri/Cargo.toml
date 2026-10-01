@@ -1,0 +1,19 @@
+[package]
+name = "medicine-inventory-pos"
+version = "0.1.0"
+description = "Offline medicine inventory and point-of-sale desktop application"
+edition = "2021"
+
+[lib]
+name = "medicine_inventory_pos_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
