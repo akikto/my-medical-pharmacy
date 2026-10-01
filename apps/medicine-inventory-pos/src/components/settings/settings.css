@@ -257,6 +257,53 @@
   line-height: 1.5;
 }
 
+.dev-demo-card {
+  padding: 0 14px 14px;
+  background: linear-gradient(180deg, #fffdf7, #fffefa);
+  border-color: #ecdfbc;
+}
+
+.dev-demo-card .settings-card-heading {
+  min-height: 68px;
+  border-color: #f1ead7;
+}
+
+.settings-heading-mark--dev {
+  color: #8a6b20;
+  background: #fff6dc;
+  border-color: #f1e5bf;
+}
+
+.dev-demo-label {
+  color: #98751f;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.dev-demo-safety {
+  margin: 12px 0;
+  color: #7d735d;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.dev-demo-button {
+  width: 100%;
+  min-height: 36px;
+  justify-content: center;
+  color: #75622f;
+  background: #fffaf0;
+  border-color: #eaddb8;
+  font-size: 9px;
+}
+
+.dev-demo-button:hover:not(:disabled) {
+  color: #614d1c;
+  background: #fff4d7;
+  border-color: #deca91;
+}
+
 .settings-notice {
   margin: 0 0 1px;
 }
