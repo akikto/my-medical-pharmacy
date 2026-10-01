@@ -1,0 +1,177 @@
+Next step: perform a PRODUCTION-READINESS AUDIT of the current My Medical Pharmacy Tauri application.
+
+This is NOT a UI redesign.
+
+IMPORTANT:
+- Freeze the current Home dashboard and overall UI.
+- Do not make cosmetic redesigns.
+- Do not change business rules unless a real defect is discovered.
+- Do not modify the existing development database.
+- Do not seed, reset, delete, or alter the current development data.
+- Do not create test transactions in the current database.
+- Do not change database schema, routes, or architecture unless absolutely required to fix a confirmed production-blocking defect.
+
+Use a SEPARATE temporary test database/environment for any test that must create, update, delete, purchase, sell, backup, restore, or otherwise mutate data.
+
+Audit the following:
+
+1. FIRST LAUNCH / EMPTY DATABASE
+- Determine exactly what happens when the application starts with a completely empty database.
+- Verify Home does not require demo data.
+- Verify all pages remain usable.
+- Verify appropriate empty states.
+- Verify no sample/mock production data appears.
+- Verify pharmacy settings can be configured from an empty database.
+
+2. MEDICINE + BATCH + STOCK WORKFLOW
+Using the isolated test database:
+- Create a medicine using the existing workflow.
+- Add/create its batch using the existing workflow.
+- Verify batch number, expiry, purchase rate, MRP/sale rate, quantity and stock values.
+- Verify the medicine becomes searchable in POS.
+- Verify no duplicate or inconsistent stock records are created.
+
+3. PURCHASE → STOCK
+Using isolated test data:
+- Create one purchase.
+- Verify purchase total.
+- Verify stock increases correctly.
+- Verify batch information remains correct.
+- Verify purchase history records the transaction.
+- Verify reports reflect the purchase.
+- Verify no double stock increment occurs.
+
+4. POS SALE → STOCK
+Using isolated test data:
+- Sell the test medicine.
+- Verify FEFO chooses the appropriate batch when multiple valid batches exist.
+- Verify stock decreases exactly by the sold quantity.
+- Verify invoice total and payment information.
+- Verify sale history and reports reflect the transaction.
+- Verify the receipt/invoice shows correct information.
+- Verify stock cannot become negative through normal UI operation.
+
+5. DISCOUNTS / TOTALS
+Test existing supported calculations:
+- item-level discount
+- flat/bill discount
+- quantity multiplication
+- final payable amount
+- paid amount
+- change
+- zero/empty bill behavior
+- rounding behavior if applicable
+
+Do not invent unsupported tax behavior.
+
+6. EXPIRY / FEFO
+Using isolated test data:
+- Create multiple batches with different expiry dates.
+- Verify FEFO behavior.
+- Verify expired batches cannot be incorrectly sold if the existing business rule prevents it.
+- Verify near-expiry and expired reporting.
+- Verify stock calculations remain correct.
+
+7. INVOICE / RECEIPT
+- Verify invoice number uniqueness.
+- Verify date/time.
+- Verify customer information where supported.
+- Verify medicine/item details.
+- Verify quantity, rate, discount, total, paid and change.
+- Verify reopening an existing invoice does not mutate it.
+- Verify print/receipt functionality if implemented.
+
+8. BACKUP / RESTORE
+ONLY in the isolated test environment:
+- Create test records.
+- Create a backup using the actual Settings backup workflow.
+- Change/add test data.
+- Restore the backup.
+- Verify the expected pre-backup state is restored.
+- Verify database integrity after restore.
+- Verify the app can continue operating after restore.
+- Do NOT touch the current development database.
+
+9. APP RESTART / PERSISTENCE
+- Close and reopen the app using the normal Tauri lifecycle.
+- Verify data persists.
+- Verify Home loads correctly.
+- Verify sidebar/navigation remains functional.
+- Verify no stale UI state remains after restart.
+
+10. DATABASE ERROR / RECOVERY
+- Review the existing database error and retry handling.
+- Determine whether the app can recover from a transient database failure.
+- Do not corrupt the real development database.
+- If fault injection is impractical, perform a source-level audit and clearly state that it was not runtime-tested.
+
+11. SETTINGS
+In isolated environment:
+- Save pharmacy name/address/contact/license if supported.
+- Restart app.
+- Verify values persist.
+- Verify Home/header/receipt uses the saved settings where applicable.
+- Verify blank settings behave correctly.
+
+12. PRODUCTION BUILD / WINDOWS
+Audit the actual production build configuration:
+- Tauri production build
+- Windows packaging configuration
+- app name
+- executable/bundle identity
+- icons
+- database location
+- writable database path
+- startup behavior
+- local-only/offline behavior
+- whether development-only demo/seed code is excluded or safely disabled in production
+
+Do not publish or upload anything.
+
+13. SECURITY / DATA SAFETY
+Review:
+- database file location
+- backup/restore safety
+- accidental destructive operations
+- production demo-data protection
+- development-only code guards
+- local data handling
+- whether user-entered pharmacy/business data can be unintentionally overwritten
+
+Do not claim security guarantees; report only what was actually verified.
+
+14. REGRESSION CHECK
+Confirm the previous QA remains intact:
+- Home
+- POS
+- Inventory
+- Purchases
+- Suppliers
+- Sales History
+- Reports
+- Settings
+- 1366×768
+- 1440×960
+- 1920×1080
+- no horizontal overflow
+
+15. VERIFICATION
+Run:
+- workspace typecheck
+- production build using the project's required configuration
+- git diff --check
+- SQLite integrity check where applicable
+
+At the end provide:
+
+A. PRODUCTION READINESS SUMMARY
+B. PASS / FAIL / NOT TESTED for every audit section
+C. Any real defects discovered
+D. Exact fixes made, if any
+E. Confirmation that the current development database was NOT modified
+F. Confirmation that Home was NOT redesigned
+G. Confirmation that no demo data was added to production paths
+H. Build/typecheck/git diff results
+I. Any remaining risks or items that require manual Windows testing
+
+If no blocking defect is found, do not make unnecessary changes. Leave the app on Home.

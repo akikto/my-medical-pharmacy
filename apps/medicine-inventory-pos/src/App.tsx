@@ -20,14 +20,10 @@ import { DashboardPage } from "./components/dashboard/DashboardPage";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
+import { SalesPage } from "./components/sales/SalesPage";
 import { ReportsView } from "./components/reports/ReportsView";
 import { StoreSettings } from "./components/settings/StoreSettings";
 import "./components/workspace/workspace.css";
-
-type UnavailableSectionId = Exclude<
-  AppSection,
-  "home" | "pos" | "inventory" | "purchases" | "suppliers" | "reports" | "settings"
->;
 
 const navigation: Array<{
   id: AppSection;
@@ -43,35 +39,6 @@ const navigation: Array<{
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
-
-const sectionDetails: Record<
-  UnavailableSectionId,
-  { title: string; description: string; icon: typeof Pill }
-> = {
-  sales: {
-    title: "Sales",
-    description: "Open recent invoices from the POS Billing screen.",
-    icon: ClipboardList,
-  },
-};
-
-function UnavailableSection({ section }: { section: UnavailableSectionId }) {
-  const details = sectionDetails[section];
-  const Icon = details.icon;
-
-  return (
-    <section className="section-unavailable" data-testid={`panel-${section}`}>
-      <div className="section-unavailable-icon"><Icon size={24} /></div>
-      <span className="eyebrow">MY MEDICAL WORKSPACE</span>
-      <h1>{details.title}</h1>
-      <p>{details.description}</p>
-      <div className="section-unavailable-note">
-        <ShieldCheck size={16} />
-        <span>Sales and stock records continue to be stored locally on this device.</span>
-      </div>
-    </section>
-  );
-}
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("home");
@@ -213,6 +180,8 @@ export default function App() {
           <PurchasesPage />
         ) : activeSection === "suppliers" ? (
           <SuppliersPage />
+        ) : activeSection === "sales" ? (
+          <SalesPage />
         ) : activeSection === "reports" ? (
           <ReportsView />
         ) : activeSection === "settings" ? (
@@ -222,7 +191,7 @@ export default function App() {
             }}
           />
         ) : (
-          <UnavailableSection section={activeSection} />
+          null
         )}
       </main>
     </div>

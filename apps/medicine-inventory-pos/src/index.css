@@ -294,7 +294,7 @@ button:disabled {
   align-items: center;
   gap: 10px;
   color: #87968f;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .crumb-divider {
@@ -311,7 +311,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   color: #628273;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 620;
 }
 
@@ -362,7 +362,15 @@ button:disabled {
 .pos-page-header p {
   margin: 7px 0 0;
   color: #788a81;
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.pos-workspace .page-kicker {
+  font-size: 10px;
+}
+
+.pos-workspace .keyboard-hint {
+  font-size: 11px;
 }
 
 .keyboard-hint {
@@ -923,7 +931,7 @@ kbd {
   height: 35px;
   padding: 0 9px;
   color: #91a097;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 720;
   letter-spacing: 0.045em;
   text-align: left;
@@ -949,8 +957,12 @@ kbd {
   height: 63px;
   padding: 7px 9px;
   color: #557065;
-  font-size: 10px;
+  font-size: 11px;
   border-bottom: 1px solid #f0f3f1;
+}
+
+.recent-sales-table td {
+  font-size: 11px;
 }
 
 .cart-table tbody tr {
@@ -989,14 +1001,14 @@ kbd {
   overflow: hidden;
   max-width: 145px;
   color: #355448;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 680;
   text-overflow: ellipsis;
 }
 
 .cart-product small {
   color: #95a29b;
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .batch-cell {
@@ -1620,6 +1632,11 @@ kbd {
   color: #496655;
   font-size: 9px;
   font-weight: 670;
+}
+
+.pos-workspace .field-label {
+  gap: 6px;
+  font-size: 10px;
 }
 
 .field-optional {
@@ -2554,5 +2571,58 @@ kbd {
     width: 58mm !important;
     padding: 3mm !important;
     font-size: 7pt !important;
+  }
+}
+
+@media screen and (min-width: 681px) {
+  .app-shell:not(.app-shell--home) .eyebrow,
+  .app-shell:not(.app-shell--home) .topbar-crumb,
+  .app-shell:not(.app-shell--home) .topbar-status,
+  .app-shell:not(.app-shell--home) .section-unavailable-note,
+  .app-shell:not(.app-shell--home) .payment-fieldset legend,
+  .app-shell:not(.app-shell--home) .payment-mode-option,
+  .app-shell:not(.app-shell--home) .field-optional,
+  .app-shell:not(.app-shell--home) .change-preview span,
+  .app-shell:not(.app-shell--home) .receipt-actions p,
+  .app-shell:not(.app-shell--home) .receipt-width-select,
+  .app-shell:not(.app-shell--home) .receipt-width-select select,
+  .app-shell:not(.app-shell--home) .receipt-action-controls .button {
+    font-size: 10px;
+  }
+
+  .pos-workspace .keycap,
+  .pos-workspace kbd,
+  .pos-workspace .search-card-label span,
+  .pos-workspace .cart-title-wrap span,
+  .pos-workspace .summary-card-header span,
+  .pos-workspace .recent-sales-title span,
+  .pos-workspace .search-keycap,
+  .pos-workspace .result-main span,
+  .pos-workspace .result-stock span,
+  .pos-workspace .search-results-footer,
+  .pos-workspace .search-results-footer kbd,
+  .pos-workspace .search-assurance span,
+  .pos-workspace .button-quiet,
+  .pos-workspace .cart-table th,
+  .pos-workspace .cart-product small,
+  .pos-workspace .batch-cell > strong,
+  .pos-workspace .expiry-badge,
+  .pos-workspace .discount-input input,
+  .pos-workspace .cart-footer-note,
+  .pos-workspace .summary-row small,
+  .pos-workspace .payable-block > small,
+  .pos-workspace .payable-block > span,
+  .pos-workspace .payment-summary .summary-row,
+  .pos-workspace .secure-note,
+  .pos-workspace .shortcut-row,
+  .pos-workspace .shortcut-row kbd,
+  .pos-workspace .recent-sales-table th,
+  .pos-workspace .recent-sales-table td,
+  .pos-workspace .invoice-code,
+  .pos-workspace .open-invoice-button,
+  .pos-workspace .payment-pill,
+  .pos-workspace .pos-bottom-note,
+  .pos-workspace .field-label {
+    font-size: 10px;
   }
 }

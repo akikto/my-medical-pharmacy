@@ -474,3 +474,24 @@
     align-items: flex-start;
   }
 }
+
+@media screen and (min-width: 681px) {
+  .settings-page .settings-private-badge,
+  .settings-page .settings-card-heading p,
+  .settings-page .settings-field > span,
+  .settings-page .settings-save-state,
+  .settings-page .backup-assurance strong,
+  .settings-page .backup-actions .button,
+  .settings-page .settings-device-note strong,
+  .settings-page .dev-demo-button,
+  .settings-page .restore-file-label span,
+  .settings-page .settings-field > small,
+  .settings-page .backup-assurance small,
+  .settings-page .backup-caution,
+  .settings-page .settings-device-note p,
+  .settings-page .dev-demo-safety,
+  .settings-page .dev-demo-label,
+  .settings-page .settings-restore-dialog .eyebrow {
+    font-size: 10px;
+  }
+}

@@ -338,3 +338,16 @@
     gap: 8px;
   }
 }
+
+@media screen and (min-width: 681px) {
+  .inventory-page .inventory-metric-label,
+  .inventory-page .inventory-filters button,
+  .inventory-page .inventory-filters button span,
+  .inventory-page .inventory-metric small,
+  .inventory-page .batch-summary-strip,
+  .inventory-page .inventory-medicine-name span,
+  .inventory-page .inventory-stock-threshold,
+  .inventory-page .stock-direction legend {
+    font-size: 10px;
+  }
+}

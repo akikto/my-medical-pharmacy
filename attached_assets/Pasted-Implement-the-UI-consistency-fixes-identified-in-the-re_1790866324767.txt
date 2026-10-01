@@ -1,0 +1,203 @@
+Implement the UI consistency fixes identified in the read-only audit.
+
+IMPORTANT:
+Do NOT change the Home Dashboard.
+The Home Dashboard is now FROZEN and must remain exactly as it is.
+
+Do NOT change:
+- business logic
+- database schema
+- database behavior
+- routes
+- existing functionality
+- POS billing logic
+- inventory logic
+- purchase calculations
+- sales calculations
+- reports calculations
+
+This is a UI/UX consistency pass only.
+
+==================================================
+PRIORITY 1 — SALES PAGE
+==================================================
+
+The current Sales route is only a centered placeholder that tells users to
+open recent invoices in POS Billing.
+
+Improve this page so it follows the same workspace structure as the other
+non-Home screens.
+
+Create a proper Sales History page using EXISTING sales/invoice data.
+
+Use the existing database/services/models.
+
+Show useful existing sales information such as:
+
+- Invoice/Bill number
+- Date/time
+- Customer, if supported by the existing data
+- Number of items
+- Total amount
+- Payment/status information, if already available
+
+Add appropriate existing actions where supported, such as opening/viewing
+an invoice.
+
+Do NOT invent new sales functionality.
+
+Reuse existing POS Billing invoice data and services instead of creating
+duplicate sales logic.
+
+Keep the existing breadcrumb/page-heading style used by the workspace.
+
+==================================================
+PRIORITY 2 — PURCHASES
+==================================================
+
+Improve the Purchase page's desktop usability.
+
+At 1366×768, reduce unnecessary density in:
+
+- Header fields
+- Form labels
+- Line-item inputs
+- Table spacing
+
+The purchase line-item table may still use contained horizontal scrolling
+if the existing columns genuinely require it.
+
+Do NOT remove required fields.
+
+Do NOT change purchase calculations or business rules.
+
+Improve:
+
+- Label readability
+- Input spacing
+- Column widths
+- Table header readability
+- Vertical spacing
+
+The goal is better usability without reducing the information needed for
+purchase entry.
+
+==================================================
+PRIORITY 3 — TYPOGRAPHY
+==================================================
+
+Across NON-HOME screens only:
+
+Review:
+
+- Helper text
+- Table headers
+- Form labels
+- Secondary text
+- Breadcrumb text
+
+Make text slightly more readable on Windows desktop screens.
+
+Do not make the UI oversized.
+
+Keep a consistent typography scale.
+
+Use the existing design system/fonts if already available.
+
+==================================================
+PRIORITY 4 — SUPPLIERS SEARCH
+==================================================
+
+Improve the existing supplier search field by adding a clear/reset control
+if the current search implementation supports clearing.
+
+The clear control must:
+
+- appear only when search text exists
+- clear the current search
+- restore the full supplier list
+- not reload unnecessary data
+- follow the existing icon/button style
+
+Do not change supplier search logic.
+
+==================================================
+SHARED NON-HOME CONSISTENCY
+==================================================
+
+Keep these shared patterns consistent:
+
+- Existing green workspace shell
+- Sidebar
+- Breadcrumb
+- Page heading
+- White rounded cards
+- Existing green primary buttons
+- Existing line-icon style
+- Existing local/offline database status
+
+Do NOT force Home's blue visual system onto these screens.
+
+Home remains intentionally different.
+
+==================================================
+SALES PAGE EMPTY/LOADING/ERROR STATES
+==================================================
+
+The new Sales History page should have proper:
+
+- Loading state
+- Empty state
+- Error/retry state
+- No-search/no-results state if search exists
+
+Reuse existing application patterns where possible.
+
+==================================================
+VERIFICATION
+==================================================
+
+Run the actual Tauri desktop application.
+
+Verify at:
+
+- 1366×768
+- 1440×960
+- 1920×1080
+
+Check:
+
+- Sales page
+- Purchases
+- Suppliers
+- Inventory
+- Reports
+- Settings
+
+Do NOT modify Home.
+
+Check that:
+
+- No horizontal overflow is introduced except contained table scrolling
+  where genuinely necessary.
+- Existing keyboard shortcuts remain functional.
+- POS Billing remains unchanged.
+- Existing database data remains unchanged.
+- No demo data is added.
+- No production demo UI is added.
+
+Then run:
+
+- workspace typecheck
+- production build
+- git diff --check
+
+Finally report:
+
+1. Sales page changes
+2. Purchase UI changes
+3. Typography changes
+4. Supplier search changes
+5. Confirmation that Home was not modified
+6. Confirmation that business/database logic was not modified
+7. Verification results at all three desktop sizes

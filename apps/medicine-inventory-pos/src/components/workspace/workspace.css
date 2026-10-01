@@ -25,7 +25,11 @@
 .workspace-page-header p {
   margin: 0;
   color: var(--muted-dark);
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.workspace-page .page-kicker {
+  font-size: 10px;
 }
 
 .workspace-card {
@@ -52,7 +56,7 @@
   height: 42px;
   padding: 0 13px;
   color: #829187;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.065em;
   text-transform: uppercase;
@@ -65,7 +69,7 @@
   height: 59px;
   padding: 9px 13px;
   color: #4d6558;
-  font-size: 10px;
+  font-size: 11px;
   border-bottom: 1px solid #f0f3f1;
   vertical-align: middle;
 }
@@ -131,7 +135,7 @@
 
 .workspace-empty span {
   max-width: 400px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -145,7 +149,7 @@
   align-items: center;
   gap: 9px;
   padding: 9px 11px;
-  font-size: 10px;
+  font-size: 11px;
   border: 1px solid transparent;
   border-radius: 8px;
 }
@@ -173,7 +177,7 @@
 .workspace-error {
   margin: 0;
   color: #a34842;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -283,6 +287,20 @@
   background: #fbfdfb;
   border: 1px solid #e0e9e3;
   border-radius: 7px;
+}
+
+.workspace-page .field-label {
+  gap: 6px;
+  font-size: 11px;
+}
+
+.workspace-page .workspace-input,
+.workspace-page .workspace-textarea {
+  font-size: 12px;
+}
+
+.workspace-page .workspace-muted {
+  font-size: 11px;
 }
 
 .workspace-input:focus {

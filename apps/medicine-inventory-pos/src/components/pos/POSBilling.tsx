@@ -760,6 +760,7 @@ export function POSBilling({
                   data-testid="button-clear-cart"
                   onClick={() => {
                     replaceCart(() => []);
+                    setCashTenderedInput("0");
                     setNotice({ kind: "info", message: "Bill cleared." });
                   }}
                   type="button"

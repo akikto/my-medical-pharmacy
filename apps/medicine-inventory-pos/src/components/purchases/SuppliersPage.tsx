@@ -92,7 +92,7 @@ export function SuppliersPage() {
             <h2>Supplier records</h2>
             <p>{suppliers.length} supplier{suppliers.length === 1 ? "" : "s"}</p>
           </div>
-          <label className="inventory-search supplier-search">
+          <div className="inventory-search supplier-search">
             <Search aria-hidden="true" size={17} />
             <input
               aria-label="Search suppliers"
@@ -101,7 +101,19 @@ export function SuppliersPage() {
               placeholder="Name, phone, or address"
               value={searchQuery}
             />
-          </label>
+            {searchQuery.length > 0 && (
+              <button
+                aria-label="Clear supplier search"
+                className="supplier-search-clear"
+                data-testid="button-clear-supplier-search"
+                onClick={() => setSearchQuery("")}
+                title="Clear search"
+                type="button"
+              >
+                <X size={15} />
+              </button>
+            )}
+          </div>
         </div>
         {loadError && (
           <div className="workspace-error workspace-error--banner" role="alert">

@@ -1,0 +1,94 @@
+Next step: perform a READ-ONLY functional QA audit of the current native Tauri pharmacy app.
+
+IMPORTANT:
+- Do NOT redesign the UI.
+- Do NOT modify the Home dashboard.
+- Do NOT change database schema, business rules, calculations, routes, or existing services.
+- Do NOT add demo data.
+- Do NOT create new features unless an existing feature is clearly broken.
+- First inspect and test; only fix clear bugs found during this QA pass.
+
+Test these areas using the existing local development data:
+
+1. SALES HISTORY
+- Open Sales History.
+- Verify the 100-most-recent-invoices behavior using the existing invoice service.
+- Verify invoice number, date/time, customer, item count, payment mode, and total.
+- Test search with:
+  a) matching invoice/customer text
+  b) non-matching text
+  c) clearing search
+- Open several invoices and verify the existing receipt/invoice view shows the correct data.
+- Verify refresh works.
+- Verify loading, empty, no-results, and error/retry states are wired correctly.
+- Make sure no duplicate invoices or incorrect totals are introduced.
+
+2. POS BILLING
+- Test medicine search.
+- Test F2 focus.
+- Select a medicine and add it to the bill.
+- Verify quantity, price, subtotal, discount/tax if already supported, and final total use the existing calculations.
+- Test Escape/search closing behavior.
+- Open checkout using the existing shortcut if applicable.
+- Do NOT create a real sale unless necessary for testing; if a transaction would persist data, stop and report rather than creating test records.
+
+3. INVENTORY & BATCHES
+- Verify medicine search/filter behavior.
+- Verify low-stock, expired, and near-expiry information against the existing local records.
+- Open medicine/batch details where supported.
+- Check that no incorrect stock values are displayed.
+
+4. PURCHASES
+- Verify existing purchase fields are still present.
+- Verify line-item calculations.
+- Verify existing validation.
+- Verify the table's horizontal scrolling at 1366×768.
+- Do not save a new purchase.
+
+5. SUPPLIERS
+- Test normal list.
+- Test search.
+- Test clear-search control.
+- Confirm clearing restores the full list.
+- Test empty/no-results behavior.
+
+6. REPORTS
+- Verify today's sales/purchase/profit summaries against the existing local data.
+- Verify date filtering.
+- Verify invoice/report data is consistent with Sales History.
+- Verify inventory alert panels.
+- Do not alter records.
+
+7. SETTINGS / BACKUP
+- Verify pharmacy settings display correctly.
+- Verify backup UI is reachable.
+- Do not create/restore/delete a backup during this QA unless the existing UI has a safe non-destructive preview/status check.
+
+8. GLOBAL UI / NAVIGATION
+- Test sidebar navigation between Home, POS, Inventory, Purchases, Suppliers, Sales, Reports, and Settings.
+- Verify there is no dead-end page.
+- Verify the app can always return to Home.
+- Check 1366×768, 1440×960, and 1920×1080.
+- Check for horizontal overflow.
+- Check loading/empty/error states where practical.
+
+9. DATA SAFETY
+- Before and after QA, confirm no existing database records were created, edited, deleted, or altered.
+- Do not seed data.
+- Do not reset the database.
+
+10. VERIFICATION
+Run:
+- workspace typecheck
+- production build
+- git diff --check
+
+At the end, report:
+A. Tests performed
+B. PASS/FAIL for each area
+C. Any bugs found and exactly what was fixed
+D. Confirmation that no database/business logic was changed
+E. Confirmation that Home dashboard files were not changed
+F. Build/typecheck/git diff results
+
+If everything passes, do NOT make unnecessary changes. Leave the app on Home.
