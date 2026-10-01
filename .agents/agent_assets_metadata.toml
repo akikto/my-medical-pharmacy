@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "2zx0E7moBFhTIRJBGF_ks"
+uri = "file://screenshots/my-medical-pos-billing.png"
+type = "image"
+title = "MY MEDICAL — POS Billing screen"
+description = "বর্তমান অ্যাপের landing screen-এর 1440×960 screenshot।"
+logical_id = "092e719d-b910-4828-85fd-7c9a440baaac"
+content_hash = "sha256:c72645df97becd6f7d6b672b7aa9b7b8743adc400fbbfa48efd4910fecca5ada"
+size = 129164
+mtime_ms = 1790848851808
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:42bb87ce-8106-4c28-a498-8751c9a8665a/092e719d-b910-4828-85fd-7c9a440baaac/4a9aac94-ae4b-404e-8aa6-881ab401d72b"
+storage_version_token = "1790848885110855"
+content_type = "image/png"
