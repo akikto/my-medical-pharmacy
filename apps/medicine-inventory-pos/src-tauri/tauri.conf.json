@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Medicine Inventory & POS",
+  "productName": "MY MEDICAL",
   "version": "0.1.0",
   "identifier": "com.pharmadesk.offline",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Medicine Inventory & POS",
+        "title": "MY MEDICAL",
         "width": 1440,
         "height": 960,
         "minWidth": 1280,
@@ -29,9 +29,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Business",
-    "shortDescription": "Offline medicine inventory and point of sale",
-    "longDescription": "A local-first medicine inventory and point-of-sale application for pharmacy teams."
+    "shortDescription": "Offline pharmacy management and point of sale",
+    "longDescription": "MY MEDICAL is a local-first pharmacy management app for point of sale, medicine inventory, and purchasing."
   },
   "plugins": {
     "sql": {

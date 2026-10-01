@@ -58,7 +58,7 @@ function UnavailableSection({ section }: { section: UnavailableSectionId }) {
   return (
     <section className="section-unavailable" data-testid={`panel-${section}`}>
       <div className="section-unavailable-icon"><Icon size={24} /></div>
-      <span className="eyebrow">PHARMACY WORKSPACE</span>
+      <span className="eyebrow">MY MEDICAL WORKSPACE</span>
       <h1>{details.title}</h1>
       <p>{details.description}</p>
       <div className="section-unavailable-note">
@@ -99,10 +99,12 @@ export default function App() {
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="brand-lockup">
-          <span className="brand-symbol"><Pill size={20} /></span>
+          <span className="brand-symbol">
+            <img src="./my-medical-mark.png" alt="" aria-hidden="true" />
+          </span>
           <span className="brand-text">
-            <strong>PHARMA<span>DESK</span></strong>
-            <small>OFFLINE PHARMACY POS</small>
+            <strong>MY <span>MEDICAL</span></strong>
+            <small>PHARMACY MANAGEMENT</small>
           </span>
         </div>
 

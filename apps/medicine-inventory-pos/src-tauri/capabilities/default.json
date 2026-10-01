@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Local database and native file dialog access for the Medicine Inventory & POS window.",
+  "description": "Local database and native file dialog access for the MY MEDICAL window.",
   "windows": ["main"],
   "permissions": [
     "core:default",

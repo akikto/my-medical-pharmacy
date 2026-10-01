@@ -183,11 +183,11 @@ export function ReportsPage() {
         sale.created_at,
       ]),
     ];
-    downloadCsv(`pharmadesk-sales-${startDate}-to-${endDate}.csv`, rows);
+    downloadCsv(`my-medical-sales-${startDate}-to-${endDate}.csv`, rows);
   }
 
   function exportLowStock() {
-    downloadCsv("pharmadesk-low-stock.csv", [
+    downloadCsv("my-medical-low-stock.csv", [
       ["Medicine", "Generic name", "Company", "Rack", "Available stock", "Minimum stock"],
       ...lowStock.map((item) => [
         item.name,
@@ -201,7 +201,7 @@ export function ReportsPage() {
   }
 
   function exportExpiry() {
-    downloadCsv(`pharmadesk-expiry-${horizon}-days.csv`, [
+    downloadCsv(`my-medical-expiry-${horizon}-days.csv`, [
       ["Medicine", "Batch", "Expiry date", "Days until expiry", "Status", "Current stock"],
       ...expiry.map((item) => [
         item.medicine_name,
