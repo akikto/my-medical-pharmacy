@@ -260,6 +260,7 @@ export interface CartState {
 }
 
 export type AppSection =
+  | "home"
   | "pos"
   | "inventory"
   | "purchases"
