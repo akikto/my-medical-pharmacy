@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PharmaDesk",
+  "productName": "Medicine Inventory & POS",
   "version": "0.1.0",
   "identifier": "com.pharmadesk.offline",
   "build": {
@@ -13,11 +13,13 @@
     "windows": [
       {
         "label": "main",
-        "title": "PharmaDesk | Pharmacy POS",
+        "title": "Medicine Inventory & POS",
         "width": 1440,
         "height": 960,
-        "minWidth": 1024,
-        "minHeight": 700
+        "minWidth": 1280,
+        "minHeight": 800,
+        "resizable": true,
+        "decorations": true
       }
     ],
     "security": {
@@ -28,7 +30,8 @@
     "active": true,
     "targets": "all",
     "category": "Business",
-    "shortDescription": "Offline pharmacy point of sale"
+    "shortDescription": "Offline medicine inventory and point of sale",
+    "longDescription": "A local-first medicine inventory and point-of-sale application for pharmacy teams."
   },
   "plugins": {
     "sql": {

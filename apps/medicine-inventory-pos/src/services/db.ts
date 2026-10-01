@@ -212,7 +212,13 @@ async function initializeDatabase(): Promise<Database> {
     return database;
   } catch (error) {
     await database.close().catch(() => false);
-    throw new Error("Could not initialize the local pharmacy database.", {
+    const detail =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : "Unknown database initialization error.";
+    throw new Error(`Could not initialize the local pharmacy database: ${detail}`, {
       cause: error,
     });
   }

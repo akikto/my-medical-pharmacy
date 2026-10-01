@@ -21,4 +21,4 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["rustup", "glib", "gtk3", "webkitgtk_4_1", "libsoup_3", "librsvg", "zlib"]
+packages = ["rustup", "glib", "gtk3", "webkitgtk_4_1", "libsoup_3", "librsvg", "zlib", "gsettings-desktop-schemas", "hicolor-icon-theme", "adwaita-icon-theme"]
