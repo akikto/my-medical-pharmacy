@@ -65,8 +65,16 @@ function expiryState(expiryDate: string): "expired" | "soon" | "valid" {
   return daysRemaining <= 30 ? "soon" : "valid";
 }
 
-export function POSBilling() {
-  const [searchQuery, setSearchQuery] = useState("");
+interface POSBillingProps {
+  initialSearchQuery?: string;
+  onInitialSearchConsumed?: () => void;
+}
+
+export function POSBilling({
+  initialSearchQuery,
+  onInitialSearchConsumed,
+}: POSBillingProps) {
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery?.trim() ?? "");
   const [searchResults, setSearchResults] = useState<MedicineSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -194,6 +202,12 @@ export function POSBilling() {
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (initialSearchQuery?.trim()) {
+      onInitialSearchConsumed?.();
+    }
+  }, [initialSearchQuery, onInitialSearchConsumed]);
 
   useEffect(() => {
     if (!notice) {

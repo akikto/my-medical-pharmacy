@@ -3,6 +3,7 @@ import {
   BarChart3,
   Boxes,
   ClipboardList,
+  House,
   Pill,
   Settings2,
   ShieldCheck,
@@ -12,8 +13,10 @@ import {
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import type { AppSection } from "./types";
 import { POSBilling } from "./components/pos/POSBilling";
+import { DashboardPage } from "./components/dashboard/DashboardPage";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
@@ -23,7 +26,7 @@ import "./components/workspace/workspace.css";
 
 type UnavailableSectionId = Exclude<
   AppSection,
-  "pos" | "inventory" | "purchases" | "suppliers" | "reports" | "settings"
+  "home" | "pos" | "inventory" | "purchases" | "suppliers" | "reports" | "settings"
 >;
 
 const navigation: Array<{
@@ -31,6 +34,7 @@ const navigation: Array<{
   label: string;
   icon: typeof Pill;
 }> = [
+  { id: "home", label: "Home", icon: House },
   { id: "pos", label: "POS Billing", icon: ClipboardList },
   { id: "inventory", label: "Inventory & Batches", icon: Boxes },
   { id: "purchases", label: "Purchases", icon: Pill },
@@ -70,8 +74,19 @@ function UnavailableSection({ section }: { section: UnavailableSectionId }) {
 }
 
 export default function App() {
-  const [activeSection, setActiveSection] = useState<AppSection>("pos");
+  const [activeSection, setActiveSection] = useState<AppSection>("home");
+  const [pendingSaleSearch, setPendingSaleSearch] = useState<string | null>(null);
   const [autoBackupError, setAutoBackupError] = useState<string | null>(null);
+  const navigateToSection = useCallback(
+    (section: AppSection, initialSaleSearch?: string) => {
+      setPendingSaleSearch(initialSaleSearch?.trim() || null);
+      setActiveSection(section);
+    },
+    [],
+  );
+  const clearPendingSaleSearch = useCallback(() => {
+    setPendingSaleSearch(null);
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -96,7 +111,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${activeSection === "home" ? "app-shell--home" : ""}`}>
       <aside className="app-sidebar">
         <div className="brand-lockup">
           <span className="brand-symbol">
@@ -116,7 +131,10 @@ export default function App() {
               className={`nav-item ${activeSection === id ? "is-active" : ""}`}
               data-testid={`nav-${id}`}
               key={id}
-              onClick={() => setActiveSection(id)}
+              onClick={() => {
+                setPendingSaleSearch(null);
+                setActiveSection(id);
+              }}
               type="button"
             >
               <Icon aria-hidden="true" size={18} strokeWidth={1.9} />
@@ -141,17 +159,19 @@ export default function App() {
       </aside>
 
       <main className="app-main">
-        <div className="app-topbar">
-          <div className="topbar-crumb">
-            <span>Pharmacy</span>
-            <span className="crumb-divider">/</span>
-            <strong>{navigation.find((item) => item.id === activeSection)?.label ?? "POS Billing"}</strong>
+        {activeSection !== "home" && (
+          <div className="app-topbar">
+            <div className="topbar-crumb">
+              <span>Pharmacy</span>
+              <span className="crumb-divider">/</span>
+              <strong>{navigation.find((item) => item.id === activeSection)?.label ?? "POS Billing"}</strong>
+            </div>
+            <div className="topbar-status">
+              <span className="topbar-offline-dot" />
+              Local database
+            </div>
           </div>
-          <div className="topbar-status">
-            <span className="topbar-offline-dot" />
-            Local database
-          </div>
-        </div>
+        )}
         {autoBackupError && (
           <div className="auto-backup-alert" role="alert" data-testid="status-auto-backup-error">
             <AlertCircle aria-hidden="true" size={17} />
@@ -180,8 +200,13 @@ export default function App() {
             </button>
           </div>
         )}
-        {activeSection === "pos" ? (
-          <POSBilling />
+        {activeSection === "home" ? (
+          <DashboardPage onNavigate={navigateToSection} />
+        ) : activeSection === "pos" ? (
+          <POSBilling
+            initialSearchQuery={pendingSaleSearch ?? undefined}
+            onInitialSearchConsumed={clearPendingSaleSearch}
+          />
         ) : activeSection === "inventory" ? (
           <InventoryPage />
         ) : activeSection === "purchases" ? (

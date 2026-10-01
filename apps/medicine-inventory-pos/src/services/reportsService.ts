@@ -51,14 +51,16 @@ function mapSummary(row: RawSalesReportSummary): SalesReportSummary {
   };
 }
 
-export async function getSalesReport(
-  startDate: string,
-  endDate: string,
-): Promise<SalesReport> {
+function assertValidDateRange(startDate: string, endDate: string): void {
   if (!isIsoDate(startDate) || !isIsoDate(endDate) || startDate > endDate) {
     throw new Error("Choose a valid report date range.");
   }
+}
 
+async function querySalesReportSummary(
+  startDate: string,
+  endDate: string,
+): Promise<SalesReportSummary> {
   const summaryRows = await selectSql<RawSalesReportSummary[]>(
     `WITH in_range AS (
        SELECT id, grand_total, flat_discount, payment_mode
@@ -115,7 +117,30 @@ export async function getSalesReport(
     [startDate, endDate],
   );
 
-  const sales = await selectSql<SalesReportRow[]>(
+  const rawSummary = summaryRows[0];
+  if (!rawSummary) {
+    throw new Error("The local database did not return a report summary.");
+  }
+  return mapSummary(rawSummary);
+}
+
+export async function getSalesReportSummary(
+  startDate: string,
+  endDate: string,
+): Promise<SalesReportSummary> {
+  assertValidDateRange(startDate, endDate);
+  return querySalesReportSummary(startDate, endDate);
+}
+
+export async function getSalesReport(
+  startDate: string,
+  endDate: string,
+): Promise<SalesReport> {
+  assertValidDateRange(startDate, endDate);
+
+  const [summary, sales] = await Promise.all([
+    querySalesReportSummary(startDate, endDate),
+    selectSql<SalesReportRow[]>(
     `SELECT
        id,
        invoice_no,
@@ -127,15 +152,11 @@ export async function getSalesReport(
      WHERE date(created_at, 'localtime') BETWEEN $1 AND $2
      ORDER BY created_at DESC, id DESC`,
     [startDate, endDate],
-  );
-
-  const rawSummary = summaryRows[0];
-  if (!rawSummary) {
-    throw new Error("The local database did not return a report summary.");
-  }
+    ),
+  ]);
 
   return {
-    summary: mapSummary(rawSummary),
+    summary,
     sales: sales.map((sale) => ({
       ...sale,
       id: Number(sale.id),
