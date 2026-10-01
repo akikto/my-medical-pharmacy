@@ -45,6 +45,7 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
   const [isDirty, setIsDirty] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [backupAction, setBackupAction] = useState<BackupAction>(null);
+  const [isSeedingDemo, setIsSeedingDemo] = useState(false);
   const [restorePath, setRestorePath] = useState<string | null>(null);
 
   useEffect(() => {
@@ -104,6 +105,28 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
       setNotice({ kind: "error", message: getError(error, "Database backup could not be created.") });
     } finally {
       setBackupAction(null);
+    }
+  }
+
+  async function handleSeedDemoData() {
+    setIsSeedingDemo(true);
+    setNotice(null);
+    try {
+      const { seedDevelopmentDemoData } = await import(
+        "../../services/developmentDemoSeed"
+      );
+      const result = await seedDevelopmentDemoData();
+      setNotice({
+        kind: "success",
+        message: `Development-only demo data added: ${result.medicines} medicines, ${result.suppliers} suppliers, ${result.purchases} purchases, and ${result.sales} sales. Return to Home to review it.`,
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message: getError(error, "Development demo data could not be added."),
+      });
+    } finally {
+      setIsSeedingDemo(false);
     }
   }
 
@@ -245,6 +268,32 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
             <span><CheckCircle2 size={15} /></span>
             <div><strong>Offline-first by design</strong><p>Pharmacy settings and backups are managed locally. No network connection is required.</p></div>
           </section>
+
+          {import.meta.env.DEV && (
+            <section className="workspace-card dev-demo-card" aria-labelledby="dev-demo-title" data-testid="panel-dev-demo-seed">
+              <div className="settings-card-heading">
+                <span className="settings-heading-mark settings-heading-mark--dev"><DatabaseBackup size={17} /></span>
+                <div>
+                  <span className="dev-demo-label">DEVELOPMENT ONLY</span>
+                  <h2 id="dev-demo-title">Dashboard demo data</h2>
+                  <p>Never used as real pharmacy or customer data.</p>
+                </div>
+              </div>
+              <p className="dev-demo-safety">
+                Uses existing app models and business rules. Seeding is refused unless every pharmacy data table is empty.
+              </p>
+              <button
+                className="button button-secondary dev-demo-button"
+                data-testid="button-seed-dev-demo"
+                disabled={isSeedingDemo || isLoading || backupAction !== null}
+                onClick={() => void handleSeedDemoData()}
+                type="button"
+              >
+                {isSeedingDemo ? <LoaderCircle className="settings-button-spin" size={15} /> : <DatabaseBackup size={15} />}
+                {isSeedingDemo ? "Adding demo data…" : "Seed development demo data"}
+              </button>
+            </section>
+          )}
         </aside>
       </div>
 
