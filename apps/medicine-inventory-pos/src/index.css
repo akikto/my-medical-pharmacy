@@ -1951,6 +1951,23 @@ kbd {
   letter-spacing: 0.16em;
 }
 
+.receipt-brand .receipt-store-line {
+  max-width: 100%;
+  margin-top: 4px;
+  font-size: 7px;
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.receipt-settings-warning {
+  max-width: 300px;
+  margin: 6px 0 0;
+  color: #9a6646;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .receipt-divider {
   width: 100%;
   margin: 8px 0;

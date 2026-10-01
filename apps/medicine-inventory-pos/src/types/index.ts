@@ -197,6 +197,45 @@ export interface ExpiryAlert {
   status: ExpiryAlertStatus;
 }
 
+export interface SalesReportSummary {
+  total_revenue: number;
+  gross_profit: number;
+  total_invoices: number;
+  cash_revenue: number;
+  cash_invoices: number;
+  card_upi_revenue: number;
+  card_upi_invoices: number;
+  other_revenue: number;
+  other_invoices: number;
+  profit_unavailable_invoices: number;
+}
+
+export interface SalesReportRow {
+  id: EntityId;
+  invoice_no: string;
+  customer_name: string | null;
+  payment_mode: PaymentMode;
+  grand_total: number;
+  created_at: ISODateTime;
+}
+
+export interface SalesReport {
+  summary: SalesReportSummary;
+  sales: SalesReportRow[];
+}
+
+export interface StoreSettings {
+  pharmacy_name: string;
+  address: string;
+  contact_number: string;
+  drug_license_number: string;
+  receipt_footer_note: string;
+}
+
+export interface DatabaseBackupResult {
+  path: string;
+}
+
 export interface CartItem {
   medicine_id: EntityId;
   batch_id: EntityId;

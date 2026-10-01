@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Local database access for the PharmaDesk point-of-sale window.",
   "windows": ["main"],
-  "permissions": ["core:default", "sql:default"]
+  "permissions": [
+    "core:default",
+    "sql:default",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
 }

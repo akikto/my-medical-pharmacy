@@ -1,0 +1,1 @@
+export { ReportsPage as ReportsView } from "./ReportsPage";
