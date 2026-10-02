@@ -1,0 +1,72 @@
+name: Windows Release Candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release-candidate:
+    name: Build Windows installers
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run app tests
+        working-directory: apps/medicine-inventory-pos
+        run: pnpm test
+
+      - name: Typecheck app
+        working-directory: apps/medicine-inventory-pos
+        run: pnpm typecheck
+
+      - name: Build Windows release and configured bundles
+        working-directory: apps/medicine-inventory-pos
+        run: pnpm run tauri:build
+
+      - name: Verify Windows installer output
+        shell: pwsh
+        run: |
+          $bundleRoot = "apps/medicine-inventory-pos/src-tauri/target/release/bundle"
+          if (-not (Test-Path -LiteralPath $bundleRoot)) {
+            throw "Tauri did not create the configured bundle directory: $bundleRoot"
+          }
+
+          $installers = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File |
+            Where-Object { $_.Extension -in @(".msi", ".exe") })
+          if ($installers.Count -eq 0) {
+            throw "Tauri produced no Windows installer (.msi or .exe) in $bundleRoot"
+          }
+
+          $installers | ForEach-Object { Write-Host "Installer: $($_.FullName)" }
+
+      - name: Upload Windows bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MY-MEDICAL-Windows-RC-${{ github.run_number }}
+          path: apps/medicine-inventory-pos/src-tauri/target/release/bundle/
+          if-no-files-found: error
+          retention-days: 14

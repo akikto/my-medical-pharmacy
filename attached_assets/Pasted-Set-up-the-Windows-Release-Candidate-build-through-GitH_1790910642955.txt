@@ -1,0 +1,91 @@
+Set up the Windows Release Candidate build through GitHub Actions.
+
+IMPORTANT:
+- Do NOT change application functionality.
+- Do NOT redesign UI.
+- Do NOT modify Home.
+- Do NOT change database schema, business rules, routes, or services.
+- Do NOT modify the current development database.
+- Do NOT add demo data.
+- This task is ONLY for creating a reproducible Windows CI build/installer.
+- Inspect the existing repository and existing GitHub Actions/workflows before making changes.
+
+GOAL:
+Create a GitHub Actions workflow that builds the existing Tauri application on a real Windows GitHub-hosted runner and produces the configured Windows installer/artifacts.
+
+Requirements:
+
+1. WINDOWS RUNNER
+- Use an appropriate GitHub-hosted Windows runner.
+- Use the repository's existing Node/pnpm/Rust/Tauri setup.
+- Do not invent a second build system.
+- Respect the existing package manager and lockfile.
+
+2. BUILD
+- Install dependencies using the existing project configuration.
+- Run the existing typecheck/test/build steps where appropriate.
+- Build the Tauri Windows release using the existing Tauri configuration.
+- Produce the configured Windows installer/bundle (.exe and/or .msi, depending on what the current Tauri configuration generates).
+
+3. ARTIFACTS
+Upload the generated Windows installer(s) as GitHub Actions artifacts.
+
+The artifact should be easy to download from the workflow run and should include:
+- installer
+- relevant bundle artifacts if generated
+
+Do NOT publish a GitHub Release automatically.
+Do NOT upload/publish to any package registry.
+
+4. IDENTITY
+Verify from the build configuration that the Windows package uses:
+- Product name: MY MEDICAL
+- Version: 0.1.0 unless the existing project version says otherwise
+- Identifier: com.pharmadesk.offline
+- Existing Windows icon assets
+
+Do not change these values just for the workflow.
+
+5. REPRODUCIBILITY
+The workflow should:
+- use the repository lockfile
+- avoid modifying application source
+- fail clearly if dependencies/build steps fail
+- preserve the existing production build configuration
+
+6. SECURITY
+- Do not add secrets unless absolutely required.
+- Do not add signing credentials.
+- Do not create a fake/self-generated production certificate.
+- The initial artifact can be unsigned for local Windows testing.
+- Do not expose repository secrets in logs.
+
+7. VALIDATION
+After creating the workflow:
+- Validate the YAML/workflow syntax if possible.
+- Run any locally available checks that do not require Windows.
+- Run git diff --check.
+- Do not claim the Windows installer was built until the GitHub Actions Windows runner actually completes successfully.
+
+8. FILE CHANGES
+Keep the change minimal.
+Prefer adding one dedicated workflow under:
+.github/workflows/
+
+Do not modify unrelated application files.
+
+FINAL REPORT:
+A. Workflow file created
+B. Windows runner selected
+C. Build commands used
+D. Installer formats expected
+E. Artifact names/locations
+F. Existing app configuration preserved
+G. Secrets required: yes/no
+H. Local validation results
+I. Exact files changed
+J. Instructions for running the GitHub Actions workflow and downloading the artifact
+
+IMPORTANT:
+After creating the workflow, STOP.
+Do not start Windows application testing until a successful Windows workflow run produces the installer.
