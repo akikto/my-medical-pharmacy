@@ -1,5 +1,8 @@
 use std::{
+    collections::HashMap,
     fs,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -9,15 +12,30 @@ use std::{
 };
 
 use rusqlite::{
-    params, params_from_iter, types::Value as SqliteValue, Connection, OpenFlags,
-    OptionalExtension, TransactionBehavior,
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
+#[cfg(debug_assertions)]
+use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
+#[cfg(debug_assertions)]
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
-const LATEST_DATABASE_VERSION: i64 = 4;
+mod reads;
+use reads::{
+    get_dashboard_inventory_summary, get_dashboard_purchase_summary, get_expiry_alerts,
+    get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
+    get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
+    get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
+    get_top_selling_medicines, search_medicines,
+};
 
+const LATEST_DATABASE_VERSION: i64 = 4;
+/// Keep the 30 newest automatically-created close-time database snapshots.
+const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
+const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
+
+#[cfg(debug_assertions)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TransactionStatement {
@@ -27,11 +45,90 @@ struct TransactionStatement {
     expected_rows_affected: Option<usize>,
 }
 
+#[cfg(debug_assertions)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TransactionStatementResult {
     rows_affected: usize,
     last_insert_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum PharmacyMutation {
+    CreateMedicine {
+        name: String,
+        generic_name: Option<String>,
+        company: Option<String>,
+        rack_location: Option<String>,
+        min_stock_alert: i64,
+    },
+    UpdateMedicine {
+        medicine_id: i64,
+        name: String,
+        generic_name: Option<String>,
+        company: Option<String>,
+        rack_location: Option<String>,
+        min_stock_alert: i64,
+    },
+    DeleteMedicine {
+        medicine_id: i64,
+    },
+    UpdateBatchDetails {
+        batch_id: i64,
+        medicine_id: i64,
+        mrp_cents: i64,
+        sale_rate_cents: i64,
+        rack_location: Option<String>,
+    },
+    AdjustBatchStock {
+        batch_id: i64,
+        medicine_id: i64,
+        quantity_change: i64,
+        reason: String,
+    },
+    DeductStock {
+        deductions: Vec<StockDeduction>,
+    },
+    AddStock {
+        batch_id: i64,
+        quantity: i64,
+    },
+    CreateSupplier {
+        name: String,
+        phone: Option<String>,
+        address: Option<String>,
+    },
+    UpdateSupplier {
+        supplier_id: i64,
+        name: String,
+        phone: Option<String>,
+        address: Option<String>,
+    },
+    SaveSettings {
+        settings: StoreSettingsMutation,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct StockDeduction {
+    batch_id: i64,
+    quantity: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoreSettingsMutation {
+    pharmacy_name: String,
+    address: String,
+    contact_number: String,
+    drug_license_number: String,
+    receipt_footer_note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PharmacyMutationResult {
+    entity_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +157,19 @@ struct SaleCheckoutRequest {
 struct SaleCheckoutResult {
     sale_id: i64,
     invoice_no: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct SaleLineAllocation {
+    batch_id: i64,
+    quantity: i64,
+    item_discount_cents: i64,
+}
+
+#[derive(Debug)]
+struct FefoBatch {
+    id: i64,
+    current_stock: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,24 +206,25 @@ struct DatabaseBackupResult {
     path: String,
 }
 
-fn to_sqlite_value(value: &Value) -> Result<SqliteValue, String> {
+#[cfg(debug_assertions)]
+fn to_sqlite_value(value: &Value) -> Result<rusqlite::types::Value, String> {
     match value {
-        Value::Null => Ok(SqliteValue::Null),
-        Value::Bool(value) => Ok(SqliteValue::Integer(if *value { 1 } else { 0 })),
+        Value::Null => Ok(rusqlite::types::Value::Null),
+        Value::Bool(value) => Ok(rusqlite::types::Value::Integer(if *value { 1 } else { 0 })),
         Value::Number(value) => {
             if let Some(integer) = value.as_i64() {
-                Ok(SqliteValue::Integer(integer))
+                Ok(rusqlite::types::Value::Integer(integer))
             } else if let Some(unsigned) = value.as_u64() {
                 i64::try_from(unsigned)
-                    .map(SqliteValue::Integer)
+                    .map(rusqlite::types::Value::Integer)
                     .map_err(|_| "Integer bind value exceeds SQLite's supported range.".to_owned())
             } else if let Some(float) = value.as_f64() {
-                Ok(SqliteValue::Real(float))
+                Ok(rusqlite::types::Value::Real(float))
             } else {
                 Err("Unsupported numeric bind value.".to_owned())
             }
         }
-        Value::String(value) => Ok(SqliteValue::Text(value.clone())),
+        Value::String(value) => Ok(rusqlite::types::Value::Text(value.clone())),
         Value::Array(_) | Value::Object(_) => {
             Err("SQL bind values must be scalar values.".to_owned())
         }
@@ -131,7 +242,7 @@ fn pharmacy_database_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_config_dir.join("pharmacy.db"))
 }
 
-fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
+pub(crate) fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
     let connection = Connection::open(pharmacy_database_path(app)?)
         .map_err(|error| format!("Could not open the local pharmacy database: {error}"))?;
     connection
@@ -146,6 +257,175 @@ fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
         })
         .map_err(|error| format!("Could not enable the SQLite write-ahead log: {error}"))?;
     Ok(connection)
+}
+
+fn migration_statements(version: i64) -> Result<&'static [&'static str], String> {
+    match version {
+        1 => Ok(&[
+            r#"CREATE TABLE medicines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                generic_name TEXT,
+                company TEXT,
+                rack_location TEXT,
+                min_stock_alert INTEGER NOT NULL DEFAULT 10 CHECK (min_stock_alert >= 0),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            r#"CREATE TABLE medicine_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+                batch_no TEXT NOT NULL,
+                expiry_date TEXT NOT NULL,
+                purchase_rate REAL NOT NULL CHECK (purchase_rate >= 0),
+                mrp REAL NOT NULL CHECK (mrp >= 0),
+                sale_rate REAL NOT NULL CHECK (sale_rate >= 0),
+                current_stock INTEGER NOT NULL DEFAULT 0 CHECK (current_stock >= 0),
+                barcode TEXT
+            )"#,
+            r#"CREATE TABLE suppliers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT,
+                address TEXT,
+                balance_due REAL NOT NULL DEFAULT 0 CHECK (balance_due >= 0)
+            )"#,
+            r#"CREATE TABLE purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_no TEXT NOT NULL,
+                supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+                total_amount REAL NOT NULL CHECK (total_amount >= 0),
+                purchase_date TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE purchase_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE RESTRICT,
+                batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                rate REAL NOT NULL CHECK (rate >= 0),
+                total REAL NOT NULL CHECK (total >= 0)
+            )"#,
+            r#"CREATE TABLE sales (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_no TEXT UNIQUE NOT NULL,
+                customer_name TEXT,
+                customer_phone TEXT,
+                subtotal REAL NOT NULL CHECK (subtotal >= 0),
+                discount REAL NOT NULL DEFAULT 0 CHECK (discount >= 0),
+                grand_total REAL NOT NULL CHECK (grand_total >= 0),
+                payment_mode TEXT NOT NULL DEFAULT 'CASH',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            r#"CREATE TABLE sale_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+                batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                unit_price REAL NOT NULL CHECK (unit_price >= 0),
+                total_price REAL NOT NULL CHECK (total_price >= 0)
+            )"#,
+            "CREATE INDEX idx_medicines_name ON medicines(name COLLATE NOCASE)",
+            "CREATE INDEX idx_medicines_generic_name ON medicines(generic_name COLLATE NOCASE)",
+            "CREATE INDEX idx_batches_medicine_expiry ON medicine_batches(medicine_id, expiry_date, id)",
+            "CREATE INDEX idx_batches_expiry ON medicine_batches(expiry_date)",
+            "CREATE INDEX idx_purchase_items_purchase ON purchase_items(purchase_id)",
+            "CREATE INDEX idx_sale_items_sale ON sale_items(sale_id)",
+            "CREATE INDEX idx_sale_items_batch ON sale_items(batch_id)",
+            "CREATE INDEX idx_batches_barcode ON medicine_batches(barcode) WHERE barcode IS NOT NULL",
+        ]),
+        2 => Ok(&[
+            "ALTER TABLE sales ADD COLUMN flat_discount REAL NOT NULL DEFAULT 0 CHECK (flat_discount >= 0)",
+            "ALTER TABLE sales ADD COLUMN cash_tendered REAL NOT NULL DEFAULT 0 CHECK (cash_tendered >= 0)",
+            "ALTER TABLE sales ADD COLUMN change_due REAL NOT NULL DEFAULT 0 CHECK (change_due >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN item_discount REAL NOT NULL DEFAULT 0 CHECK (item_discount >= 0)",
+            "CREATE INDEX idx_sales_created_at ON sales(created_at DESC, id DESC)",
+        ]),
+        3 => Ok(&[
+            r#"CREATE TABLE stock_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE RESTRICT,
+                batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+                quantity_change INTEGER NOT NULL CHECK (quantity_change != 0),
+                reason TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            "CREATE INDEX idx_stock_adjustments_batch ON stock_adjustments(batch_id, created_at DESC)",
+        ]),
+        4 => Ok(&[
+            r#"ALTER TABLE sale_items
+               ADD COLUMN purchase_rate_at_sale REAL
+               CHECK (purchase_rate_at_sale IS NULL OR purchase_rate_at_sale >= 0)"#,
+            r#"CREATE TABLE app_settings (
+                setting_key TEXT PRIMARY KEY,
+                setting_value TEXT NOT NULL
+            )"#,
+        ]),
+        _ => Err(format!("No migration is available for database version {version}.")),
+    }
+}
+
+fn migrate_connection(connection: &mut Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .map_err(|error| format!("Could not create the database migration table: {error}"))?;
+
+    let applied_versions = {
+        let mut statement = connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+            .map_err(|error| format!("Could not read database migration history: {error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("Could not read database migration history: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read database migration history: {error}"))?
+    };
+
+    let mut current_version = 0_i64;
+    for version in applied_versions {
+        if version != current_version + 1 {
+            return Err(format!(
+                "Database migration history is incomplete at version {}.",
+                current_version + 1
+            ));
+        }
+        current_version = version;
+    }
+    if current_version > LATEST_DATABASE_VERSION {
+        return Err(format!(
+            "Database version {current_version} is newer than this application supports."
+        ));
+    }
+
+    for version in current_version + 1..=LATEST_DATABASE_VERSION {
+        let statements = migration_statements(version)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("Could not begin database migration {version}: {error}"))?;
+        for sql in statements {
+            transaction.execute_batch(sql).map_err(|error| {
+                format!("Could not apply database migration {version}: {error}")
+            })?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [version],
+            )
+            .map_err(|error| format!("Could not record database migration {version}: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not commit database migration {version}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn migrate_pharmacy_database(app: &AppHandle) -> Result<(), String> {
+    let mut connection = open_pharmacy_connection(app)?;
+    migrate_connection(&mut connection)
 }
 
 fn database_timestamp(database_path: &Path) -> Result<String, String> {
@@ -483,6 +763,123 @@ fn create_internal_snapshot(
     Ok(Some(destination))
 }
 
+fn automatic_backup_marker_path(backup_path: &Path) -> PathBuf {
+    let mut marker_path = backup_path.as_os_str().to_os_string();
+    marker_path.push(".automatic");
+    PathBuf::from(marker_path)
+}
+
+fn valid_automatic_backup_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 19
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'_'
+        && bytes[13] == b'-'
+        && bytes[16] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit())
+}
+
+fn automatic_backup_sort_key(backup_path: &Path) -> Option<(String, u16)> {
+    let name = backup_path.file_name()?.to_str()?;
+    let stem = name.strip_prefix("backup_")?.strip_suffix(".db")?;
+    if let Some((timestamp, suffix)) = stem.rsplit_once('_') {
+        if let Ok(sequence) = suffix.parse::<u16>() {
+            if (2..=999).contains(&sequence) && valid_automatic_backup_timestamp(timestamp) {
+                return Some((timestamp.to_owned(), sequence));
+            }
+        }
+    }
+    valid_automatic_backup_timestamp(stem).then(|| (stem.to_owned(), 1))
+}
+
+fn mark_automatic_backup(backup_path: &Path) -> Result<(), String> {
+    if automatic_backup_sort_key(backup_path).is_none() {
+        return Err("The generated automatic backup filename is invalid.".to_owned());
+    }
+    let marker_path = automatic_backup_marker_path(backup_path);
+    let mut marker = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker_path)
+        .map_err(|error| format!("Could not mark the automatic backup: {error}"))?;
+    if let Err(error) = marker
+        .write_all(AUTO_BACKUP_MARKER_CONTENT)
+        .and_then(|()| marker.sync_all())
+    {
+        let _ = fs::remove_file(&marker_path);
+        return Err(format!("Could not mark the automatic backup: {error}"));
+    }
+    Ok(())
+}
+
+fn prune_automatic_backups(
+    directory: &Path,
+    active_database: &Path,
+) -> Result<usize, String> {
+    let active_database = fs::canonicalize(active_database)
+        .map_err(|error| format!("Could not identify the active database for backup cleanup: {error}"))?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("Could not read the automatic backup folder: {error}")),
+    };
+
+    let mut backups = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Could not inspect automatic backups: {error}"))?;
+        let backup_path = entry.path();
+        let Some(sort_key) = automatic_backup_sort_key(&backup_path) else {
+            continue;
+        };
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect an automatic backup: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let marker_path = automatic_backup_marker_path(&backup_path);
+        let marker_is_regular_file = fs::symlink_metadata(&marker_path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false);
+        if !marker_is_regular_file {
+            continue;
+        }
+        let marker_content = fs::read(&marker_path)
+            .map_err(|error| format!("Could not verify automatic backup ownership: {error}"))?;
+        if marker_content.as_slice() != AUTO_BACKUP_MARKER_CONTENT {
+            continue;
+        }
+        if fs::canonicalize(&backup_path)
+            .map_err(|error| format!("Could not identify an automatic backup: {error}"))?
+            == active_database
+        {
+            continue;
+        }
+        backups.push((sort_key, backup_path, marker_path));
+    }
+
+    backups.sort_by(|left, right| left.0.cmp(&right.0));
+    let remove_count = backups.len().saturating_sub(AUTO_BACKUP_RETENTION_COUNT);
+    for (_, backup_path, marker_path) in backups.into_iter().take(remove_count) {
+        fs::remove_file(&backup_path)
+            .map_err(|error| format!("Could not remove an older automatic backup: {error}"))?;
+        fs::remove_file(&marker_path)
+            .map_err(|error| format!("Could not remove an automatic backup marker: {error}"))?;
+    }
+    Ok(remove_count)
+}
+
+fn prune_automatic_backups_best_effort(directory: &Path, active_database: &Path) {
+    if let Err(error) = prune_automatic_backups(directory, active_database) {
+        eprintln!("Automatic backup cleanup was skipped: {error}");
+    }
+}
+
 fn validate_database_extension(path: &Path) -> Result<(), String> {
     if !path
         .extension()
@@ -684,6 +1081,8 @@ fn restore_database_backup(app: AppHandle, source_path: String) -> Result<(), St
 fn register_auto_backup_on_close(
     app: &mut tauri::App,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    migrate_pharmacy_database(app.handle())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found"))?;
@@ -713,7 +1112,17 @@ fn register_auto_backup_on_close(
         let complete_state = Arc::clone(&complete_state);
         std::thread::spawn(move || {
             match create_internal_snapshot(&app_handle, "backup") {
-                Ok(Some(path)) => eprintln!("Automatic pharmacy backup saved to {}", path.display()),
+                Ok(Some(path)) => {
+                    if let Err(error) = mark_automatic_backup(&path) {
+                        eprintln!("{error}");
+                    }
+                    if let (Some(directory), Ok(active_database)) =
+                        (path.parent(), pharmacy_database_path(&app_handle))
+                    {
+                        prune_automatic_backups_best_effort(directory, &active_database);
+                    }
+                    eprintln!("Automatic pharmacy backup saved to {}", path.display());
+                }
                 Ok(None) => {}
                 Err(error) => {
                     started_state.store(false, Ordering::SeqCst);
@@ -735,6 +1144,7 @@ fn register_auto_backup_on_close(
     Ok(())
 }
 
+#[cfg(debug_assertions)]
 #[tauri::command]
 fn execute_sql_transaction(
     app: AppHandle,
@@ -781,9 +1191,430 @@ fn execute_sql_transaction(
     Ok(results)
 }
 
+fn normalized_required_text(
+    value: String,
+    maximum_length: usize,
+    label: &str,
+) -> Result<String, String> {
+    let value = value.trim().to_owned();
+    if value.is_empty() || value.encode_utf16().count() > maximum_length {
+        return Err(format!("{label} is required and exceeds its supported length."));
+    }
+    Ok(value)
+}
+
+fn normalized_optional_text(
+    value: Option<String>,
+    maximum_length: usize,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let value = value.map(|text| text.trim().to_owned()).filter(|text| !text.is_empty());
+    if value
+        .as_ref()
+        .is_some_and(|text| text.encode_utf16().count() > maximum_length)
+    {
+        return Err(format!("{label} exceeds its supported length."));
+    }
+    Ok(value)
+}
+
+fn require_one_changed_row(rows_affected: usize, label: &str) -> Result<(), String> {
+    if rows_affected != 1 {
+        return Err(format!("{label} no longer exists or could not be updated."));
+    }
+    Ok(())
+}
+
+fn apply_pharmacy_mutation_to_connection(
+    connection: &mut Connection,
+    operation: PharmacyMutation,
+) -> Result<Option<i64>, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the pharmacy update: {error}"))?;
+
+    let entity_id = match operation {
+        PharmacyMutation::CreateMedicine {
+            name,
+            generic_name,
+            company,
+            rack_location,
+            min_stock_alert,
+        } => {
+            let name = normalized_required_text(name, 120, "Medicine name")?;
+            let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
+            let company = normalized_optional_text(company, 120, "Company")?;
+            let rack_location = normalized_optional_text(rack_location, 80, "Rack location")?;
+            if !(0..=1_000_000_000).contains(&min_stock_alert) {
+                return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute(
+                    r#"INSERT INTO medicines (
+                         name, generic_name, company, rack_location, min_stock_alert
+                       ) VALUES (?1, ?2, ?3, ?4, ?5)"#,
+                    params![name, generic_name, company, rack_location, min_stock_alert],
+                )
+                .map_err(|error| format!("Could not create the medicine: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine")?;
+            Some(transaction.last_insert_rowid())
+        }
+        PharmacyMutation::UpdateMedicine {
+            medicine_id,
+            name,
+            generic_name,
+            company,
+            rack_location,
+            min_stock_alert,
+        } => {
+            if medicine_id <= 0 {
+                return Err("Medicine id must be a positive whole number.".to_owned());
+            }
+            let name = normalized_required_text(name, 120, "Medicine name")?;
+            let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
+            let company = normalized_optional_text(company, 120, "Company")?;
+            let rack_location = normalized_optional_text(rack_location, 80, "Rack location")?;
+            if !(0..=1_000_000_000).contains(&min_stock_alert) {
+                return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute(
+                    r#"UPDATE medicines
+                       SET name = ?1, generic_name = ?2, company = ?3,
+                           rack_location = ?4, min_stock_alert = ?5
+                       WHERE id = ?6"#,
+                    params![
+                        name,
+                        generic_name,
+                        company,
+                        rack_location,
+                        min_stock_alert,
+                        medicine_id
+                    ],
+                )
+                .map_err(|error| format!("Could not update the medicine: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine")?;
+            None
+        }
+        PharmacyMutation::DeleteMedicine { medicine_id } => {
+            if medicine_id <= 0 {
+                return Err("Medicine id must be a positive whole number.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute("DELETE FROM medicines WHERE id = ?1", [medicine_id])
+                .map_err(|error| format!("Could not delete the medicine: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine")?;
+            None
+        }
+        PharmacyMutation::UpdateBatchDetails {
+            batch_id,
+            medicine_id,
+            mrp_cents,
+            sale_rate_cents,
+            rack_location,
+        } => {
+            if batch_id <= 0 || medicine_id <= 0 || mrp_cents < 0 || sale_rate_cents < 0 {
+                return Err("Batch ids and prices must be valid non-negative values.".to_owned());
+            }
+            let rack_location = normalized_optional_text(rack_location, 80, "Rack location")?;
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE medicine_batches SET mrp = ?1, sale_rate = ?2 WHERE id = ?3 AND medicine_id = ?4",
+                    params![
+                        mrp_cents as f64 / 100.0,
+                        sale_rate_cents as f64 / 100.0,
+                        batch_id,
+                        medicine_id
+                    ],
+                )
+                .map_err(|error| format!("Could not update the medicine batch: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine batch")?;
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE medicines SET rack_location = ?1 WHERE id = ?2",
+                    params![rack_location, medicine_id],
+                )
+                .map_err(|error| format!("Could not update the medicine location: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine")?;
+            None
+        }
+        PharmacyMutation::AdjustBatchStock {
+            batch_id,
+            medicine_id,
+            quantity_change,
+            reason,
+        } => {
+            if batch_id <= 0 || medicine_id <= 0 {
+                return Err("Medicine and batch ids must be positive whole numbers.".to_owned());
+            }
+            if quantity_change == 0
+                || !(-1_000_000_000..=1_000_000_000).contains(&quantity_change)
+            {
+                return Err("Enter a non-zero stock adjustment of at most 1,000,000,000 units.".to_owned());
+            }
+            let reason = normalized_required_text(reason, 250, "Adjustment reason")?;
+            let rows_affected = transaction
+                .execute(
+                    r#"UPDATE medicine_batches
+                       SET current_stock = current_stock + ?1
+                       WHERE id = ?2 AND medicine_id = ?3
+                         AND current_stock + ?1 BETWEEN 0 AND 1000000000"#,
+                    params![quantity_change, batch_id, medicine_id],
+                )
+                .map_err(|error| format!("Could not adjust medicine stock: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine batch")?;
+            let rows_affected = transaction
+                .execute(
+                    r#"INSERT INTO stock_adjustments (
+                         medicine_id, batch_id, quantity_change, reason
+                       ) VALUES (?1, ?2, ?3, ?4)"#,
+                    params![medicine_id, batch_id, quantity_change, reason],
+                )
+                .map_err(|error| format!("Could not record the stock adjustment: {error}"))?;
+            require_one_changed_row(rows_affected, "Stock adjustment")?;
+            None
+        }
+        PharmacyMutation::DeductStock { deductions } => {
+            if deductions.is_empty() {
+                return Err("At least one stock deduction is required.".to_owned());
+            }
+            let mut combined = HashMap::<i64, i64>::new();
+            for deduction in deductions {
+                if deduction.batch_id <= 0 || deduction.quantity <= 0 {
+                    return Err("Stock deductions need positive batch ids and quantities.".to_owned());
+                }
+                let quantity = combined.entry(deduction.batch_id).or_default();
+                *quantity = quantity
+                    .checked_add(deduction.quantity)
+                    .ok_or_else(|| "Combined stock deduction exceeds the supported amount.".to_owned())?;
+            }
+            let mut combined = combined.into_iter().collect::<Vec<_>>();
+            combined.sort_unstable_by_key(|(batch_id, _)| *batch_id);
+            for (batch_id, quantity) in combined {
+                let rows_affected = transaction
+                    .execute(
+                        r#"UPDATE medicine_batches
+                           SET current_stock = current_stock - ?1
+                           WHERE id = ?2
+                             AND current_stock >= ?1
+                             AND expiry_date >= date('now', 'localtime')"#,
+                        params![quantity, batch_id],
+                    )
+                    .map_err(|error| format!("Could not deduct medicine stock: {error}"))?;
+                require_one_changed_row(rows_affected, "Medicine batch")?;
+            }
+            None
+        }
+        PharmacyMutation::AddStock { batch_id, quantity } => {
+            if batch_id <= 0 || quantity <= 0 {
+                return Err("Batch id and stock quantity must be positive whole numbers.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE medicine_batches SET current_stock = current_stock + ?1 WHERE id = ?2",
+                    params![quantity, batch_id],
+                )
+                .map_err(|error| format!("Could not add stock to the medicine batch: {error}"))?;
+            require_one_changed_row(rows_affected, "Medicine batch")?;
+            None
+        }
+        PharmacyMutation::CreateSupplier {
+            name,
+            phone,
+            address,
+        } => {
+            let name = normalized_required_text(name, 120, "Supplier name")?;
+            let phone = normalized_optional_text(phone, 40, "Supplier phone")?;
+            let address = normalized_optional_text(address, 500, "Supplier address")?;
+            let rows_affected = transaction
+                .execute(
+                    "INSERT INTO suppliers (name, phone, address) VALUES (?1, ?2, ?3)",
+                    params![name, phone, address],
+                )
+                .map_err(|error| format!("Could not create the supplier: {error}"))?;
+            require_one_changed_row(rows_affected, "Supplier")?;
+            Some(transaction.last_insert_rowid())
+        }
+        PharmacyMutation::UpdateSupplier {
+            supplier_id,
+            name,
+            phone,
+            address,
+        } => {
+            if supplier_id <= 0 {
+                return Err("Supplier id must be a positive whole number.".to_owned());
+            }
+            let name = normalized_required_text(name, 120, "Supplier name")?;
+            let phone = normalized_optional_text(phone, 40, "Supplier phone")?;
+            let address = normalized_optional_text(address, 500, "Supplier address")?;
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE suppliers SET name = ?1, phone = ?2, address = ?3 WHERE id = ?4",
+                    params![name, phone, address, supplier_id],
+                )
+                .map_err(|error| format!("Could not update the supplier: {error}"))?;
+            require_one_changed_row(rows_affected, "Supplier")?;
+            None
+        }
+        PharmacyMutation::SaveSettings { settings } => {
+            let values = [
+                ("pharmacy_name", settings.pharmacy_name, 160_usize),
+                ("address", settings.address, 500),
+                ("contact_number", settings.contact_number, 40),
+                ("drug_license_number", settings.drug_license_number, 100),
+                ("receipt_footer_note", settings.receipt_footer_note, 300),
+            ];
+            for (key, value, maximum_length) in values {
+                let value = value.trim();
+                if value.encode_utf16().count() > maximum_length {
+                    return Err(format!(
+                        "{} must be {maximum_length} characters or fewer.",
+                        key.replace('_', " ")
+                    ));
+                }
+                let rows_affected = transaction
+                    .execute(
+                        r#"INSERT INTO app_settings (setting_key, setting_value)
+                           VALUES (?1, ?2)
+                           ON CONFLICT(setting_key) DO UPDATE
+                           SET setting_value = excluded.setting_value"#,
+                        params![key, value],
+                    )
+                    .map_err(|error| format!("Could not save pharmacy settings: {error}"))?;
+                require_one_changed_row(rows_affected, "Pharmacy setting")?;
+            }
+            None
+        }
+    };
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not save the pharmacy update: {error}"))?;
+    Ok(entity_id)
+}
+
+#[tauri::command]
+fn apply_pharmacy_mutation(
+    app: AppHandle,
+    operation: PharmacyMutation,
+) -> Result<PharmacyMutationResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    let entity_id = apply_pharmacy_mutation_to_connection(&mut connection, operation)?;
+    Ok(PharmacyMutationResult { entity_id })
+}
+
+fn allocate_sale_line_fefo(
+    transaction: &Transaction<'_>,
+    item: &SaleCheckoutItem,
+    reserved_stock: &mut HashMap<i64, i64>,
+) -> Result<Vec<SaleLineAllocation>, String> {
+    if item.medicine_id <= 0 || item.batch_id <= 0 || item.quantity <= 0 {
+        return Err(
+            "Sale item must have a valid medicine, batch, and positive quantity.".to_owned(),
+        );
+    }
+
+    let batches = {
+        let mut statement = transaction
+            .prepare(
+                r#"SELECT id, current_stock
+                   FROM medicine_batches
+                   WHERE medicine_id = ?1
+                     AND current_stock > 0
+                     AND expiry_date >= date('now', 'localtime')
+                   ORDER BY expiry_date ASC, batch_no COLLATE NOCASE ASC, id ASC"#,
+            )
+            .map_err(|error| format!("Could not find eligible medicine batches: {error}"))?;
+        let rows = statement
+            .query_map([item.medicine_id], |row| {
+                Ok(FefoBatch {
+                    id: row.get(0)?,
+                    current_stock: row.get(1)?,
+                })
+            })
+            .map_err(|error| format!("Could not read eligible medicine batches: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read eligible medicine batches: {error}"))?
+    };
+
+    let earliest_available = batches.iter().find(|batch| {
+        batch.current_stock > reserved_stock.get(&batch.id).copied().unwrap_or_default()
+    });
+    if earliest_available
+        .map(|batch| batch.id)
+        .is_none_or(|batch_id| batch_id != item.batch_id)
+    {
+        return Err(
+            "The selected batch does not follow earliest-expiry-first allocation. Refresh the cart and try again."
+                .to_owned(),
+        );
+    }
+
+    let mut remaining_quantity = item.quantity;
+    let mut raw_allocations = Vec::new();
+    for batch in batches {
+        if remaining_quantity == 0 {
+            break;
+        }
+        let already_reserved = reserved_stock.get(&batch.id).copied().unwrap_or_default();
+        let available = batch
+            .current_stock
+            .checked_sub(already_reserved)
+            .ok_or_else(|| "Reserved batch stock exceeded its available quantity.".to_owned())?;
+        if available <= 0 {
+            continue;
+        }
+        let allocated_quantity = available.min(remaining_quantity);
+        let updated_reserved = already_reserved
+            .checked_add(allocated_quantity)
+            .ok_or_else(|| "Reserved batch quantity exceeds the supported amount.".to_owned())?;
+        reserved_stock.insert(batch.id, updated_reserved);
+        raw_allocations.push((batch.id, allocated_quantity));
+        remaining_quantity -= allocated_quantity;
+    }
+
+    if remaining_quantity > 0 {
+        return Err(
+            "There is not enough unexpired stock to complete this sale. Refresh the cart and try again."
+                .to_owned(),
+        );
+    }
+
+    let mut discount_remaining = item.item_discount_cents;
+    let allocation_count = raw_allocations.len();
+    raw_allocations
+        .into_iter()
+        .enumerate()
+        .map(|(index, (batch_id, quantity))| {
+            let discount = if index + 1 == allocation_count {
+                discount_remaining
+            } else {
+                let proportional =
+                    ((item.item_discount_cents as i128 * quantity as i128)
+                        / item.quantity as i128) as i64;
+                discount_remaining -= proportional;
+                proportional
+            };
+            Ok(SaleLineAllocation {
+                batch_id,
+                quantity,
+                item_discount_cents: discount,
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn complete_sale(
     app: AppHandle,
+    checkout: SaleCheckoutRequest,
+) -> Result<SaleCheckoutResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    complete_sale_in_connection(&mut connection, checkout)
+}
+
+fn complete_sale_in_connection(
+    connection: &mut Connection,
     checkout: SaleCheckoutRequest,
 ) -> Result<SaleCheckoutResult, String> {
     if checkout.items.is_empty() {
@@ -847,10 +1678,16 @@ fn complete_sale(
         0
     };
 
-    let mut connection = open_pharmacy_connection(&app)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not begin the sale transaction: {error}"))?;
+
+    let mut reserved_stock = HashMap::new();
+    let allocations = checkout
+        .items
+        .iter()
+        .map(|item| allocate_sale_line_fefo(&transaction, item, &mut reserved_stock))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let invoice_no = transaction
         .query_row(
@@ -901,57 +1738,59 @@ fn complete_sale(
         .map_err(|error| format!("Could not create the sale invoice: {error}"))?;
     let sale_id = transaction.last_insert_rowid();
 
-    for item in checkout.items {
-        let rows_affected = transaction
-            .execute(
-                r#"UPDATE medicine_batches
-                   SET current_stock = current_stock - ?1
-                   WHERE id = ?2
-                     AND medicine_id = ?3
-                     AND current_stock >= ?1
-                     AND expiry_date >= date('now', 'localtime')"#,
-                params![item.quantity, item.batch_id, item.medicine_id],
-            )
-            .map_err(|error| format!("Could not deduct medicine stock: {error}"))?;
-        if rows_affected != 1 {
-            return Err(format!(
-                "Batch {} is expired or no longer has enough stock. Refresh the cart and try again.",
-                item.batch_id
-            ));
+    for (item, item_allocations) in checkout.items.into_iter().zip(allocations) {
+        for allocation in item_allocations {
+            let rows_affected = transaction
+                .execute(
+                    r#"UPDATE medicine_batches
+                       SET current_stock = current_stock - ?1
+                       WHERE id = ?2
+                         AND medicine_id = ?3
+                         AND current_stock >= ?1
+                         AND expiry_date >= date('now', 'localtime')"#,
+                    params![allocation.quantity, allocation.batch_id, item.medicine_id],
+                )
+                .map_err(|error| format!("Could not deduct medicine stock: {error}"))?;
+            if rows_affected != 1 {
+                return Err(format!(
+                    "Batch {} is expired or no longer has enough stock. Refresh the cart and try again.",
+                    allocation.batch_id
+                ));
+            }
+
+            let purchase_rate_cents: i64 = transaction
+                .query_row(
+                    r#"SELECT CAST(round(purchase_rate * 100) AS INTEGER)
+                       FROM medicine_batches
+                       WHERE id = ?1 AND medicine_id = ?2"#,
+                    params![allocation.batch_id, item.medicine_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not capture the batch cost for the sale: {error}"))?;
+
+            let line_gross_cents = item
+                .unit_price_cents
+                .checked_mul(allocation.quantity)
+                .ok_or_else(|| "Sale item total exceeds the supported amount.".to_owned())?;
+            let line_total_cents = line_gross_cents - allocation.item_discount_cents;
+            transaction
+                .execute(
+                    r#"INSERT INTO sale_items (
+                         sale_id, batch_id, quantity, unit_price, item_discount, total_price,
+                         purchase_rate_at_sale
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                    params![
+                        sale_id,
+                        allocation.batch_id,
+                        allocation.quantity,
+                        item.unit_price_cents as f64 / 100.0,
+                        allocation.item_discount_cents as f64 / 100.0,
+                        line_total_cents as f64 / 100.0,
+                        purchase_rate_cents as f64 / 100.0,
+                    ],
+                )
+                .map_err(|error| format!("Could not add a sale item: {error}"))?;
         }
-
-        let purchase_rate_cents: i64 = transaction
-            .query_row(
-                r#"SELECT CAST(round(purchase_rate * 100) AS INTEGER)
-                   FROM medicine_batches
-                   WHERE id = ?1 AND medicine_id = ?2"#,
-                params![item.batch_id, item.medicine_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not capture the batch cost for the sale: {error}"))?;
-
-        let line_gross_cents = item
-            .unit_price_cents
-            .checked_mul(item.quantity)
-            .ok_or_else(|| "Sale item total exceeds the supported amount.".to_owned())?;
-        let line_total_cents = line_gross_cents - item.item_discount_cents;
-        transaction
-            .execute(
-                r#"INSERT INTO sale_items (
-                     sale_id, batch_id, quantity, unit_price, item_discount, total_price,
-                     purchase_rate_at_sale
-                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-                params![
-                    sale_id,
-                    item.batch_id,
-                    item.quantity,
-                    item.unit_price_cents as f64 / 100.0,
-                    item.item_discount_cents as f64 / 100.0,
-                    line_total_cents as f64 / 100.0,
-                    purchase_rate_cents as f64 / 100.0,
-                ],
-            )
-            .map_err(|error| format!("Could not add a sale item: {error}"))?;
     }
 
     transaction
@@ -1177,19 +2016,697 @@ fn complete_purchase(app: AppHandle, purchase: PurchaseRequest) -> Result<Purcha
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_sql::Builder::default().build())
-        .setup(register_auto_backup_on_close)
-        .invoke_handler(tauri::generate_handler![
+        .setup(register_auto_backup_on_close);
+
+    #[cfg(debug_assertions)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
             execute_sql_transaction,
+            get_inventory_medicines,
+            get_medicine_batches,
+            search_medicines,
+            get_fefo_batch,
+            get_sellable_batches,
+            get_low_stock_alerts,
+            get_expiry_alerts,
+            get_suppliers,
+            get_store_settings,
+            get_recent_purchases,
+            get_recent_sales,
+            get_sale_details,
+            get_sales_report_summary,
+            get_sales_report_rows,
+            get_dashboard_inventory_summary,
+            get_dashboard_purchase_summary,
+            get_top_selling_medicines,
+            reads::check_development_database_empty,
+            apply_pharmacy_mutation,
             complete_sale,
             complete_purchase,
             create_database_backup,
             restore_database_backup
-        ])
+    ]);
+
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        get_inventory_medicines,
+        get_medicine_batches,
+        search_medicines,
+        get_fefo_batch,
+        get_sellable_batches,
+        get_low_stock_alerts,
+        get_expiry_alerts,
+        get_suppliers,
+        get_store_settings,
+        get_recent_purchases,
+        get_recent_sales,
+        get_sale_details,
+        get_sales_report_summary,
+        get_sales_report_rows,
+        get_dashboard_inventory_summary,
+        get_dashboard_purchase_summary,
+        get_top_selling_medicines,
+        apply_pharmacy_mutation,
+        complete_sale,
+        complete_purchase,
+        create_database_backup,
+        restore_database_backup
+    ]);
+
+    builder
         .run(tauri::generate_context!())
         .expect("failed to start Medicine Inventory POS");
+}
+
+#[cfg(test)]
+mod fefo_tests {
+    use super::*;
+
+    fn connection_with_batches() -> Connection {
+        let connection = Connection::open_in_memory().expect("open FEFO test database");
+        connection
+            .execute_batch(
+                r#"CREATE TABLE medicine_batches (
+                    id INTEGER PRIMARY KEY,
+                    medicine_id INTEGER NOT NULL,
+                    batch_no TEXT NOT NULL,
+                    expiry_date TEXT NOT NULL,
+                    purchase_rate REAL NOT NULL,
+                    current_stock INTEGER NOT NULL
+                )"#,
+            )
+            .expect("create FEFO batch schema");
+        connection
+    }
+
+    fn add_batch(connection: &Connection, id: i64, expiry_offset_days: i64, stock: i64) {
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate, current_stock
+                   ) VALUES (
+                     ?1, 1, ?2, date('now', 'localtime', ?3), 1.0, ?4
+                   )"#,
+                params![
+                    id,
+                    format!("LOT-{id}"),
+                    format!("{expiry_offset_days:+} days"),
+                    stock
+                ],
+            )
+            .expect("add FEFO test batch");
+    }
+
+    fn sale_item(batch_id: i64, quantity: i64, discount_cents: i64) -> SaleCheckoutItem {
+        SaleCheckoutItem {
+            medicine_id: 1,
+            batch_id,
+            quantity,
+            unit_price_cents: 1_000,
+            item_discount_cents: discount_cents,
+        }
+    }
+
+    fn allocate(
+        connection: &mut Connection,
+        item: &SaleCheckoutItem,
+    ) -> Result<Vec<SaleLineAllocation>, String> {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("begin FEFO test transaction");
+        allocate_sale_line_fefo(&transaction, item, &mut HashMap::new())
+    }
+
+    #[test]
+    fn allocates_from_a_single_valid_batch() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 11, 8, 9);
+
+        let allocations = allocate(&mut connection, &sale_item(11, 4, 0))
+            .expect("allocate single batch");
+
+        assert_eq!(
+            allocations,
+            vec![SaleLineAllocation {
+                batch_id: 11,
+                quantity: 4,
+                item_discount_cents: 0
+            }]
+        );
+    }
+
+    #[test]
+    fn chooses_the_earliest_expiry_from_multiple_valid_batches() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 21, 12, 5);
+        add_batch(&connection, 22, 3, 8);
+
+        let allocations = allocate(&mut connection, &sale_item(22, 2, 0))
+            .expect("allocate earliest-expiry batch");
+
+        assert_eq!(allocations[0].batch_id, 22);
+        assert_eq!(allocations[0].quantity, 2);
+    }
+
+    #[test]
+    fn excludes_expired_batches_and_uses_the_valid_batch() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 31, -1, 9);
+        add_batch(&connection, 32, 4, 9);
+
+        let allocations = allocate(&mut connection, &sale_item(32, 3, 0))
+            .expect("allocate valid batch");
+
+        assert_eq!(allocations.len(), 1);
+        assert_eq!(allocations[0].batch_id, 32);
+        assert_eq!(allocations[0].quantity, 3);
+    }
+
+    #[test]
+    fn splits_quantity_across_batches_in_fefo_order() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 41, 2, 2);
+        add_batch(&connection, 42, 9, 5);
+
+        let allocations = allocate(&mut connection, &sale_item(41, 5, 50))
+            .expect("allocate across batches");
+
+        assert_eq!(
+            allocations,
+            vec![
+                SaleLineAllocation {
+                    batch_id: 41,
+                    quantity: 2,
+                    item_discount_cents: 20
+                },
+                SaleLineAllocation {
+                    batch_id: 42,
+                    quantity: 3,
+                    item_discount_cents: 30
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_quantity_above_total_unexpired_stock() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 51, 2, 2);
+        add_batch(&connection, 52, 9, 1);
+
+        let result = allocate(&mut connection, &sale_item(51, 4, 0));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_renderer_selection_of_a_later_expiry_batch() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 61, 2, 4);
+        add_batch(&connection, 62, 9, 4);
+
+        let result = allocate(&mut connection, &sale_item(62, 1, 0));
+
+        assert!(result
+            .expect_err("later-expiry batch must be rejected")
+            .contains("earliest-expiry-first"));
+    }
+
+    #[test]
+    fn rejects_zero_and_negative_allocation_quantities() {
+        let mut connection = connection_with_batches();
+        add_batch(&connection, 71, 4, 3);
+
+        for quantity in [0, -1] {
+            let error = allocate(&mut connection, &sale_item(71, quantity, 0))
+                .expect_err("invalid quantity must be rejected before allocation");
+            assert!(error.contains("positive quantity"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod sale_tests {
+    use super::*;
+
+    fn sale_connection() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("open sale test database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable sale test foreign keys");
+        migrate_connection(&mut connection).expect("migrate sale test database");
+        connection
+            .execute(
+                "INSERT INTO medicines (id, name) VALUES (1, 'Sale test medicine')",
+                [],
+            )
+            .expect("create sale test medicine");
+        connection
+    }
+
+    fn add_sale_batch(
+        connection: &Connection,
+        batch_id: i64,
+        expiry_offset_days: i64,
+        stock: i64,
+        purchase_rate: f64,
+    ) {
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                   ) VALUES (
+                     ?1, 1, ?2, date('now', 'localtime', ?3), ?4, 20, 10, ?5
+                   )"#,
+                params![
+                    batch_id,
+                    format!("SALE-{batch_id}"),
+                    format!("{expiry_offset_days:+} days"),
+                    purchase_rate,
+                    stock
+                ],
+            )
+            .expect("add sale test batch");
+    }
+
+    fn checkout(batch_id: i64, quantity: i64, item_discount_cents: i64) -> SaleCheckoutRequest {
+        SaleCheckoutRequest {
+            customer_name: Some("Test customer".to_owned()),
+            customer_phone: Some("12345".to_owned()),
+            payment_mode: "CASH".to_owned(),
+            flat_discount_cents: 50,
+            cash_tendered_cents: 4_000,
+            items: vec![SaleCheckoutItem {
+                medicine_id: 1,
+                batch_id,
+                quantity,
+                unit_price_cents: 1_000,
+                item_discount_cents,
+            }],
+        }
+    }
+
+    #[test]
+    fn sale_splits_stock_by_fefo_and_preserves_invoice_totals_and_payment() {
+        let mut connection = sale_connection();
+        add_sale_batch(&connection, 201, -2, 7, 2.5);
+        add_sale_batch(&connection, 202, 2, 2, 4.0);
+        add_sale_batch(&connection, 203, 8, 5, 5.0);
+
+        let result = complete_sale_in_connection(&mut connection, checkout(202, 4, 100))
+            .expect("complete FEFO sale");
+        let (expired_stock, earliest_stock, later_stock): (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT current_stock FROM medicine_batches WHERE id = 201),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 202),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 203)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read sale batch stock");
+        let (subtotal, discount, flat_discount, grand_total, cash_tendered, change_due): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                r#"SELECT
+                     CAST(round(subtotal * 100) AS INTEGER),
+                     CAST(round(discount * 100) AS INTEGER),
+                     CAST(round(flat_discount * 100) AS INTEGER),
+                     CAST(round(grand_total * 100) AS INTEGER),
+                     CAST(round(cash_tendered * 100) AS INTEGER),
+                     CAST(round(change_due * 100) AS INTEGER)
+                   FROM sales WHERE id = ?1"#,
+                [result.sale_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("read sale totals");
+        let sale_item_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sale_items WHERE sale_id = ?1",
+                [result.sale_id],
+                |row| row.get(0),
+            )
+            .expect("count sale item allocations");
+        let sale_line_total: i64 = connection
+            .query_row(
+                "SELECT CAST(round(SUM(total_price) * 100) AS INTEGER) FROM sale_items WHERE sale_id = ?1",
+                [result.sale_id],
+                |row| row.get(0),
+            )
+            .expect("read sale line totals");
+
+        assert!(result.invoice_no.starts_with("INV-"));
+        assert_eq!((expired_stock, earliest_stock, later_stock), (7, 0, 3));
+        assert_eq!(
+            (subtotal, discount, flat_discount, grand_total, cash_tendered, change_due),
+            (4_000, 150, 50, 3_850, 4_000, 150)
+        );
+        assert_eq!(sale_item_rows, 2);
+        assert_eq!(sale_line_total, 3_900);
+    }
+
+    #[test]
+    fn sale_rejects_later_batch_selection_and_insufficient_eligible_stock() {
+        let mut connection = sale_connection();
+        add_sale_batch(&connection, 211, 2, 2, 4.0);
+        add_sale_batch(&connection, 212, 8, 1, 5.0);
+
+        let later_batch_result = complete_sale_in_connection(&mut connection, checkout(212, 1, 0));
+        assert!(later_batch_result
+            .expect_err("reject later-expiry batch")
+            .contains("earliest-expiry-first"));
+
+        let insufficient_result =
+            complete_sale_in_connection(&mut connection, checkout(211, 4, 0));
+        assert!(insufficient_result.is_err());
+
+        let sale_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sales", [], |row| row.get(0))
+            .expect("count completed sales");
+        let (early_stock, late_stock): (i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT current_stock FROM medicine_batches WHERE id = 211),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 212)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read rejected sale stock");
+
+        assert_eq!(sale_count, 0);
+        assert_eq!((early_stock, late_stock), (2, 1));
+    }
+
+    #[test]
+    fn checkout_rejects_zero_and_negative_quantities_without_mutating_stock() {
+        let mut connection = sale_connection();
+        add_sale_batch(&connection, 221, 2, 6, 4.0);
+
+        for quantity in [0, -1] {
+            let error = complete_sale_in_connection(&mut connection, checkout(221, quantity, 0))
+                .expect_err("invalid checkout quantity must be rejected");
+            assert!(error.contains("invalid id, quantity"));
+        }
+
+        let (sale_count, stock): (i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM sales),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 221)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read database after rejected checkout");
+
+        assert_eq!((sale_count, stock), (0, 6));
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn applies_all_migrations_without_changing_the_schema_version_contract() {
+        let mut connection = Connection::open_in_memory().expect("open migration test database");
+        migrate_connection(&mut connection).expect("apply migrations");
+        migrate_connection(&mut connection).expect("migrations are idempotent");
+
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+            .expect("read migration version");
+        let integrity: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("check migration database integrity");
+        let app_settings_exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check final migration table");
+
+        assert_eq!(version, LATEST_DATABASE_VERSION);
+        assert_eq!(integrity, "ok");
+        assert_eq!(app_settings_exists, 1);
+    }
+
+    #[test]
+    fn rejects_non_contiguous_migration_history() {
+        let mut connection = Connection::open_in_memory().expect("open migration test database");
+        connection
+            .execute_batch(
+                r#"CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO schema_migrations (version) VALUES (1), (3);"#,
+            )
+            .expect("create invalid migration history");
+
+        assert!(migrate_connection(&mut connection)
+            .expect_err("migration gaps must fail explicitly")
+            .contains("incomplete"));
+    }
+}
+
+#[cfg(test)]
+mod pharmacy_mutation_tests {
+    use super::*;
+
+    fn migrated_connection() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("open pharmacy mutation database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable foreign keys");
+        migrate_connection(&mut connection).expect("migrate pharmacy mutation database");
+        connection
+    }
+
+    fn create_medicine(connection: &mut Connection) -> i64 {
+        apply_pharmacy_mutation_to_connection(
+            connection,
+            PharmacyMutation::CreateMedicine {
+                name: "Test medicine".to_owned(),
+                generic_name: Some("Test generic".to_owned()),
+                company: Some("Test company".to_owned()),
+                rack_location: Some("A-1".to_owned()),
+                min_stock_alert: 5,
+            },
+        )
+        .expect("create medicine")
+        .expect("medicine id")
+    }
+
+    #[test]
+    fn typed_medicine_supplier_and_settings_writes_persist() {
+        let mut connection = migrated_connection();
+        let medicine_id = create_medicine(&mut connection);
+        let supplier_id = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::CreateSupplier {
+                name: "Test supplier".to_owned(),
+                phone: Some("12345".to_owned()),
+                address: None,
+            },
+        )
+        .expect("create supplier")
+        .expect("supplier id");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::SaveSettings {
+                settings: StoreSettingsMutation {
+                    pharmacy_name: "Test pharmacy".to_owned(),
+                    address: "Market Road".to_owned(),
+                    contact_number: "12345".to_owned(),
+                    drug_license_number: "DL-1".to_owned(),
+                    receipt_footer_note: "Thank you".to_owned(),
+                },
+            },
+        )
+        .expect("save settings");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::UpdateMedicine {
+                medicine_id,
+                name: "Updated medicine".to_owned(),
+                generic_name: None,
+                company: Some("New company".to_owned()),
+                rack_location: Some("B-2".to_owned()),
+                min_stock_alert: 9,
+            },
+        )
+        .expect("update medicine");
+
+        let medicine_name: String = connection
+            .query_row(
+                "SELECT name FROM medicines WHERE id = ?1",
+                [medicine_id],
+                |row| row.get(0),
+            )
+            .expect("read medicine");
+        let stored_supplier_id: i64 = connection
+            .query_row(
+                "SELECT id FROM suppliers WHERE id = ?1",
+                [supplier_id],
+                |row| row.get(0),
+            )
+            .expect("read supplier");
+        let pharmacy_name: String = connection
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'pharmacy_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read pharmacy setting");
+
+        assert_eq!(medicine_name, "Updated medicine");
+        assert_eq!(stored_supplier_id, supplier_id);
+        assert_eq!(pharmacy_name, "Test pharmacy");
+    }
+
+    #[test]
+    fn typed_writes_survive_reopen_and_test_database_passes_quick_check() {
+        let database_path = unique_internal_path(
+            &std::env::temp_dir(),
+            "pharmadesk-qa-persistence",
+            "db",
+        );
+        let mut connection = Connection::open(&database_path).expect("open QA database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable QA foreign keys");
+        migrate_connection(&mut connection).expect("migrate QA database");
+        let medicine_id = create_medicine(&mut connection);
+        drop(connection);
+
+        let reopened = Connection::open(&database_path).expect("reopen QA database");
+        let medicine_name: String = reopened
+            .query_row(
+                "SELECT name FROM medicines WHERE id = ?1",
+                [medicine_id],
+                |row| row.get(0),
+            )
+            .expect("read persisted QA medicine");
+        let integrity: String = reopened
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("check QA database integrity");
+
+        assert_eq!(medicine_name, "Test medicine");
+        assert_eq!(integrity, "ok");
+        drop(reopened);
+        fs::remove_file(database_path).expect("remove isolated QA database");
+    }
+
+    #[test]
+    fn typed_batch_mutations_preserve_stock_adjustment_and_atomic_deduction_rules() {
+        let mut connection = migrated_connection();
+        let medicine_id = create_medicine(&mut connection);
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                   ) VALUES
+                     (101, ?1, 'LOT-A', '2099-12-31', 4, 10, 9, 3),
+                     (102, ?1, 'LOT-B', '2099-12-31', 5, 11, 10, 0)"#,
+                [medicine_id],
+            )
+            .expect("seed stock batches");
+
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::AdjustBatchStock {
+                batch_id: 101,
+                medicine_id,
+                quantity_change: 2,
+                reason: "Count correction".to_owned(),
+            },
+        )
+        .expect("adjust stock");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::UpdateBatchDetails {
+                batch_id: 101,
+                medicine_id,
+                mrp_cents: 1_200,
+                sale_rate_cents: 1_000,
+                rack_location: Some("C-3".to_owned()),
+            },
+        )
+        .expect("update batch");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::AddStock {
+                batch_id: 101,
+                quantity: 1,
+            },
+        )
+        .expect("add stock");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::DeductStock {
+                deductions: vec![StockDeduction {
+                    batch_id: 101,
+                    quantity: 2,
+                }],
+            },
+        )
+        .expect("deduct stock");
+
+        let result = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::DeductStock {
+                deductions: vec![
+                    StockDeduction {
+                        batch_id: 101,
+                        quantity: 1,
+                    },
+                    StockDeduction {
+                        batch_id: 102,
+                        quantity: 1,
+                    },
+                ],
+            },
+        );
+        let stock: i64 = connection
+            .query_row(
+                "SELECT current_stock FROM medicine_batches WHERE id = 101",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read batch stock");
+        let adjustments: i64 = connection
+            .query_row("SELECT COUNT(*) FROM stock_adjustments", [], |row| row.get(0))
+            .expect("count stock adjustments");
+        let mrp: f64 = connection
+            .query_row(
+                "SELECT mrp FROM medicine_batches WHERE id = 101",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read updated MRP");
+
+        assert!(result.is_err());
+        assert_eq!(stock, 4);
+        assert_eq!(adjustments, 1);
+        assert_eq!(mrp, 12.0);
+    }
 }
 
 #[cfg(test)]
@@ -1352,6 +2869,170 @@ mod purchase_tests {
 #[cfg(test)]
 mod backup_tests {
     use super::*;
+
+    fn create_test_backup_directory() -> PathBuf {
+        let directory = unique_internal_path(
+            &std::env::temp_dir(),
+            "pharmadesk-retention-test",
+            "dir",
+        );
+        fs::create_dir_all(&directory).expect("create temporary backup directory");
+        directory
+    }
+
+    fn create_active_database(directory: &Path) -> PathBuf {
+        let active_database = directory.join("pharmacy.db");
+        fs::write(&active_database, b"active database").expect("create active database");
+        active_database
+    }
+
+    fn create_automatic_backup(directory: &Path, timestamp: &str) -> PathBuf {
+        let path = directory.join(format!("backup_{timestamp}.db"));
+        fs::write(&path, b"automatic backup").expect("create automatic backup");
+        mark_automatic_backup(&path).expect("mark automatic backup");
+        path
+    }
+
+    fn count_automatic_backups(directory: &Path) -> usize {
+        fs::read_dir(directory)
+            .expect("read backup directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                automatic_backup_sort_key(&entry.path()).is_some()
+                    && automatic_backup_marker_path(&entry.path()).is_file()
+            })
+            .count()
+    }
+
+    #[test]
+    fn backup_retention_keeps_fewer_than_the_limit() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        for second in 0..AUTO_BACKUP_RETENTION_COUNT - 1 {
+            create_automatic_backup(
+                &directory,
+                &format!("2026-10-02_00-00-{second:02}"),
+            );
+        }
+
+        assert_eq!(
+            prune_automatic_backups(&directory, &active_database).expect("prune backups"),
+            0
+        );
+        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT - 1);
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn backup_retention_keeps_exactly_the_limit() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        for second in 0..AUTO_BACKUP_RETENTION_COUNT {
+            create_automatic_backup(
+                &directory,
+                &format!("2026-10-02_00-00-{second:02}"),
+            );
+        }
+
+        assert_eq!(
+            prune_automatic_backups(&directory, &active_database).expect("prune backups"),
+            0
+        );
+        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT);
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn backup_retention_removes_only_the_oldest_automatic_backups() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        let mut paths = Vec::new();
+        for second in 0..AUTO_BACKUP_RETENTION_COUNT + 2 {
+            paths.push(create_automatic_backup(
+                &directory,
+                &format!("2026-10-02_00-00-{second:02}"),
+            ));
+        }
+
+        assert_eq!(
+            prune_automatic_backups(&directory, &active_database).expect("prune backups"),
+            2
+        );
+        assert!(!paths[0].exists());
+        assert!(!automatic_backup_marker_path(&paths[0]).exists());
+        assert!(!paths[1].exists());
+        assert!(paths[2..].iter().all(|path| path.exists()));
+        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT);
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn backup_retention_preserves_manual_and_unmarked_files() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        let manual_backup = directory.join("user-selected.db");
+        let unmarked_backup = directory.join("backup_2026-10-01_00-00-00.db");
+        fs::write(&manual_backup, b"manual backup").expect("create manual backup");
+        fs::write(&unmarked_backup, b"unmarked backup").expect("create unmarked backup");
+        for second in 0..AUTO_BACKUP_RETENTION_COUNT + 1 {
+            create_automatic_backup(
+                &directory,
+                &format!("2026-10-02_00-00-{second:02}"),
+            );
+        }
+
+        assert_eq!(
+            prune_automatic_backups(&directory, &active_database).expect("prune backups"),
+            1
+        );
+        assert!(manual_backup.exists());
+        assert!(unmarked_backup.exists());
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn backup_retention_never_deletes_the_active_database() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("backup_2026-10-01_00-00-00.db");
+        fs::write(&active_database, b"active database").expect("create active database");
+        mark_automatic_backup(&active_database).expect("mark active database");
+        for second in 0..AUTO_BACKUP_RETENTION_COUNT + 1 {
+            create_automatic_backup(
+                &directory,
+                &format!("2026-10-02_00-00-{second:02}"),
+            );
+        }
+
+        prune_automatic_backups(&directory, &active_database).expect("prune backups");
+
+        assert!(active_database.exists());
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn cleanup_failure_is_non_fatal_for_the_close_path() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        let not_a_directory = directory.join("not-a-directory");
+        fs::write(&not_a_directory, b"blocker").expect("create non-directory path");
+
+        prune_automatic_backups_best_effort(&not_a_directory, &active_database);
+
+        assert!(active_database.exists());
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn backup_retention_handles_a_missing_directory() {
+        let directory = create_test_backup_directory();
+        let active_database = create_active_database(&directory);
+        let missing_directory = directory.join("missing");
+        assert_eq!(
+            prune_automatic_backups(&missing_directory, &active_database).expect("missing is safe"),
+            0
+        );
+        fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
 
     #[test]
     fn vacuum_snapshot_preserves_pharmacy_schema_and_data() {

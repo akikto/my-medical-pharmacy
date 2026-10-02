@@ -1,10 +1,5 @@
-import {
-  executeSql,
-  runInTransaction,
-  selectSql,
-  type SqlValue,
-  type TransactionStatement,
-} from "./db";
+import { invoke } from "@tauri-apps/api/core";
+import { applyPharmacyMutation } from "./pharmacyWriteService";
 import type {
   EntityId,
   ExpiryAlert,
@@ -45,17 +40,15 @@ export class InventoryError extends Error {
   }
 }
 
-function escapeLikeTerm(term: string): string {
-  return `%${term.replace(/[!%_]/g, "!$&")}%`;
-}
-
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new InventoryError(`${label} must be a positive whole number.`);
   }
 }
 
-function normalizeMedicineInput(input: MedicineFormValues): SqlValue[] {
+function normalizeMedicineInput(
+  input: MedicineFormValues,
+): [string, string | null, string | null, string | null, number] {
   const name = input.name.trim();
   const genericName = input.generic_name.trim();
   const company = input.company.trim();
@@ -93,55 +86,24 @@ export async function getInventoryMedicines(
   searchTerm = "",
 ): Promise<MedicineInventoryRow[]> {
   const term = searchTerm.trim();
-  const pattern = term ? escapeLikeTerm(term) : null;
-  return selectSql<MedicineInventoryRow[]>(
-    `SELECT
-       m.id,
-       m.name,
-       m.generic_name,
-       m.company,
-       m.rack_location,
-       m.min_stock_alert,
-       m.created_at,
-       COALESCE(SUM(CASE
-         WHEN b.expiry_date >= date('now', 'localtime')
-         THEN b.current_stock ELSE 0 END), 0) AS available_stock,
-       COALESCE(SUM(CASE
-         WHEN b.expiry_date < date('now', 'localtime')
-         THEN b.current_stock ELSE 0 END), 0) AS expired_stock,
-       COALESCE(SUM(CASE
-         WHEN b.expiry_date >= date('now', 'localtime')
-          AND b.expiry_date <= date('now', 'localtime', '+30 days')
-         THEN b.current_stock ELSE 0 END), 0) AS near_expiry_stock,
-       COUNT(b.id) AS batch_count
-     FROM medicines AS m
-     LEFT JOIN medicine_batches AS b ON b.medicine_id = m.id
-     WHERE $1 IS NULL
-        OR m.name LIKE $1 ESCAPE '!'
-        OR COALESCE(m.generic_name, '') LIKE $1 ESCAPE '!'
-        OR COALESCE(m.company, '') LIKE $1 ESCAPE '!'
-        OR COALESCE(m.rack_location, '') LIKE $1 ESCAPE '!'
-     GROUP BY m.id
-     ORDER BY m.name COLLATE NOCASE ASC, m.id ASC`,
-    [pattern],
-  );
+  return invoke<MedicineInventoryRow[]>("get_inventory_medicines", {
+    searchTerm: term,
+  });
 }
 
 export async function createMedicine(input: MedicineFormValues): Promise<EntityId> {
   const [name, genericName, company, rackLocation, minStockAlert] =
     normalizeMedicineInput(input);
-  const result = await executeSql(
-    `INSERT INTO medicines (name, generic_name, company, rack_location, min_stock_alert)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [name, genericName, company, rackLocation, minStockAlert],
-  );
-  const medicineId = result.lastInsertId;
-  if (
-    result.rowsAffected !== 1 ||
-    typeof medicineId !== "number" ||
-    !Number.isSafeInteger(medicineId) ||
-    medicineId <= 0
-  ) {
+  const result = await applyPharmacyMutation({
+    kind: "create_medicine",
+    name,
+    generic_name: genericName,
+    company,
+    rack_location: rackLocation,
+    min_stock_alert: minStockAlert,
+  });
+  const medicineId = result.entityId;
+  if (medicineId === null || !Number.isSafeInteger(medicineId) || medicineId <= 0) {
     throw new InventoryError("The medicine could not be saved.");
   }
   return medicineId;
@@ -154,41 +116,27 @@ export async function updateMedicine(
   assertPositiveInteger(medicineId, "Medicine id");
   const [name, genericName, company, rackLocation, minStockAlert] =
     normalizeMedicineInput(input);
-  await runInTransaction([
-    {
-      query: `UPDATE medicines
-              SET name = $1, generic_name = $2, company = $3,
-                  rack_location = $4, min_stock_alert = $5
-              WHERE id = $6`,
-      values: [name, genericName, company, rackLocation, minStockAlert, medicineId],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({
+    kind: "update_medicine",
+    medicine_id: medicineId,
+    name,
+    generic_name: genericName,
+    company,
+    rack_location: rackLocation,
+    min_stock_alert: minStockAlert,
+  });
 }
 
 export async function deleteMedicine(medicineId: EntityId): Promise<void> {
   assertPositiveInteger(medicineId, "Medicine id");
-  await runInTransaction([
-    {
-      query: "DELETE FROM medicines WHERE id = $1",
-      values: [medicineId],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({ kind: "delete_medicine", medicine_id: medicineId });
 }
 
 export async function getMedicineBatches(
   medicineId: EntityId,
 ): Promise<MedicineBatch[]> {
   assertPositiveInteger(medicineId, "Medicine id");
-  return selectSql<MedicineBatch[]>(
-    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
-            sale_rate, current_stock, barcode
-     FROM medicine_batches
-     WHERE medicine_id = $1
-     ORDER BY expiry_date ASC, batch_no COLLATE NOCASE ASC, id ASC`,
-    [medicineId],
-  );
+  return invoke<MedicineBatch[]>("get_medicine_batches", { medicineId });
 }
 
 export async function updateBatchDetails(input: {
@@ -206,18 +154,14 @@ export async function updateBatchDetails(input: {
   if (rackLocation.length > 80) {
     throw new InventoryError("Rack location must be 80 characters or fewer.");
   }
-  await runInTransaction([
-    {
-      query: "UPDATE medicine_batches SET mrp = $1, sale_rate = $2 WHERE id = $3 AND medicine_id = $4",
-      values: [mrp, saleRate, input.batchId, input.medicineId],
-      expectedRowsAffected: 1,
-    },
-    {
-      query: "UPDATE medicines SET rack_location = $1 WHERE id = $2",
-      values: [rackLocation || null, input.medicineId],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({
+    kind: "update_batch_details",
+    batch_id: input.batchId,
+    medicine_id: input.medicineId,
+    mrp_cents: Math.round(mrp * 100),
+    sale_rate_cents: Math.round(saleRate * 100),
+    rack_location: rackLocation || null,
+  });
 }
 
 export async function adjustBatchStock(input: {
@@ -238,22 +182,13 @@ export async function adjustBatchStock(input: {
   if (!reason || reason.length > 250) {
     throw new InventoryError("Enter an adjustment reason of 1 to 250 characters.");
   }
-  await runInTransaction([
-    {
-      query: `UPDATE medicine_batches
-              SET current_stock = current_stock + $1
-              WHERE id = $2 AND medicine_id = $3
-                AND current_stock + $1 BETWEEN 0 AND 1000000000`,
-      values: [input.quantityChange, input.batchId, input.medicineId],
-      expectedRowsAffected: 1,
-    },
-    {
-      query: `INSERT INTO stock_adjustments (medicine_id, batch_id, quantity_change, reason)
-              VALUES ($1, $2, $3, $4)`,
-      values: [input.medicineId, input.batchId, input.quantityChange, reason],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({
+    kind: "adjust_batch_stock",
+    batch_id: input.batchId,
+    medicine_id: input.medicineId,
+    quantity_change: input.quantityChange,
+    reason,
+  });
 }
 
 function toMedicineBatch(row: MedicineSearchRow): MedicineBatch | null {
@@ -295,67 +230,10 @@ export async function searchMedicines(
     throw new InventoryError("Search limit must be between 1 and 100.");
   }
 
-  const pattern = escapeLikeTerm(term);
-  const rows = await selectSql<MedicineSearchRow[]>(
-    `SELECT
-       m.id,
-       m.name,
-       m.generic_name,
-       m.company,
-       m.rack_location,
-       m.min_stock_alert,
-       m.created_at,
-       COALESCE((
-         SELECT SUM(stock_batch.current_stock)
-         FROM medicine_batches AS stock_batch
-         WHERE stock_batch.medicine_id = m.id
-            AND stock_batch.expiry_date >= date('now', 'localtime')
-       ), 0) AS available_stock,
-       b.id AS batch_id,
-       b.medicine_id AS batch_medicine_id,
-       b.batch_no,
-       b.expiry_date,
-       b.purchase_rate,
-       b.mrp,
-       b.sale_rate,
-       b.current_stock,
-       b.barcode
-     FROM medicines AS m
-     LEFT JOIN medicine_batches AS b
-       ON b.id = (
-         SELECT candidate.id
-         FROM medicine_batches AS candidate
-         WHERE candidate.medicine_id = m.id
-           AND candidate.current_stock > 0
-            AND candidate.expiry_date >= date('now', 'localtime')
-          ORDER BY
-            CASE WHEN candidate.barcode = $2 THEN 0 ELSE 1 END,
-            candidate.expiry_date ASC,
-            candidate.id ASC
-         LIMIT 1
-       )
-      WHERE m.name LIKE $1 ESCAPE '!'
-         OR COALESCE(m.generic_name, '') LIKE $1 ESCAPE '!'
-         OR COALESCE(m.company, '') LIKE $1 ESCAPE '!'
-        OR EXISTS (
-          SELECT 1 FROM medicine_batches AS barcode_batch
-          WHERE barcode_batch.medicine_id = m.id
-            AND (
-              barcode_batch.barcode = $2
-              OR barcode_batch.barcode LIKE $1 ESCAPE '!'
-            )
-        )
-     ORDER BY
-       CASE WHEN EXISTS (
-         SELECT 1 FROM medicine_batches AS exact_barcode
-         WHERE exact_barcode.medicine_id = m.id
-           AND exact_barcode.barcode = $2
-       ) THEN 0 ELSE 1 END,
-       m.name COLLATE NOCASE ASC,
-       m.id ASC
-     LIMIT $3`,
-    [pattern, term, limit],
-  );
+  const rows = await invoke<MedicineSearchRow[]>("search_medicines", {
+    searchTerm: term,
+    limit,
+  });
 
   return rows.map((row) => ({
     medicine: {
@@ -375,34 +253,14 @@ export async function searchMedicines(
 export async function getFefoBatch(
   medicineId: EntityId,
 ): Promise<MedicineBatch | null> {
-  const batches = await selectSql<MedicineBatch[]>(
-    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
-            sale_rate, current_stock, barcode
-     FROM medicine_batches
-     WHERE medicine_id = $1
-       AND current_stock > 0
-       AND expiry_date >= date('now', 'localtime')
-     ORDER BY expiry_date ASC, id ASC
-     LIMIT 1`,
-    [medicineId],
-  );
-  return batches[0] ?? null;
+  return invoke<MedicineBatch | null>("get_fefo_batch", { medicineId });
 }
 
 export async function getSellableBatches(
   medicineId: EntityId,
 ): Promise<MedicineBatch[]> {
   assertPositiveInteger(medicineId, "Medicine id");
-  return selectSql<MedicineBatch[]>(
-    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
-            sale_rate, current_stock, barcode
-     FROM medicine_batches
-     WHERE medicine_id = $1
-       AND current_stock > 0
-       AND expiry_date >= date('now', 'localtime')
-     ORDER BY expiry_date ASC, id ASC`,
-    [medicineId],
-  );
+  return invoke<MedicineBatch[]>("get_sellable_batches", { medicineId });
 }
 
 export async function allocateFefoStock(
@@ -411,16 +269,9 @@ export async function allocateFefoStock(
 ): Promise<FefoAllocation[]> {
   assertPositiveInteger(quantity, "Quantity");
 
-  const batches = await selectSql<MedicineBatch[]>(
-    `SELECT id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
-            sale_rate, current_stock, barcode
-     FROM medicine_batches
-     WHERE medicine_id = $1
-       AND current_stock > 0
-       AND expiry_date >= date('now', 'localtime')
-     ORDER BY expiry_date ASC, id ASC`,
-    [medicineId],
-  );
+  const batches = await invoke<MedicineBatch[]>("get_sellable_batches", {
+    medicineId,
+  });
 
   let remaining = quantity;
   const allocation: FefoAllocation[] = [];
@@ -464,19 +315,13 @@ export async function deductStockFromBatches(
     );
   }
 
-  const statements: TransactionStatement[] = [...combined].map(
-    ([batchId, quantity]) => ({
-      query: `UPDATE medicine_batches
-              SET current_stock = current_stock - $1
-              WHERE id = $2
-                AND current_stock >= $1
-                AND expiry_date >= date('now', 'localtime')`,
-      values: [quantity, batchId],
-      expectedRowsAffected: 1,
-    }),
-  );
-
-  await runInTransaction(statements);
+  await applyPharmacyMutation({
+    kind: "deduct_stock",
+    deductions: [...combined].map(([batchId, quantity]) => ({
+      batch_id: batchId,
+      quantity,
+    })),
+  });
 }
 
 export async function addStockToBatch(
@@ -486,66 +331,17 @@ export async function addStockToBatch(
   assertPositiveInteger(batchId, "Batch id");
   assertPositiveInteger(quantity, "Quantity");
 
-  await runInTransaction([
-    {
-      query: `UPDATE medicine_batches
-              SET current_stock = current_stock + $1
-              WHERE id = $2`,
-      values: [quantity, batchId],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({ kind: "add_stock", batch_id: batchId, quantity });
 }
 
 export async function getLowStockAlerts(): Promise<LowStockAlert[]> {
-  return selectSql<LowStockAlert[]>(
-    `SELECT
-       m.id AS medicine_id,
-       m.name,
-       m.generic_name,
-       m.company,
-       m.rack_location,
-       m.min_stock_alert,
-       COALESCE(SUM(b.current_stock), 0) AS available_stock
-     FROM medicines AS m
-     LEFT JOIN medicine_batches AS b
-       ON b.medicine_id = m.id
-       AND b.expiry_date >= date('now', 'localtime')
-     GROUP BY m.id
-     HAVING COALESCE(SUM(b.current_stock), 0) <= m.min_stock_alert
-     ORDER BY available_stock ASC, m.name COLLATE NOCASE ASC`,
-  );
+  return invoke<LowStockAlert[]>("get_low_stock_alerts");
 }
 
 export async function getExpiryAlerts(
   horizonDays: ExpiryHorizonDays = 30,
 ): Promise<ExpiryAlert[]> {
-  const modifier: SqlValue = `+${horizonDays} days`;
-  const rows = await selectSql<BatchRow[]>(
-    `SELECT
-       b.id,
-       b.medicine_id,
-       b.batch_no,
-       b.expiry_date,
-       b.purchase_rate,
-       b.mrp,
-       b.sale_rate,
-       b.current_stock,
-       b.barcode,
-       m.name AS medicine_name,
-       CAST(julianday(b.expiry_date) - julianday(date('now', 'localtime')) AS INTEGER)
-         AS days_until_expiry,
-       CASE
-         WHEN b.expiry_date < date('now', 'localtime') THEN 'expired'
-         ELSE 'expiring'
-       END AS status
-     FROM medicine_batches AS b
-     INNER JOIN medicines AS m ON m.id = b.medicine_id
-     WHERE b.current_stock > 0
-       AND b.expiry_date <= date('now', 'localtime', $1)
-     ORDER BY b.expiry_date ASC, m.name COLLATE NOCASE ASC, b.id ASC`,
-    [modifier],
-  );
+  const rows = await invoke<BatchRow[]>("get_expiry_alerts", { horizonDays });
 
   return rows.map((row) => ({
     batch: {

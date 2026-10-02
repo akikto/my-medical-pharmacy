@@ -1,0 +1,126 @@
+Before any Windows release testing, fix the three confirmed production-readiness issues identified in the audit.
+
+IMPORTANT:
+- Do NOT redesign the UI.
+- Do NOT modify the Home dashboard.
+- Do NOT change unrelated business behavior.
+- Preserve the existing database schema unless a schema change is absolutely required.
+- Preserve existing POS, purchase, inventory, report, invoice, backup and restore behavior.
+- Use the isolated QA database for mutation testing.
+- Do NOT modify the current development database.
+- Do NOT add demo data to production paths.
+
+ISSUE 1 — NATIVE FEFO ENFORCEMENT
+
+Fix the native checkout layer so FEFO is enforced independently of the renderer.
+
+Requirements:
+- Native checkout must determine eligible batches from trusted database state.
+- Expired batches must never be eligible for normal sale.
+- When multiple eligible batches exist, allocation must follow earliest-expiry-first.
+- Renderer-supplied batch allocations must NOT be blindly trusted.
+- Quantity validation must remain intact.
+- Prevent selling more than available eligible stock.
+- Preserve the existing normal POS behavior and UI.
+- Do not change the existing FEFO user experience unnecessarily.
+
+Add focused Rust tests for:
+1. single valid batch
+2. multiple valid batches with different expiry dates
+3. expired batch + valid batch
+4. requested quantity spanning multiple batches
+5. insufficient eligible stock
+6. renderer attempts to select a later-expiry batch while an earlier eligible batch exists
+
+The native layer should reject or normalize invalid allocation requests according to the existing application architecture, but it must never allow a sale that violates FEFO.
+
+ISSUE 2 — REMOVE/RESTRICT ARBITRARY RENDERER SQL
+
+Review `execute_sql_transaction` and all renderer call sites.
+
+Goal:
+- Production renderer code must not be able to submit arbitrary SQL to the native layer.
+- Replace renderer-facing arbitrary SQL calls with narrow, typed application commands/services wherever they are used.
+- Keep database transaction capability internally where required.
+- Preserve existing functionality.
+
+Requirements:
+- Identify every current caller of `execute_sql_transaction`.
+- For each caller, replace arbitrary SQL with the appropriate typed native command/service.
+- If a SQL command is required only for development/demo/testing, guard it strictly behind development-only code and ensure it cannot be reached from a production build.
+- Do not break migrations, backup/restore, internal database initialization, or native Rust code that legitimately requires SQL.
+- Do not introduce an artificial security claim; report exactly what was removed/restricted.
+
+Add tests/source checks proving that production renderer code cannot invoke arbitrary SQL.
+
+ISSUE 3 — AUTOMATIC BACKUP RETENTION
+
+Implement a conservative retention policy for AUTOMATIC close-time backups.
+
+Requirements:
+- Keep recent automatic backups according to a clearly documented retention count.
+- Remove only older automatic backups.
+- Never delete manually created/user-selected backups through automatic cleanup.
+- Never delete the currently active database.
+- If cleanup fails, the app should still be able to close normally.
+- Do not allow backup cleanup to interfere with backup creation.
+- Handle missing backup directories safely.
+- Keep behavior deterministic and easy to explain.
+
+Use a constant for the retention count rather than hard-coding it in multiple places.
+
+Add tests for:
+1. fewer backups than retention limit
+2. exactly retention limit
+3. more than retention limit
+4. manual backup files are preserved
+5. cleanup failure does not prevent normal app shutdown
+
+TESTING / REGRESSION
+
+Use the isolated QA database/environment for all mutating tests.
+
+Verify:
+- Purchase → stock
+- POS sale → stock
+- FEFO
+- expired batch exclusion
+- discounts
+- invoice generation
+- reports
+- backup/restore
+- restart persistence
+- settings
+- empty database behavior
+
+Run:
+- pnpm run typecheck
+- cargo test
+- production build
+- git diff --check
+- SQLite quick_check on test database
+
+Also verify:
+- current development database remains unchanged
+- Home dashboard files remain untouched
+- no demo data enters production
+- existing routes are unchanged
+- existing UI remains unchanged except where technically necessary
+
+IMPORTANT:
+Do NOT start Windows-specific testing yet.
+
+At the end provide:
+
+A. Exact files changed
+B. FEFO implementation summary
+C. SQL-surface restriction summary
+D. Backup retention behavior and retention count
+E. Tests added
+F. Test results
+G. Build results
+H. Confirmation current development DB SHA-256 is unchanged
+I. Confirmation Home was not changed
+J. Any remaining production risks
+
+If any of the three fixes would require a major architectural change, STOP before making that change and explain the issue instead.

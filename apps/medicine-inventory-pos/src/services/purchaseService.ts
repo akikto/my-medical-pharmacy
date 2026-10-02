@@ -5,7 +5,6 @@ import type {
   EntityId,
   RecentPurchase,
 } from "../types";
-import { selectSql } from "./db";
 import { toCents } from "../utils/money";
 
 export class PurchaseError extends Error {
@@ -89,24 +88,7 @@ export async function getRecentPurchases(limit = 10): Promise<RecentPurchase[]> 
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
     throw new PurchaseError("Recent purchase limit must be between 1 and 50.");
   }
-  return selectSql<RecentPurchase[]>(
-    `SELECT
-       p.id,
-       p.invoice_no,
-       p.supplier_id,
-       s.name AS supplier_name,
-       p.total_amount,
-       p.purchase_date,
-       COUNT(pi.id) AS item_count,
-       COALESCE(SUM(pi.quantity), 0) AS total_units
-     FROM purchases AS p
-     LEFT JOIN suppliers AS s ON s.id = p.supplier_id
-     LEFT JOIN purchase_items AS pi ON pi.purchase_id = p.id
-     GROUP BY p.id
-     ORDER BY p.purchase_date DESC, p.id DESC
-     LIMIT $1`,
-    [limit],
-  );
+  return invoke<RecentPurchase[]>("get_recent_purchases", { limit });
 }
 
 export function isEntityId(value: number): value is EntityId {

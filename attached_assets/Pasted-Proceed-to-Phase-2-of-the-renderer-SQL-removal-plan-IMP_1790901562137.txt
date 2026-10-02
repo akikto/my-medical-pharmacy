@@ -1,0 +1,67 @@
+Proceed to Phase 2 of the renderer SQL removal plan.
+
+IMPORTANT:
+- Phase 1 is complete and must remain as the behavior baseline.
+- Do NOT modify the current development database.
+- Do NOT redesign any UI.
+- Do NOT modify Home.
+- Do NOT change database schema unless absolutely unavoidable.
+- Do NOT change business rules, routes, POS behavior, purchase behavior, inventory calculations, report calculations, or invoice behavior.
+- Use only isolated/in-memory QA fixtures for mutation/testing.
+- Do NOT remove the SQL plugin permission until all renderer read call sites have been migrated and verified.
+
+GOAL:
+Replace renderer-submitted arbitrary SQL reads with named, typed native read commands while preserving the exact existing service contracts and behavior.
+
+1. INVENTORY / POS READS
+Create narrow typed native commands for the existing reads:
+- medicine list/search
+- exact barcode lookup / barcode priority
+- batch details
+- sellable/eligible batches
+- FEFO batch selection
+- low-stock alerts
+- expiry/near-expiry alerts
+
+Do not expose any generic SQL/query command.
+
+2. SUPPLIERS / SETTINGS
+Create typed native reads for:
+- supplier search/list
+- settings retrieval
+
+Preserve existing empty/default/null behavior.
+
+3. PURCHASES / SALES
+Create typed native reads for:
+- recent purchases
+- sales history
+- invoice details
+- any existing invoice-related lookup required by the UI
+
+Preserve:
+- ordering
+- limits
+- search behavior
+- date/time representation
+- empty results
+
+4. DASHBOARD / REPORTS
+Create typed native reads for all existing dashboard/report data:
+- inventory summaries
+- purchase summaries
+- sales/revenue totals
+- gross profit using sale-time cost snapshots
+- payment buckets
+- top sellers
+- report rows
+- date boundaries
+- inventory alerts
+
+Do NOT rewrite calculations unnecessarily. Preserve the behavior frozen by Phase 1 tests.
+
+5. TYPE SAFETY
+- Define explicit Rust structs for returned records/aggregates.
+- Avoid generic JSON blobs where a typed structure is practical.
+- Validate command arguments in the native layer.
+- Never accept

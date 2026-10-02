@@ -39,10 +39,5 @@
     "category": "Business",
     "shortDescription": "Offline pharmacy management and point of sale",
     "longDescription": "MY MEDICAL is a local-first pharmacy management app for point of sale, medicine inventory, and purchasing."
-  },
-  "plugins": {
-    "sql": {
-      "preload": ["sqlite:pharmacy.db"]
-    }
   }
 }
