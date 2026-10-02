@@ -1,0 +1,205 @@
+Begin the WINDOWS RELEASE-CANDIDATE TESTING phase.
+
+The application-level readiness work is complete. Do NOT start another architecture refactor.
+
+IMPORTANT:
+- Do not redesign the UI.
+- Do not modify Home.
+- Do not change business rules.
+- Do not change database schema.
+- Do not change existing routes/services unless a Windows-specific blocking defect is confirmed.
+- Do not add demo data to production.
+- Do not modify the existing development database.
+- Use a clean/isolated Windows test environment or temporary test database for destructive/mutating tests.
+- Do not publish or distribute the application.
+
+TEST 1 — WINDOWS INSTALLATION
+- Build the Windows release/installer using the project's existing configuration.
+- Verify installer starts successfully.
+- Verify app name is "MY MEDICAL".
+- Verify version and application identity.
+- Verify application icon.
+- Verify installation completes without errors.
+
+TEST 2 — FIRST LAUNCH
+On a clean/isolated Windows environment:
+- Launch the application for the first time.
+- Verify the database is created in the intended writable Windows application-data location.
+- Verify no development/demo data appears.
+- Verify Home loads correctly.
+- Verify empty states are usable.
+- Verify Settings can configure pharmacy details.
+
+TEST 3 — DATABASE PATH / PERMISSIONS
+- Confirm the database is stored in a user-writable application-data location.
+- Confirm the application does not require administrator privileges for normal database operation.
+- Verify read/write access.
+- Verify restart persistence.
+
+TEST 4 — BASIC PHARMACY WORKFLOW
+Using isolated Windows test data:
+- Create medicine.
+- Create batch.
+- Create purchase.
+- Confirm stock increases.
+- Sell medicine through POS.
+- Confirm stock decreases.
+- Verify FEFO.
+- Verify expired batch exclusion.
+- Verify invoice and totals.
+
+Do not use the real development database.
+
+TEST 5 — BACKUP / RESTORE
+Using isolated Windows test data:
+- Create a manual backup.
+- Verify Windows file picker works.
+- Modify test data.
+- Restore the backup.
+- Verify expected state returns.
+- Verify database remains usable.
+- Verify automatic close-time backup works.
+- Verify backup retention policy.
+
+TEST 6 — SETTINGS / RECEIPT
+- Save pharmacy name/address/contact/license.
+- Restart application.
+- Verify persistence.
+- Verify receipt/invoice uses saved settings where supported.
+
+TEST 7 — DISPLAY / SCALING
+Test the Windows application at:
+- 100% scaling
+- 125%
+- 150%
+- 200% if available
+
+Check:
+- sidebar
+- POS
+- Inventory
+- Purchases
+- Suppliers
+- Sales
+- Reports
+- Settings
+- dialogs
+- tables
+- buttons
+- text clipping
+- horizontal overflow
+- vertical scrolling
+
+Do not redesign anything unless an actual Windows-specific rendering defect exists.
+
+TEST 8 — NATIVE FILE OPERATIONS
+Verify on Windows:
+- backup file creation
+- backup file selection
+- restore file selection
+- application data directory access
+- paths containing spaces
+- normal close-time backup
+
+TEST 9 — OFFLINE / LOCAL-ONLY
+- Disconnect network where practical.
+- Launch and use the application.
+- Verify core pharmacy operations continue locally.
+- Verify no required cloud/network dependency exists for normal operation.
+
+TEST 10 — PRINTING
+If a physical Windows printer is available:
+- Print/preview a receipt/invoice.
+- Verify paper layout, text, totals, pharmacy information and readability.
+
+If no physical printer is available:
+- Test Windows print/print-preview path if implemented.
+- Mark physical printer testing as NOT TESTED rather than PASS.
+
+TEST 11 — UPGRADE / UNINSTALL SAFETY
+If an existing previous build is available:
+- Install the release over the previous version.
+- Verify existing test data remains accessible.
+- Verify application still launches.
+
+Then test uninstall in a separate isolated environment.
+
+Do NOT remove a user's real pharmacy database.
+
+TEST 12 — LOW DISK / LOCK / PERMISSION BEHAVIOR
+Where safely reproducible:
+- database locked by another process
+- read-only/permission failure
+- backup destination unavailable
+- insufficient disk space
+
+If fault injection is impractical, perform source-level review and mark runtime testing as NOT TESTED.
+
+Do not corrupt the real database.
+
+TEST 13 — WINDOWS START / CLOSE / RESTART
+- Start application.
+- Use normally.
+- Close with normal window close.
+- Confirm automatic backup behavior.
+- Reopen.
+- Confirm persistence.
+- Confirm no stale UI state.
+
+TEST 14 — REGRESSION
+Recheck:
+- Home
+- POS
+- Inventory
+- Purchases
+- Suppliers
+- Sales History
+- Reports
+- Settings
+
+Verify:
+- no horizontal overflow
+- navigation works
+- no broken empty states
+- no broken loading/error states
+- no visual regression from the current approved UI
+
+TEST 15 — FINAL VERIFICATION
+Run the project's normal:
+- typecheck
+- tests
+- production build
+- git diff --check
+
+Do not modify unrelated formatting just to make the existing pre-existing cargo fmt warning disappear.
+
+FINAL REPORT:
+
+For each test mark:
+PASS / FAIL / NOT TESTED
+
+Report:
+A. Windows installer/build result
+B. Installation result
+C. First-launch result
+D. Database path result
+E. Pharmacy workflow result
+F. Backup/restore result
+G. Settings result
+H. Display/scaling result
+I. File-operation result
+J. Offline result
+K. Printing result
+L. Upgrade/uninstall result
+M. Error/recovery result
+N. Start/close/restart result
+O. Full regression result
+P. Exact defects found
+Q. Exact fixes made, if any
+R. Exact files changed
+S. Confirmation development database was untouched
+T. Confirmation Home was untouched
+U. Remaining release risks
+
+Do NOT sign off automatically if Windows testing cannot actually be performed.
+If Windows testing is unavailable in the current environment, report that clearly and provide the exact remaining manual Windows tests instead.
