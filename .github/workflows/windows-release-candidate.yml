@@ -70,3 +70,5 @@ jobs:
           path: apps/medicine-inventory-pos/src-tauri/target/release/bundle/
           if-no-files-found: error
           retention-days: 14
+
+# This workflow only stores run artifacts; it does not sign or publish releases.
