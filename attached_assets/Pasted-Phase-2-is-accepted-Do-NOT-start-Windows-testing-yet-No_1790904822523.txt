@@ -1,0 +1,140 @@
+Phase 2 is accepted.
+
+Do NOT start Windows testing yet.
+
+Now address ONLY the two remaining production-readiness issues from the earlier audit:
+
+1. NATIVE FEFO ENFORCEMENT
+2. AUTOMATIC BACKUP RETENTION
+
+IMPORTANT:
+- Do not redesign UI.
+- Do not modify Home.
+- Do not change unrelated business logic.
+- Do not modify the current development database.
+- Use an isolated temporary/in-memory QA database for all mutating tests.
+- Do not change database schema unless absolutely unavoidable.
+- Do not reopen the renderer SQL architecture work; Phase 2 SQL removal is complete.
+
+==================================================
+1. NATIVE FEFO ENFORCEMENT
+==================================================
+
+Fix the native checkout layer so FEFO is enforced independently of renderer-supplied batch allocations.
+
+Requirements:
+- Native checkout must determine eligible batches from trusted database state.
+- Expired batches must never be eligible for normal sale.
+- When multiple eligible batches exist, allocation must follow earliest-expiry-first.
+- Renderer-supplied batch allocations must not be blindly trusted.
+- Requested quantity must never exceed available eligible stock.
+- Preserve the current POS UI and normal checkout behavior.
+- Do not change unrelated discount/payment/invoice calculations.
+
+Add focused Rust tests covering:
+
+A. one valid batch
+B. multiple valid batches with different expiry dates
+C. expired + valid batches
+D. quantity spanning multiple batches
+E. insufficient eligible stock
+F. renderer requests a later-expiry batch while an earlier eligible batch exists
+G. zero/invalid quantity where applicable
+
+The final native layer must guarantee that a successful sale cannot violate FEFO.
+
+==================================================
+2. AUTOMATIC BACKUP RETENTION
+==================================================
+
+Implement a conservative retention policy ONLY for automatic close-time backups.
+
+Requirements:
+- Use a named constant for the retention count.
+- Keep the newest automatic backups up to that limit.
+- Delete only older automatic backups.
+- Never automatically delete manually created/user-selected backups.
+- Never delete the active database.
+- Missing backup directories must be handled safely.
+- Cleanup failure must not prevent normal application shutdown.
+- Backup creation must complete before cleanup is attempted, where applicable.
+- Make the behavior deterministic and easy to explain.
+
+Add tests for:
+
+A. fewer backups than retention limit
+B. exactly retention limit
+C. more than retention limit
+D. manual backup is preserved
+E. cleanup failure does not prevent normal shutdown
+
+==================================================
+3. REGRESSION
+==================================================
+
+After both fixes, run:
+
+- Phase 1 read-contract tests
+- pnpm test
+- pnpm typecheck
+- cargo test
+- production build
+- git diff --check
+- SQLite quick_check on isolated QA database
+
+Verify:
+- POS sale
+- FEFO
+- expired-batch exclusion
+- purchase → stock
+- discounts
+- invoice
+- reports
+- backup
+- restore
+- automatic exit backup
+- restart/persistence
+
+Also verify the eight existing screens remain unchanged.
+
+==================================================
+4. DATABASE SAFETY
+==================================================
+
+Explicitly confirm:
+- current development database was not modified
+- development database SHA-256 remains exactly the previous baseline
+- no demo data was added
+- isolated QA database was used for mutations
+- Home files were not changed
+
+==================================================
+5. FORMATTING CAVEAT
+==================================================
+
+Do NOT reformat the entire lib.rs just to clean up unrelated/pre-existing formatting suggestions.
+
+However:
+- run targeted formatting for files actually changed by this task
+- run cargo fmt/check as appropriate
+- clearly report whether any remaining formatting warning is pre-existing or caused by these changes
+
+==================================================
+FINAL REPORT
+==================================================
+
+Return:
+
+A. FEFO implementation summary
+B. FEFO tests and results
+C. Backup retention implementation
+D. Retention count and exact cleanup behavior
+E. Backup retention tests and results
+F. Full regression results
+G. Exact files changed
+H. Development DB checksum confirmation
+I. Home unchanged confirmation
+J. Remaining risks
+
+Do NOT begin Windows-specific testing automatically after this.
+Stop after this report.

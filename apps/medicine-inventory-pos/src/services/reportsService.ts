@@ -4,7 +4,7 @@ import type {
   SalesReportRow,
   SalesReportSummary,
 } from "../types";
-import { selectSql } from "./db";
+import { invoke } from "@tauri-apps/api/core";
 
 interface RawSalesReportSummary {
   total_revenue: number | string | null;
@@ -61,66 +61,10 @@ async function querySalesReportSummary(
   startDate: string,
   endDate: string,
 ): Promise<SalesReportSummary> {
-  const summaryRows = await selectSql<RawSalesReportSummary[]>(
-    `WITH in_range AS (
-       SELECT id, grand_total, flat_discount, payment_mode
-       FROM sales
-       WHERE date(created_at, 'localtime') BETWEEN $1 AND $2
-     ),
-     profit_by_sale AS (
-       SELECT
-         ranged.id,
-         ranged.flat_discount,
-         COUNT(item.id) AS line_count,
-         COUNT(item.purchase_rate_at_sale) AS costed_line_count,
-         COALESCE(SUM(item.total_price), 0) AS line_revenue,
-         COALESCE(SUM(item.purchase_rate_at_sale * item.quantity), 0) AS purchase_cost
-       FROM in_range AS ranged
-       LEFT JOIN sale_items AS item ON item.sale_id = ranged.id
-       GROUP BY ranged.id
-     )
-     SELECT
-       COALESCE(SUM(ranged.grand_total), 0) AS total_revenue,
-       COALESCE(SUM(
-         CASE
-           WHEN profit.line_count > 0
-             AND profit.line_count = profit.costed_line_count
-           THEN profit.line_revenue - profit.flat_discount - profit.purchase_cost
-           ELSE 0
-         END
-       ), 0) AS gross_profit,
-       COUNT(ranged.id) AS total_invoices,
-       COALESCE(SUM(CASE WHEN ranged.payment_mode = 'CASH' THEN ranged.grand_total ELSE 0 END), 0)
-         AS cash_revenue,
-       COALESCE(SUM(CASE WHEN ranged.payment_mode = 'CASH' THEN 1 ELSE 0 END), 0)
-         AS cash_invoices,
-       COALESCE(SUM(
-         CASE WHEN ranged.payment_mode IN ('UPI', 'CARD') THEN ranged.grand_total ELSE 0 END
-       ), 0) AS card_upi_revenue,
-       COALESCE(SUM(
-         CASE WHEN ranged.payment_mode IN ('UPI', 'CARD') THEN 1 ELSE 0 END
-       ), 0) AS card_upi_invoices,
-       COALESCE(SUM(
-         CASE WHEN ranged.payment_mode IN ('CREDIT', 'OTHER') THEN ranged.grand_total ELSE 0 END
-       ), 0) AS other_revenue,
-       COALESCE(SUM(
-         CASE WHEN ranged.payment_mode IN ('CREDIT', 'OTHER') THEN 1 ELSE 0 END
-       ), 0) AS other_invoices,
-       COALESCE(SUM(
-         CASE
-           WHEN profit.line_count > profit.costed_line_count THEN 1
-           ELSE 0
-         END
-       ), 0) AS profit_unavailable_invoices
-     FROM in_range AS ranged
-     LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id`,
-    [startDate, endDate],
+  const rawSummary = await invoke<RawSalesReportSummary>(
+    "get_sales_report_summary",
+    { startDate, endDate },
   );
-
-  const rawSummary = summaryRows[0];
-  if (!rawSummary) {
-    throw new Error("The local database did not return a report summary.");
-  }
   return mapSummary(rawSummary);
 }
 
@@ -140,19 +84,7 @@ export async function getSalesReport(
 
   const [summary, sales] = await Promise.all([
     querySalesReportSummary(startDate, endDate),
-    selectSql<SalesReportRow[]>(
-    `SELECT
-       id,
-       invoice_no,
-       customer_name,
-       payment_mode,
-       grand_total,
-       created_at
-     FROM sales
-     WHERE date(created_at, 'localtime') BETWEEN $1 AND $2
-     ORDER BY created_at DESC, id DESC`,
-    [startDate, endDate],
-    ),
+    invoke<SalesReportRow[]>("get_sales_report_rows", { startDate, endDate }),
   ]);
 
   return {

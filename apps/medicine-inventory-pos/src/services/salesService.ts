@@ -7,7 +7,6 @@ import type {
   SaleDetails,
   SaleItemDetail,
 } from "../types";
-import { getDatabase, selectSql } from "./db";
 
 interface CheckoutSaleResponse {
   saleId: number;
@@ -148,7 +147,6 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
     })),
   };
 
-  await getDatabase();
   const result = await invoke<CheckoutSaleResponse>("complete_sale", { checkout });
   try {
     const sale = await getSaleDetails(result.invoiceNo);
@@ -163,28 +161,7 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
 
 export async function getRecentSales(limit = 10): Promise<RecentSale[]> {
   assertLimit(limit);
-  const rows = await selectSql<RecentSaleRow[]>(
-    `SELECT
-       s.id,
-       s.invoice_no,
-       s.customer_name,
-       s.customer_phone,
-       s.subtotal,
-       s.discount,
-       s.flat_discount,
-       s.grand_total,
-       s.payment_mode,
-       s.cash_tendered,
-       s.change_due,
-       s.created_at,
-       COUNT(si.id) AS item_count
-     FROM sales AS s
-     LEFT JOIN sale_items AS si ON si.sale_id = s.id
-     GROUP BY s.id
-     ORDER BY s.created_at DESC, s.id DESC
-     LIMIT $1`,
-    [limit],
-  );
+  const rows = await invoke<RecentSaleRow[]>("get_recent_sales", { limit });
   return rows.map(({ item_count, ...sale }) => ({
     sale,
     item_count: Number(item_count),
@@ -199,40 +176,7 @@ export async function getSaleDetails(
     throw new SalesError("Enter an invoice number.");
   }
 
-  const sales = await selectSql<Sale[]>(
-    `SELECT id, invoice_no, customer_name, customer_phone, subtotal, discount,
-            flat_discount, grand_total, payment_mode, cash_tendered, change_due,
-            created_at
-     FROM sales
-     WHERE invoice_no = $1
-     LIMIT 1`,
-    [normalizedInvoice],
-  );
-  const sale = sales[0];
-  if (!sale) {
-    return null;
-  }
-
-  const items = await selectSql<SaleItemDetail[]>(
-    `SELECT
-       si.id,
-       si.sale_id,
-       si.batch_id,
-       si.quantity,
-       si.unit_price,
-       si.item_discount,
-       si.total_price,
-       m.name AS medicine_name,
-       m.generic_name,
-       b.batch_no,
-       b.expiry_date
-     FROM sale_items AS si
-     INNER JOIN medicine_batches AS b ON b.id = si.batch_id
-     INNER JOIN medicines AS m ON m.id = b.medicine_id
-     WHERE si.sale_id = $1
-     ORDER BY si.id ASC`,
-    [sale.id],
-  );
-
-  return { sale, items };
+  return invoke<SaleDetails | null>("get_sale_details", {
+    invoiceNo: normalizedInvoice,
+  });
 }

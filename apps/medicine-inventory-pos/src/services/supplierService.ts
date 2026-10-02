@@ -1,8 +1,5 @@
-import {
-  executeSql,
-  runInTransaction,
-  selectSql,
-} from "./db";
+import { invoke } from "@tauri-apps/api/core";
+import { applyPharmacyMutation } from "./pharmacyWriteService";
 import type { EntityId, Supplier, SupplierFormValues } from "../types";
 
 export class SupplierError extends Error {
@@ -27,17 +24,7 @@ function normalizeSupplierInput(input: SupplierFormValues): [string, string | nu
 
 export async function getSuppliers(searchTerm = ""): Promise<Supplier[]> {
   const term = searchTerm.trim();
-  const pattern = term ? `%${term.replace(/[!%_]/g, "!$&")}%` : null;
-  return selectSql<Supplier[]>(
-    `SELECT id, name, phone, address, balance_due
-     FROM suppliers
-     WHERE $1 IS NULL
-        OR name LIKE $1 ESCAPE '!'
-        OR COALESCE(phone, '') LIKE $1 ESCAPE '!'
-        OR COALESCE(address, '') LIKE $1 ESCAPE '!'
-     ORDER BY name COLLATE NOCASE ASC, id ASC`,
-    [pattern],
-  );
+  return invoke<Supplier[]>("get_suppliers", { searchTerm: term });
 }
 
 export async function saveSupplier(
@@ -46,30 +33,31 @@ export async function saveSupplier(
 ): Promise<EntityId> {
   const values = normalizeSupplierInput(input);
   if (supplierId === undefined) {
-    const result = await executeSql(
-      "INSERT INTO suppliers (name, phone, address) VALUES ($1, $2, $3)",
-      values,
-    );
-    const supplierId = result.lastInsertId;
+    const result = await applyPharmacyMutation({
+      kind: "create_supplier",
+      name: values[0],
+      phone: values[1],
+      address: values[2],
+    });
+    const createdSupplierId = result.entityId;
     if (
-      result.rowsAffected !== 1 ||
-      typeof supplierId !== "number" ||
-      !Number.isSafeInteger(supplierId) ||
-      supplierId <= 0
+      createdSupplierId === null ||
+      !Number.isSafeInteger(createdSupplierId) ||
+      createdSupplierId <= 0
     ) {
       throw new SupplierError("The supplier could not be saved.");
     }
-    return supplierId;
+    return createdSupplierId;
   }
   if (!Number.isSafeInteger(supplierId) || supplierId <= 0) {
     throw new SupplierError("Supplier id must be a positive whole number.");
   }
-  await runInTransaction([
-    {
-      query: "UPDATE suppliers SET name = $1, phone = $2, address = $3 WHERE id = $4",
-      values: [...values, supplierId],
-      expectedRowsAffected: 1,
-    },
-  ]);
+  await applyPharmacyMutation({
+    kind: "update_supplier",
+    supplier_id: supplierId,
+    name: values[0],
+    phone: values[1],
+    address: values[2],
+  });
   return supplierId;
 }

@@ -1,0 +1,254 @@
+Proceed with Phase 2 of the renderer SQL removal plan.
+
+PHASE 1 BASELINE:
+Phase 1 is complete. It added 10 read-contract tests covering the existing renderer read behavior. Those tests passed. Do not weaken, delete, or rewrite those tests just to make the new implementation pass.
+
+IMPORTANT SAFETY RULES:
+- Do NOT modify the current development database.
+- Do NOT redesign the UI.
+- Do NOT modify Home.
+- Do NOT change database schema unless absolutely unavoidable.
+- Do NOT change business rules, routes, POS behavior, purchase behavior, inventory calculations, report calculations, invoice behavior, or backup/restore behavior.
+- Use only isolated/in-memory QA databases for mutation/testing.
+- Do NOT remove the SQL plugin permission until every production renderer read call has been migrated and verified.
+- Do NOT expose any generic query/SQL command to the renderer.
+
+GOAL:
+Replace renderer-submitted arbitrary SQL reads with named, typed native read commands while preserving the exact existing behavior and TypeScript service contracts.
+
+1. INVENTORY / POS READS
+
+Create narrow typed native commands for the existing reads:
+- medicine list/search
+- exact barcode lookup and barcode priority
+- batch details
+- sellable/eligible batches
+- FEFO batch selection
+- low-stock alerts
+- expired/near-expiry alerts
+
+Requirements:
+- No renderer-facing command may accept raw SQL.
+- Native code performs the SQL internally.
+- Preserve current search semantics, ordering, limits, null/default behavior and FEFO behavior.
+- Preserve existing POS behavior.
+
+2. SUPPLIERS / SETTINGS
+
+Create typed native reads for:
+- supplier list/search
+- settings retrieval
+
+Preserve:
+- empty settings behavior
+- existing defaults
+- search/no-results behavior
+- returned TypeScript data shapes
+
+3. PURCHASES / SALES
+
+Create typed native reads for:
+- recent purchases
+- sales history
+- invoice details
+- any other existing invoice lookup
+
+Preserve:
+- ordering
+- limits
+- search behavior
+- date/time representation
+- empty results
+- invoice data
+
+4. DASHBOARD / REPORTS
+
+Create typed native reads for all existing dashboard/report data:
+- inventory summaries
+- purchase summaries
+- sales/revenue totals
+- gross profit using sale-time cost snapshots
+- payment buckets
+- top sellers
+- report rows
+- date boundaries
+- inventory alerts
+
+Do NOT rewrite calculations unnecessarily.
+
+The Phase 1 behavior is the source of truth.
+
+5. TYPE SAFETY
+
+Use explicit Rust structs for returned records and aggregates wherever practical.
+
+Do not expose:
+- raw SQL
+- generic query strings
+- generic database execution commands
+- arbitrary SQL parameters controlled by the renderer
+
+Native SQL is allowed internally inside the Rust implementation.
+
+6. TYPESCRIPT SERVICE LAYER
+
+Update the existing TypeScript service functions so they call the new typed native commands.
+
+Keep their public return shapes compatible with existing components.
+
+Prefer changing implementation behind existing services rather than changing UI components.
+
+Do not perform visual/UI changes.
+
+7. DEVELOPMENT DEMO SEED
+
+The development/demo seed currently has an empty-database check.
+
+Replace its renderer-side generic SQL read with a dedicated development-only native command.
+
+Requirements:
+- development-only
+- unavailable in production
+- cannot be used to execute arbitrary SQL
+- must not introduce demo data into production
+
+8. SQL PLUGIN BOUNDARY
+
+Only after ALL production renderer read calls are migrated:
+
+Search the entire project for:
+- selectSql
+- Database.select
+- execute_sql_transaction
+- sql:default
+- renderer-submitted SQL strings
+
+Classify every remaining occurrence as:
+A. production renderer
+B. native/internal
+C. test-only
+D. development-only
+
+The final production renderer must have NO arbitrary SQL submission capability.
+
+Remove sql:default renderer capability.
+
+Remove SQL plugin registration/dependency only if it is no longer required anywhere.
+
+Do not remove native/internal SQL that is legitimately required for database operations.
+
+9. PARITY TESTING
+
+Run the Phase 1 read-contract tests against the new typed implementation.
+
+The following must remain unchanged:
+- result shapes
+- ordering
+- limits
+- search escaping
+- null/default behavior
+- date boundaries
+- FEFO ordering
+- expiry behavior
+- payment buckets
+- historical profit calculations
+- empty aggregates
+- barcode priority
+
+If any parity test fails:
+STOP and investigate the implementation.
+
+Do NOT:
+- delete the failing test
+- weaken the assertion
+- change expected values just to make the test pass
+- silently change existing business behavior
+
+10. REGRESSION TESTING
+
+After migration run:
+
+- pnpm run typecheck
+- cargo test
+- all Phase 1 read-contract tests
+- production build
+- git diff --check
+- SQLite quick_check on an isolated QA database
+
+Also verify:
+- Home
+- POS
+- Inventory
+- Purchases
+- Suppliers
+- Sales
+- Reports
+- Settings
+- empty states
+- backup/restore
+- restart/persistence
+
+Do not modify the current development database.
+
+11. SECURITY BOUNDARY
+
+Explicitly prove that production renderer code cannot submit arbitrary SQL.
+
+Search for:
+- selectSql
+- Database.select
+- execute_sql_transaction
+- raw SQL strings passed from TypeScript
+- sql:default
+
+Report every remaining occurrence and its classification.
+
+There must be no production renderer path capable of arbitrary SQL reads or writes.
+
+12. STOP CONDITION
+
+If removing the SQL plugin requires a major architectural rewrite:
+STOP.
+
+Do not improvise a broad rewrite.
+
+Instead report:
+- exact blocker
+- affected files
+- why it is required
+- smallest safe alternative
+
+13. FILE / DATABASE SAFETY
+
+At the end explicitly confirm:
+- current development pharmacy.db was not opened or modified
+- its SHA-256 remains unchanged
+- no demo data was added to production
+- Home files were not changed
+- UI design was not changed
+- schema was not changed unless absolutely required
+- business rules were not changed
+
+14. FINAL REPORT
+
+Return:
+
+A. Exact files changed
+B. Typed native commands added
+C. Renderer read call sites migrated
+D. SQL plugin/capability changes
+E. Remaining SQL occurrences with classification
+F. Phase 1 parity test results
+G. Rust test results
+H. Typecheck result
+I. Production build result
+J. git diff --check result
+K. SQLite quick_check result
+L. Development database SHA-256 confirmation
+M. Home/UI unchanged confirmation
+N. Any remaining risks
+
+IMPORTANT:
+Do NOT start Windows-specific testing yet.
+
+If all parity tests pass and the renderer SQL boundary is fully removed, stop after Phase 2 and report the result. Do not proceed to another phase automatically.

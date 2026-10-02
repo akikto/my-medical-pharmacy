@@ -1,5 +1,6 @@
 import type { StoreSettings } from "../types";
-import { runInTransaction, selectSql } from "./db";
+import { invoke } from "@tauri-apps/api/core";
+import { applyPharmacyMutation } from "./pharmacyWriteService";
 
 interface StoreSettingRow {
   setting_key: string;
@@ -31,9 +32,7 @@ const maximumLengths: Record<keyof StoreSettings, number> = {
 };
 
 export async function getStoreSettings(): Promise<StoreSettings> {
-  const rows = await selectSql<StoreSettingRow[]>(
-    "SELECT setting_key, setting_value FROM app_settings",
-  );
+  const rows = await invoke<StoreSettingRow[]>("get_store_settings");
   const settings = { ...defaults };
 
   for (const row of rows) {
@@ -48,22 +47,16 @@ export async function getStoreSettings(): Promise<StoreSettings> {
 export async function saveStoreSettings(
   input: StoreSettings,
 ): Promise<void> {
-  const statements = settingKeys.map((settingKey) => {
+  const settings = { ...defaults };
+  for (const settingKey of settingKeys) {
     const value = input[settingKey].trim();
     if (value.length > maximumLengths[settingKey]) {
       throw new Error(
         `${settingKey.replaceAll("_", " ")} must be ${maximumLengths[settingKey]} characters or fewer.`,
       );
     }
-    return {
-      query: `INSERT INTO app_settings (setting_key, setting_value)
-              VALUES ($1, $2)
-              ON CONFLICT(setting_key) DO UPDATE
-              SET setting_value = excluded.setting_value`,
-      values: [settingKey, value],
-      expectedRowsAffected: 1,
-    };
-  });
+    settings[settingKey] = value;
+  }
 
-  await runInTransaction(statements);
+  await applyPharmacyMutation({ kind: "save_settings", settings });
 }

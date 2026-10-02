@@ -1,0 +1,86 @@
+Yes. Start Phase 1 only.
+
+IMPORTANT:
+- Add isolated read-contract/parity tests only.
+- Do NOT refactor production renderer SQL yet.
+- Do NOT modify the current development database.
+- Do NOT modify the Home dashboard or any UI.
+- Do NOT change database schema, routes, business rules, or production behavior.
+- Do NOT remove the SQL plugin or permissions yet.
+- Use only a temporary/isolated QA database and fixtures.
+
+Freeze the behavior of the existing renderer read path with tests covering:
+
+1. Medicine list/search
+- search matching
+- empty search
+- no-results
+- result ordering
+- limits
+
+2. Barcode matching
+- exact barcode match
+- priority/order behavior
+- no match
+
+3. Batches / FEFO
+- eligible batches
+- expiry filtering
+- earliest-expiry ordering
+- multiple batches
+- insufficient stock
+- null/empty cases
+
+4. Inventory alerts
+- low stock
+- expired
+- near-expiry
+- empty results
+
+5. Suppliers / Settings
+- supplier search
+- no-results
+- settings present
+- settings absent/null fields
+
+6. Purchases / Sales
+- recent purchase ordering
+- sales history ordering
+- invoice lookup
+- missing invoice behavior
+
+7. Dashboard / Reports
+- today date boundaries
+- this-week/month boundaries
+- revenue
+- purchase totals
+- gross profit using sale-time cost snapshots
+- payment buckets
+- top sellers
+- inventory summaries
+- empty aggregates
+
+8. General SQL-result behavior
+- null handling
+- empty arrays
+- numeric values
+- date/time values
+- search escaping
+- current SQLite local-date semantics
+
+For every important read, capture the current result shape and expected ordering/values in isolated fixtures.
+
+The goal is PARITY protection for the upcoming typed-native-read refactor.
+
+At the end report:
+A. Tests added
+B. Fixtures created
+C. Read behaviors covered
+D. Any existing inconsistencies discovered
+E. Typecheck result
+F. Native/Rust test result
+G. git diff --check
+H. Exact files changed
+
+Do NOT proceed to Phase 2 until I explicitly ask for it.
+Leave the current development database completely untouched.

@@ -6,7 +6,11 @@ import type {
   MedicineFormValues,
   SupplierFormValues,
 } from "../types";
-import { runInTransaction, selectSql, type TransactionStatement } from "./db";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  runDevelopmentTransaction,
+  type DevelopmentTransactionStatement,
+} from "./developmentDatabase";
 import { createMedicine, getMedicineBatches } from "./inventoryService";
 import { createPurchase } from "./purchaseService";
 import { checkoutSale, SaleDetailsUnavailableError } from "./salesService";
@@ -143,22 +147,9 @@ function localNoonIsoTimestamp(dayOffset: number): string {
 }
 
 async function assertEmptyPharmacyDatabase(): Promise<void> {
-  const rows = await selectSql<EmptyDatabaseCounts[]>(
-    `SELECT
-       (SELECT COUNT(*) FROM medicines) AS medicines,
-       (SELECT COUNT(*) FROM medicine_batches) AS medicine_batches,
-       (SELECT COUNT(*) FROM suppliers) AS suppliers,
-       (SELECT COUNT(*) FROM purchases) AS purchases,
-       (SELECT COUNT(*) FROM purchase_items) AS purchase_items,
-       (SELECT COUNT(*) FROM sales) AS sales,
-       (SELECT COUNT(*) FROM sale_items) AS sale_items,
-       (SELECT COUNT(*) FROM stock_adjustments) AS stock_adjustments,
-       (SELECT COUNT(*) FROM app_settings) AS app_settings`,
+  const counts = await invoke<EmptyDatabaseCounts>(
+    "check_development_database_empty",
   );
-  const counts = rows[0];
-  if (!counts) {
-    throw new Error("The local database did not return its empty-data check.");
-  }
 
   const existingTables = Object.entries(counts)
     .filter(([, count]) => Number(count) > 0)
@@ -171,7 +162,7 @@ async function assertEmptyPharmacyDatabase(): Promise<void> {
 }
 
 function addRollbackStatement(
-  statements: TransactionStatement[],
+  statements: DevelopmentTransactionStatement[],
   query: string,
   id: EntityId,
   expectedRowsAffected?: number,
@@ -184,7 +175,7 @@ function addRollbackStatement(
 }
 
 async function rollbackSeed(ledger: SeedLedger): Promise<void> {
-  const statements: TransactionStatement[] = [];
+  const statements: DevelopmentTransactionStatement[] = [];
 
   for (const sale of [...ledger.sales].reverse()) {
     addRollbackStatement(
@@ -262,7 +253,7 @@ async function rollbackSeed(ledger: SeedLedger): Promise<void> {
     );
   }
 
-  await runInTransaction(statements);
+  await runDevelopmentTransaction(statements);
 }
 
 async function createSeedPurchase(
@@ -347,7 +338,7 @@ async function createSeedSale(
 
   const dayOffset = options.dayOffset ?? 0;
   const invoiceDate = localDateOffset(dayOffset).replaceAll("-", "");
-  await runInTransaction([
+  await runDevelopmentTransaction([
     {
       query: dayOffset === 0
         ? "UPDATE sales SET invoice_no = $1 WHERE id = $2"
@@ -455,7 +446,7 @@ export async function seedDevelopmentDemoData(): Promise<DevelopmentDemoSeedResu
     const expiredBatch = await getBatch(medicines, "omeprazole", "DEV-DEMO-OME-A");
     // Normal purchase validation rejects already-expired stock. Adjust only this
     // newly created fixture so the development dashboard can display that state.
-    await runInTransaction([
+    await runDevelopmentTransaction([
       {
         query: `UPDATE medicine_batches
                 SET expiry_date = $1
