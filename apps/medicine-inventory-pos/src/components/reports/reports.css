@@ -749,6 +749,36 @@
   gap: 12px;
 }
 
+.reports-breakdown-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 10px;
+}
+
+.reports-expense-cancelled {
+  color: #8b9690;
+  background: #fafbfa;
+}
+
+.reports-expense-status {
+  display: inline-flex;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 680;
+}
+
+.reports-expense-status--active {
+  color: #2c6846;
+  background: #eaf5ed;
+}
+
+.reports-expense-status--cancelled {
+  color: #777f7a;
+  background: #edf0ee;
+}
+
 .report-detail-block {
   min-width: 0;
   overflow: hidden;

@@ -226,8 +226,10 @@ export async function exportFinancialReportExcel(
           ["COGS", data.cogs],
           ["Gross profit", data.grossProfit],
           ["Gross margin %", data.grossMarginPercent],
+          ["Operating expenses", data.operatingExpenses],
+          ["Net profit", data.netProfit],
+          ["Net margin %", data.netMarginPercent],
           ["Cost unavailable invoices", data.costUnavailableInvoices],
-          ["Operating expenses", data.expenseNote],
         ],
         "Product contribution",
         [
@@ -268,6 +270,82 @@ export async function exportFinancialReportExcel(
         ]),
         `${prefix}-${data.range.startDate}-to-${data.range.endDate}.xlsx`,
       );
+    }
+    case "expenses": {
+      const data = report.data;
+      const rangeText = reportRangeText(data.range);
+      const summary = workbook.addWorksheet("Expense Summary");
+      addReportHeader(summary, "Expense Report", settings, rangeText);
+      addTable(summary, "Overview", ["Measure", "Value"], [
+        ["Total active expenses", data.totalExpenses],
+        ["Active records", data.activeCount],
+        ["Cancelled records", data.cancelledCount],
+        ["Records in report", data.totalRows],
+      ]);
+      summary.addRow([]);
+      addTable(summary, "Expense by category", ["Category", "Records", "Amount"], data.categoryTotals.map((row) => [
+        row.categoryName, row.count, row.amount,
+      ]));
+      summary.addRow([]);
+      addTable(summary, "Expense by payment method", ["Payment method", "Records", "Amount"], data.paymentMethodTotals.map((row) => [
+        row.paymentMethod, row.count, row.amount,
+      ]));
+      summary.addRow([]);
+      addTable(summary, "Daily expense totals", ["Date", "Records", "Amount"], data.dailyTotals.map((row) => [
+        row.period, row.count, row.amount,
+      ]));
+      summary.addRow([]);
+      addTable(summary, "Monthly expense totals", ["Month", "Records", "Amount"], data.monthlyTotals.map((row) => [
+        row.period, row.count, row.amount,
+      ]));
+
+      const ledger = workbook.addWorksheet("Expense Ledger");
+      addReportHeader(ledger, "Expense Ledger", settings, rangeText);
+      addTable(ledger, "Expense records", [
+        "Date", "Category", "Description", "Amount", "Payment method", "Reference", "Status",
+      ], data.rows.map((row) => [
+        row.expenseDate,
+        row.categoryName,
+        row.description,
+        row.amount,
+        row.paymentMethod,
+        row.referenceNumber,
+        row.status,
+      ]));
+      const bytes = await workbook.xlsx.writeBuffer();
+      downloadWorkbook(
+        bytes as ExcelJS.Buffer,
+        `${prefix}-${data.range.startDate}-to-${data.range.endDate}.xlsx`,
+      );
+      return;
+    }
+    case "financial_summary": {
+      const data = report.data;
+      const sheet = workbook.addWorksheet("Financial Summary");
+      addReportHeader(sheet, "Financial Summary", settings, reportRangeText(data.range));
+      addTable(sheet, "Trading and current balances", ["Measure", "Value"], [
+        ["Gross sales", data.grossSales],
+        ["Sales returns", data.salesReturns],
+        ["Net sales excluding GST", data.netSales],
+        ["Gross purchases", data.grossPurchases],
+        ["Purchase returns", data.purchaseReturns],
+        ["Net purchases", data.netPurchases],
+        ["COGS", data.cogs],
+        ["Gross profit", data.grossProfit],
+        ["Operating expenses", data.operatingExpenses],
+        ["Net profit", data.netProfit],
+        ["Customer outstanding (current)", data.customerOutstanding],
+        ["Supplier outstanding (current)", data.supplierOutstanding],
+        ["Stock valuation at cost (current)", data.stockValuation],
+        ["Stock quantity (current)", data.stockQuantity],
+        ["Cost unavailable invoices", data.costUnavailableInvoices],
+      ]);
+      const bytes = await workbook.xlsx.writeBuffer();
+      downloadWorkbook(
+        bytes as ExcelJS.Buffer,
+        `${prefix}-${data.range.startDate}-to-${data.range.endDate}.xlsx`,
+      );
+      return;
     }
     case "stock_valuation": {
       const data = report.data;

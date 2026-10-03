@@ -34,10 +34,12 @@ import type {
   Supplier,
 } from "../../types";
 import type {
+  ExpensePeriodTotal,
   FinancialReportData,
   FinancialReportRequest,
   FinancialReportSort,
   FinancialReportType,
+  ExpenseReport,
   GstDetailRow,
   ReportDateRange,
   ReportRangePreset,
@@ -50,6 +52,8 @@ const reportOptions: Array<{ id: FinancialReportType; title: string; group: stri
   { id: "sales_summary", title: "Sales Summary", group: "Trading" },
   { id: "purchase_summary", title: "Purchase Summary", group: "Trading" },
   { id: "profit_and_loss", title: "Profit & Loss", group: "Trading" },
+  { id: "expenses", title: "Expenses", group: "Trading" },
+  { id: "financial_summary", title: "Financial Summary", group: "Overview" },
   { id: "stock_valuation", title: "Stock Valuation", group: "Inventory" },
   { id: "product_sales", title: "Product-wise Sales", group: "Analysis" },
   { id: "company_sales", title: "Company-wise Sales", group: "Analysis" },
@@ -114,6 +118,8 @@ function buildRequest(
   switch (type) {
     case "sales_summary":
     case "profit_and_loss":
+    case "expenses":
+    case "financial_summary":
     case "gst":
       return { reportType: type, range };
     case "purchase_summary":
@@ -168,12 +174,35 @@ function summaryEntries(report: FinancialReportData): SummaryEntry[] {
       ];
     case "profit_and_loss":
       return [
-        ["Net taxable sales", formatMoney(report.data.netSales)],
+        ["Gross sales", formatMoney(report.data.grossSales)],
+        ["Sales returns", formatMoney(report.data.salesReturns)],
+        ["Net sales · excl. GST", formatMoney(report.data.netSales)],
         ["COGS", report.data.cogs === null ? "Unavailable" : formatMoney(report.data.cogs)],
         ["Gross profit", report.data.grossProfit === null ? "Unavailable" : formatMoney(report.data.grossProfit)],
-        ["Gross margin", report.data.grossMarginPercent === null ? "Unavailable" : `${report.data.grossMarginPercent.toFixed(2)}%`],
+        ["Operating expenses", formatMoney(report.data.operatingExpenses)],
+        ["Net profit", report.data.netProfit === null ? "Unavailable" : formatMoney(report.data.netProfit)],
+        ["Gross · net margin", `${report.data.grossMarginPercent === null ? "Unavailable" : `${report.data.grossMarginPercent.toFixed(2)}%`} · ${report.data.netMarginPercent === null ? "Unavailable" : `${report.data.netMarginPercent.toFixed(2)}%`}`],
         ["Cost unavailable invoices", report.data.costUnavailableInvoices.toLocaleString("en-IN")],
-        ["Operating expenses", report.data.expenseNote || "Not recorded"],
+      ];
+    case "expenses":
+      return [
+        ["Total expenses", formatMoney(report.data.totalExpenses)],
+        ["Active · cancelled", `${report.data.activeCount.toLocaleString("en-IN")} · ${report.data.cancelledCount.toLocaleString("en-IN")}`],
+        ["By payment method", report.data.paymentMethodTotals.map((item) => `${item.paymentMethod}: ${formatMoney(item.amount)}`).join(" · ")],
+        ["Top categories", report.data.categoryTotals.slice(0, 3).map((item) => `${item.categoryName}: ${formatMoney(item.amount)}`).join(" · ") || "No active expenses"],
+        ["Expense records", report.data.totalRows.toLocaleString("en-IN")],
+      ];
+    case "financial_summary":
+      return [
+        ["Net sales · excl. GST", formatMoney(report.data.netSales)],
+        ["Net purchases", formatMoney(report.data.netPurchases)],
+        ["Sales · purchase returns", `${formatMoney(report.data.salesReturns)} · ${formatMoney(report.data.purchaseReturns)}`],
+        ["COGS", report.data.cogs === null ? "Unavailable" : formatMoney(report.data.cogs)],
+        ["Gross profit", report.data.grossProfit === null ? "Unavailable" : formatMoney(report.data.grossProfit)],
+        ["Operating expenses", formatMoney(report.data.operatingExpenses)],
+        ["Net profit", report.data.netProfit === null ? "Unavailable" : formatMoney(report.data.netProfit)],
+        ["Customer · supplier outstanding", `${formatMoney(report.data.customerOutstanding)} · ${formatMoney(report.data.supplierOutstanding)}`],
+        ["Stock · cost value", `${report.data.stockQuantity.toLocaleString("en-IN")} units · ${formatMoney(report.data.stockValuation)}`],
       ];
     case "stock_valuation":
       return [
@@ -498,7 +527,7 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
       <div className="reports-layout">
         <aside className="reports-rail" aria-label="Report selection">
           <div className="reports-rail-heading"><span>REPORT LIBRARY</span><BarChart3 size={15} /></div>
-          {["Trading", "Inventory", "Analysis", "Balances", "Tax"].map((group) => (
+          {["Trading", "Overview", "Inventory", "Analysis", "Balances", "Tax"].map((group) => (
             <div className="reports-nav-group" key={group}>
               <span className="reports-nav-label">{group}</span>
               {reportOptions.filter((item) => item.group === group).map((item) => (
@@ -729,13 +758,25 @@ function renderReportBody(
       return (
         <>
           <MetricGrid entries={summary} />
-          {(report.data.cogs === null || report.data.grossProfit === null) && (
+          {(report.data.cogs === null || report.data.grossProfit === null || report.data.netProfit === null) && (
             <div className="reports-note reports-note--amber"><CircleHelp size={15} /><span>Historical purchase cost snapshots are incomplete. Cost of goods and profit are shown as unavailable rather than estimated.</span></div>
           )}
-          <p className="reports-definition">Sales and product contribution are shown excluding GST. Operating expenses are not recorded by this report: {report.data.expenseNote}</p>
+          <p className="reports-definition">Net sales, COGS and profit exclude GST. Gross sales and sales returns follow the saved invoice totals, which include GST. Cancelled expenses are retained in the ledger and excluded from totals.</p>
           <div className="reports-table-card">
             <div className="report-table-heading"><div className="report-card-title"><div><h2>Product contribution</h2><p>Sales, costs and margins where source costs are available</p></div></div></div>
             {report.data.productRows.length ? <ProductRows rows={report.data.productRows} /> : <div className="report-table-empty">No product contribution in this period.</div>}
+          </div>
+        </>
+      );
+    case "expenses":
+      return <ExpenseReportBody report={report.data} />;
+    case "financial_summary":
+      return (
+        <>
+          <MetricGrid entries={summary} />
+          <div className="reports-note reports-note--amber">
+            <CircleHelp size={15} />
+            <span>Customer and supplier outstanding balances and stock valuation are current balances, not historical balances at the selected period end. Sales, COGS and profit exclude GST; saved historical costs are used.</span>
           </div>
         </>
       );
@@ -771,6 +812,104 @@ function renderReportBody(
         </>
       );
   }
+}
+
+function ExpenseReportBody({ report }: { report: ExpenseReport }) {
+  return (
+    <>
+      <MetricGrid entries={summaryEntries({ reportType: "expenses", data: report })} />
+      <div className="reports-breakdown-grid">
+        <div className="reports-table-card">
+          <div className="report-table-heading">
+            <div className="report-card-title"><div><h2>Expense by category</h2><p>Active expenses only</p></div></div>
+          </div>
+          {report.categoryTotals.length ? (
+            <div className="workspace-table-scroll reports-table-scroll">
+              <table className="workspace-table reports-data-table">
+                <thead><tr><th>Category</th><th className="report-align-right">Records</th><th className="report-align-right">Total</th></tr></thead>
+                <tbody>{report.categoryTotals.map((item) => (
+                  <tr key={item.categoryName} data-testid={`row-expense-category-${item.categoryName}`}>
+                    <td><strong>{item.categoryName}</strong></td><td className="report-align-right">{item.count}</td><td className="report-align-right"><strong>{formatMoney(item.amount)}</strong></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <div className="report-table-empty">No active expenses in this period.</div>}
+        </div>
+        <div className="reports-table-card">
+          <div className="report-table-heading">
+            <div className="report-card-title"><div><h2>Expense by payment method</h2><p>Cash, bank, UPI and other</p></div></div>
+          </div>
+          <div className="workspace-table-scroll reports-table-scroll">
+            <table className="workspace-table reports-data-table">
+              <thead><tr><th>Payment method</th><th className="report-align-right">Records</th><th className="report-align-right">Total</th></tr></thead>
+              <tbody>{report.paymentMethodTotals.map((item) => (
+                <tr key={item.paymentMethod} data-testid={`row-expense-method-${item.paymentMethod.toLowerCase()}`}>
+                  <td><strong>{paymentMethodLabel(item.paymentMethod)}</strong></td><td className="report-align-right">{item.count}</td><td className="report-align-right"><strong>{formatMoney(item.amount)}</strong></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div className="reports-breakdown-grid">
+        <ExpensePeriodTable title="Daily expenses" rows={report.dailyTotals} />
+        <ExpensePeriodTable title="Monthly expenses" rows={report.monthlyTotals} />
+      </div>
+      <div className="reports-table-card">
+        <div className="report-table-heading">
+          <div className="report-card-title"><div><h2>Expense ledger</h2><p>{report.totalRows.toLocaleString("en-IN")} records, including cancelled expenses</p></div></div>
+        </div>
+        {report.rows.length ? (
+          <div className="workspace-table-scroll reports-table-scroll">
+            <table className="workspace-table reports-data-table">
+              <thead><tr><th>Date</th><th>Category</th><th>Description</th><th className="report-align-right">Amount</th><th>Payment</th><th>Reference</th><th>Status</th></tr></thead>
+              <tbody>{report.rows.map((row) => (
+                <tr key={row.id} className={row.status === "CANCELLED" ? "reports-expense-cancelled" : undefined} data-testid={`row-expense-report-${row.id}`}>
+                  <td>{formatDate(row.expenseDate)}</td>
+                  <td><strong>{row.categoryName}</strong></td>
+                  <td>{row.description || "—"}</td>
+                  <td className="report-align-right"><strong>{formatMoney(row.amount)}</strong></td>
+                  <td>{paymentMethodLabel(row.paymentMethod)}</td>
+                  <td>{row.referenceNumber || "—"}</td>
+                  <td><span className={`reports-expense-status reports-expense-status--${row.status.toLowerCase()}`} data-testid={`status-expense-report-${row.id}`}>{row.status === "ACTIVE" ? "Active" : "Cancelled"}</span></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <div className="report-table-empty">No expense records in this period.</div>}
+      </div>
+      {report.rows.length < report.totalRows && (
+        <div className="reports-note"><CircleHelp size={15} /><span>Showing the first {report.rows.length.toLocaleString("en-IN")} of {report.totalRows.toLocaleString("en-IN")} records. Export is limited to this report window.</span></div>
+      )}
+    </>
+  );
+}
+
+function ExpensePeriodTable({ title, rows }: { title: string; rows: ExpensePeriodTotal[] }) {
+  return (
+    <div className="reports-table-card">
+      <div className="report-table-heading">
+        <div className="report-card-title"><div><h2>{title}</h2><p>Active expenses only</p></div></div>
+      </div>
+      {rows.length ? (
+        <div className="workspace-table-scroll reports-table-scroll">
+          <table className="workspace-table reports-data-table">
+            <thead><tr><th>Period</th><th className="report-align-right">Records</th><th className="report-align-right">Total</th></tr></thead>
+            <tbody>{rows.map((item) => (
+              <tr key={item.period} data-testid={`row-expense-period-${item.period}`}>
+                <td>{item.period}</td><td className="report-align-right">{item.count}</td><td className="report-align-right"><strong>{formatMoney(item.amount)}</strong></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <div className="report-table-empty">No active expenses in this period.</div>}
+    </div>
+  );
+}
+
+function paymentMethodLabel(method: "CASH" | "BANK" | "UPI" | "OTHER"): string {
+  return method === "CASH" ? "Cash" : method === "BANK" ? "Bank" : method;
 }
 
 function ProductRows({ rows }: { rows: Array<{
