@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Customer, CustomerFormValues } from "../../types";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { gstStates } from "../../utils/gstStates";
 
 interface CustomerFormDialogProps {
@@ -27,6 +28,9 @@ export function CustomerFormDialog({
   onSave,
 }: CustomerFormDialogProps) {
   const [values, setValues] = useState<CustomerFormValues>(emptyValues);
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useDialogFocusTrap(dialogRef);
 
   useEffect(() => {
     setValues(
@@ -62,6 +66,8 @@ export function CustomerFormDialog({
         className="workspace-dialog"
         data-testid="dialog-customer"
         role="dialog"
+        ref={dialogRef}
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>

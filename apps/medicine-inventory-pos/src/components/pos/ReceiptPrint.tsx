@@ -2,6 +2,7 @@ import { Printer, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getStoreSettings } from "../../services/settingsService";
 import type { SaleDetails, StoreSettings } from "../../types";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { formatDateTime, formatMoney } from "../../utils/money";
 
 interface ReceiptPrintProps {
@@ -22,11 +23,14 @@ export function ReceiptPrint({
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
   const didAutoPrint = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const { sale: invoice, items } = sale;
   const itemDiscountTotal = items.reduce(
     (total, item) => total + item.item_discount,
     0,
   );
+
+  useDialogFocusTrap(dialogRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,12 +69,20 @@ export function ReceiptPrint({
   const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
 
   return (
-    <div className="receipt-overlay" data-testid="dialog-receipt">
+    <div
+      aria-labelledby="receipt-dialog-title"
+      aria-modal="true"
+      className="receipt-overlay"
+      data-testid="dialog-receipt"
+      ref={dialogRef}
+      role="dialog"
+      tabIndex={-1}
+    >
       <style>{`@page { size: ${width}mm auto; margin: 0; }`}</style>
       <div className="receipt-actions">
         <div>
           <span className="eyebrow">{autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}</span>
-          <h2>{autoPrint ? "Receipt ready" : "Invoice"}</h2>
+          <h2 id="receipt-dialog-title">{autoPrint ? "Receipt ready" : "Invoice"}</h2>
           <p>{invoice.invoice_no}</p>
         </div>
         {settingsLoadError && (
@@ -100,6 +112,7 @@ export function ReceiptPrint({
             <Printer size={16} /> Print again
           </button>
           <button
+            autoFocus
             aria-label="Close receipt"
             className="icon-button"
             data-testid="button-close-receipt"

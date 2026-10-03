@@ -1,7 +1,8 @@
 import { ArrowUpRight, CreditCard, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Customer, CustomerPaymentInput } from "../../types";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { createUpiPaymentLink } from "../../utils/upi";
 import { formatMoney } from "../../utils/money";
 
@@ -24,6 +25,7 @@ export function CustomerPaymentDialog({
   onClose,
   onSave,
 }: CustomerPaymentDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null);
   const [amount, setAmount] = useState(customer.balance_due.toFixed(2));
   const [paymentMode, setPaymentMode] =
     useState<CustomerPaymentInput["payment_mode"]>("CASH");
@@ -35,6 +37,16 @@ export function CustomerPaymentDialog({
     Number.isFinite(amountNumber) &&
     amountNumber > 0 &&
     amountNumber <= customer.balance_due;
+  const amountError =
+    !amount.trim()
+      ? "Enter a collection amount."
+      : !Number.isFinite(amountNumber)
+        ? "Enter a valid collection amount."
+        : amountNumber <= 0
+          ? "Collection amount must be greater than ₹0."
+          : amountNumber > customer.balance_due
+            ? `Collection cannot exceed the outstanding balance of ${formatMoney(customer.balance_due)}.`
+            : null;
   const upiLink =
     paymentMode === "UPI"
       ? createUpiPaymentLink(
@@ -44,6 +56,8 @@ export function CustomerPaymentDialog({
           `Customer collection ${customer.name}`,
         )
       : null;
+
+  useDialogFocusTrap(dialogRef);
 
   async function openUpiPayment() {
     if (!upiLink) return;
@@ -77,6 +91,8 @@ export function CustomerPaymentDialog({
         className="workspace-dialog"
         data-testid="dialog-customer-payment"
         role="dialog"
+        ref={dialogRef}
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>
@@ -113,6 +129,15 @@ export function CustomerPaymentDialog({
               />
             </span>
           </label>
+          {amountError && (
+            <p
+              className="workspace-error"
+              data-testid="status-collection-amount-error"
+              role="alert"
+            >
+              {amountError}
+            </p>
+          )}
           <fieldset className="payment-fieldset">
             <legend>Payment method</legend>
             <div className="payment-mode-options">
@@ -188,7 +213,11 @@ export function CustomerPaymentDialog({
               disabled={isSaving || !isValidAmount}
               type="submit"
             >
-              {isSaving ? "Saving…" : `Record ${formatMoney(isValidAmount ? amountNumber : 0)}`}
+              {isSaving
+                ? "Saving…"
+                : isValidAmount
+                  ? `Record ${formatMoney(amountNumber)}`
+                  : "Fix amount"}
             </button>
           </footer>
         </form>

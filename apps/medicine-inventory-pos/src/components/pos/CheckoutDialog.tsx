@@ -1,8 +1,9 @@
 import { ArrowRight, CreditCard, Phone, UserRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCustomers } from "../../services/customerService";
 import type { Customer, PaymentMode } from "../../types";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { gstStateName } from "../../utils/gstStates";
 import { formatMoney } from "../../utils/money";
 import { createUpiPaymentLink } from "../../utils/upi";
@@ -83,10 +84,13 @@ export function CheckoutDialog({
   const [customerLookupError, setCustomerLookupError] = useState<string | null>(null);
   const [showCustomerOptions, setShowCustomerOptions] = useState(false);
   const [upiOpenError, setUpiOpenError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const upiLink =
     paymentMode === "UPI"
       ? createUpiPaymentLink(upiId, upiDisplayName, grandTotal, "MY MEDICAL sale")
       : null;
+
+  useDialogFocusTrap(dialogRef);
 
   async function openUpiPayment() {
     if (!upiLink) return;
@@ -152,6 +156,8 @@ export function CheckoutDialog({
         className="checkout-dialog"
         role="dialog"
         data-testid="dialog-checkout"
+        ref={dialogRef}
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>
