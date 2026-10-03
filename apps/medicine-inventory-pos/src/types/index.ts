@@ -413,10 +413,15 @@ export interface CustomerPaymentInput {
 
 export interface DatabaseBackupResult {
   path: string;
+  photoCount: number;
+  ignoredOrphanedPhotoCount: number;
 }
 
 export interface DatabaseRestoreResult {
   safetyBackupPath: string;
+  sourceFormat: "complete" | "legacyDatabaseOnly";
+  restoredPhotoCount: number;
+  ignoredOrphanedPhotoCount: number;
 }
 
 export interface CartItem {

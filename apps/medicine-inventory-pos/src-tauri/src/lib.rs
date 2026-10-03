@@ -21,7 +21,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
+mod backup_package;
 mod reads;
+use backup_package::{
+    create_complete_backup_from_snapshot, stage_complete_backup, validate_photo_references,
+    BackupPhotoSummary, BackupSourceFormat, RestoredPhotoSummary,
+};
 use reads::{
     get_dashboard_inventory_summary, get_dashboard_purchase_summary, get_expiry_alerts,
     get_customer_ledger, get_customers, get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
@@ -330,12 +335,17 @@ struct PurchaseResult {
 #[serde(rename_all = "camelCase")]
 struct DatabaseBackupResult {
     path: String,
+    photo_count: usize,
+    ignored_orphaned_photo_count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DatabaseRestoreResult {
     safety_backup_path: String,
+    source_format: String,
+    restored_photo_count: usize,
+    ignored_orphaned_photo_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1132,14 +1142,14 @@ fn next_dated_backup_path(
     prefix: &str,
     timestamp: &str,
 ) -> Result<PathBuf, String> {
-    let base_name = format!("{prefix}_{timestamp}.db");
+    let base_name = format!("{prefix}_{timestamp}.zip");
     let candidate = directory.join(&base_name);
     if !candidate.exists() {
         return Ok(candidate);
     }
 
     for suffix in 2..=999 {
-        let candidate = directory.join(format!("{prefix}_{timestamp}_{suffix}.db"));
+        let candidate = directory.join(format!("{prefix}_{timestamp}_{suffix}.zip"));
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -1147,13 +1157,54 @@ fn next_dated_backup_path(
     Err("Could not choose a unique internal backup filename.".to_owned())
 }
 
+fn create_complete_backup_at(
+    database_path: &Path,
+    photo_directory: &Path,
+    destination: &Path,
+) -> Result<BackupPhotoSummary, String> {
+    if destination.exists() || fs::symlink_metadata(destination).is_ok() {
+        return Err("A file already exists at the selected backup location.".to_owned());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Choose a valid backup folder.".to_owned())?;
+    if !parent.is_dir() {
+        return Err("The selected backup folder does not exist or is unavailable.".to_owned());
+    }
+
+    let staged_database = unique_internal_path(parent, "backup-database-stage", "db");
+    let staged_package = unique_internal_path(parent, "backup-package-stage", "zip");
+    let result = (|| {
+        create_snapshot(database_path, &staged_database)?;
+        let summary = create_complete_backup_from_snapshot(
+            &staged_database,
+            photo_directory,
+            &staged_package,
+        )?;
+        if destination.exists() || fs::symlink_metadata(destination).is_ok() {
+            return Err("A file already exists at the selected backup location.".to_owned());
+        }
+        fs::rename(&staged_package, destination)
+            .map_err(|error| format!("Could not save the complete backup package: {error}"))?;
+        Ok(summary)
+    })();
+
+    let _ = fs::remove_file(&staged_database);
+    if result.is_err() {
+        let _ = fs::remove_file(&staged_package);
+    }
+    result
+}
+
 fn create_internal_snapshot(app: &AppHandle, prefix: &str) -> Result<Option<PathBuf>, String> {
     let database_path = pharmacy_database_path(app)?;
-    create_internal_snapshot_at(&database_path, prefix)
+    let photo_directory = medicine_photo_directory(app)?;
+    create_internal_snapshot_at(&database_path, &photo_directory, prefix)
 }
 
 fn create_internal_snapshot_at(
     database_path: &Path,
+    photo_directory: &Path,
     prefix: &str,
 ) -> Result<Option<PathBuf>, String> {
     if !database_path.is_file() {
@@ -1167,7 +1218,7 @@ fn create_internal_snapshot_at(
         .map_err(|error| format!("Could not create the internal backup folder: {error}"))?;
     let timestamp = database_timestamp(&database_path)?;
     let destination = next_dated_backup_path(&backup_directory, prefix, &timestamp)?;
-    create_snapshot(&database_path, &destination)?;
+    create_complete_backup_at(database_path, photo_directory, &destination)?;
     Ok(Some(destination))
 }
 
@@ -1192,8 +1243,12 @@ fn valid_automatic_backup_timestamp(value: &str) -> bool {
 }
 
 fn automatic_backup_sort_key(backup_path: &Path) -> Option<(String, u16)> {
-    let name = backup_path.file_name()?.to_str()?;
-    let stem = name.strip_prefix("backup_")?.strip_suffix(".db")?;
+    let extension = backup_path.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("db") && !extension.eq_ignore_ascii_case("zip") {
+        return None;
+    }
+    let stem = backup_path.file_stem()?.to_str()?;
+    let stem = stem.strip_prefix("backup_")?;
     if let Some((timestamp, suffix)) = stem.rsplit_once('_') {
         if let Ok(sequence) = suffix.parse::<u16>() {
             if (2..=999).contains(&sequence) && valid_automatic_backup_timestamp(timestamp) {
@@ -1291,8 +1346,13 @@ fn prune_automatic_backups_best_effort(directory: &Path, active_database: &Path)
     }
 }
 
-fn create_automatic_close_backup_at(database_path: &Path) -> Result<Option<PathBuf>, String> {
-    let Some(backup_path) = create_internal_snapshot_at(database_path, "backup")? else {
+fn create_automatic_close_backup_at(
+    database_path: &Path,
+    photo_directory: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let Some(backup_path) =
+        create_internal_snapshot_at(database_path, photo_directory, "backup")?
+    else {
         return Ok(None);
     };
     if let Err(error) = mark_automatic_backup(&backup_path) {
@@ -1305,30 +1365,35 @@ fn create_automatic_close_backup_at(database_path: &Path) -> Result<Option<PathB
     Ok(Some(backup_path))
 }
 
-fn validate_database_extension(path: &Path) -> Result<(), String> {
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))
-    {
-        return Err("Choose a MY MEDICAL .db backup file.".to_owned());
+fn selected_backup_format(path: &Path) -> Result<BackupSourceFormat, String> {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("zip") => {
+            Ok(BackupSourceFormat::CompleteArchive)
+        }
+        Some(extension) if extension.eq_ignore_ascii_case("db") => {
+            Ok(BackupSourceFormat::LegacyDatabaseOnly)
+        }
+        _ => Err("Choose a MY MEDICAL complete .zip backup or legacy .db backup.".to_owned()),
     }
-    Ok(())
 }
 
-fn selected_backup_path(path: &Path) -> Result<PathBuf, String> {
+fn selected_backup_path(path: &Path) -> Result<(PathBuf, BackupSourceFormat), String> {
     if !path.is_absolute() {
         return Err("The selected backup path is not absolute.".to_owned());
     }
-    validate_database_extension(path)?;
-    fs::canonicalize(path).map_err(|error| format!("Could not access the selected backup: {error}"))
+    let format = selected_backup_format(path)?;
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("Could not access the selected backup: {error}"))?;
+    Ok((canonical, format))
 }
 
 fn backup_destination_path(active_database: &Path, destination: &Path) -> Result<PathBuf, String> {
     if !destination.is_absolute() {
         return Err("Choose an absolute path for the backup file.".to_owned());
     }
-    validate_database_extension(destination)?;
+    if selected_backup_format(destination)? != BackupSourceFormat::CompleteArchive {
+        return Err("Choose a .zip destination for a complete backup.".to_owned());
+    }
     if destination.exists() || fs::symlink_metadata(destination).is_ok() {
         return Err("A file already exists at the selected backup location.".to_owned());
     }
@@ -1363,10 +1428,13 @@ fn create_database_backup(
     if !active_database.is_file() {
         return Err("The local pharmacy database does not exist yet.".to_owned());
     }
+    let photo_directory = medicine_photo_directory(&app)?;
     let destination = backup_destination_path(&active_database, Path::new(&destination_path))?;
-    create_snapshot(&active_database, &destination)?;
+    let summary = create_complete_backup_at(&active_database, &photo_directory, &destination)?;
     Ok(DatabaseBackupResult {
         path: destination.display().to_string(),
+        photo_count: summary.photo_count,
+        ignored_orphaned_photo_count: summary.ignored_orphaned_photo_count,
     })
 }
 
@@ -1512,29 +1580,158 @@ where
     Ok(())
 }
 
+struct PhotoDirectorySwap {
+    active_directory: PathBuf,
+    previous_directory: Option<PathBuf>,
+}
+
+fn remove_path_if_present(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not inspect {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("Could not remove {}: {error}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("Could not remove {}: {error}", path.display()))
+    }
+}
+
+fn install_staged_photo_directory(
+    active_directory: &Path,
+    staged_directory: &Path,
+) -> Result<PhotoDirectorySwap, String> {
+    let parent = active_directory
+        .parent()
+        .ok_or_else(|| "Could not locate local medicine photo storage.".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not access local medicine photo storage: {error}"))?;
+    let previous_directory = unique_internal_path(parent, "restore-previous-photos", "dir");
+    let active_metadata = match fs::symlink_metadata(active_directory) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect current medicine photo storage: {error}"
+            ))
+        }
+    };
+    if active_metadata
+        .as_ref()
+        .is_some_and(|metadata| !metadata.file_type().is_dir())
+    {
+        return Err("Current medicine photo storage is not a regular folder.".to_owned());
+    }
+
+    let previous_moved = if active_metadata.is_some() {
+        fs::rename(active_directory, &previous_directory).map_err(|error| {
+            format!("Could not prepare current medicine photo storage for restore: {error}")
+        })?;
+        true
+    } else {
+        false
+    };
+    if let Err(error) = fs::rename(staged_directory, active_directory) {
+        let rollback = if previous_moved {
+            fs::rename(&previous_directory, active_directory).map_err(|rollback_error| {
+                format!(
+                    "Could not restore current medicine photos; their previous folder remains at {}: {rollback_error}",
+                    previous_directory.display()
+                )
+            })
+        } else {
+            Ok(())
+        };
+        return match rollback {
+            Ok(()) => Err(format!(
+                "Could not install the restored medicine photos: {error}. Current photos were restored."
+            )),
+            Err(rollback_error) => Err(format!(
+                "Could not install the restored medicine photos: {error}. {rollback_error}"
+            )),
+        };
+    }
+
+    Ok(PhotoDirectorySwap {
+        active_directory: active_directory.to_path_buf(),
+        previous_directory: previous_moved.then_some(previous_directory),
+    })
+}
+
+fn rollback_photo_directory_replacement(swap: &PhotoDirectorySwap) -> Result<(), String> {
+    remove_path_if_present(&swap.active_directory)?;
+    if let Some(previous_directory) = &swap.previous_directory {
+        fs::rename(previous_directory, &swap.active_directory).map_err(|error| {
+            format!(
+                "Could not restore the original medicine photos; their previous folder remains at {}: {error}",
+                previous_directory.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn cleanup_previous_photo_directory(swap: &PhotoDirectorySwap) {
+    if let Some(previous_directory) = &swap.previous_directory {
+        if let Err(error) = remove_path_if_present(previous_directory) {
+            eprintln!("Could not remove the old medicine photo folder: {error}");
+        }
+    }
+}
+
+fn remove_restore_staging(staged_database: &Path, staged_photo_directory: &Path) {
+    let _ = fs::remove_file(staged_database);
+    let _ = fs::remove_dir_all(staged_photo_directory);
+}
+
 fn restore_database_backup_at(
     active_database: &Path,
+    active_photo_directory: &Path,
     source_path: &Path,
 ) -> Result<DatabaseRestoreResult, String> {
     if !active_database.is_file() {
         return Err("The local pharmacy database is not available to restore.".to_owned());
     }
 
-    let source = selected_backup_path(source_path)?;
+    let (source, source_format) = selected_backup_path(source_path)?;
     let active_canonical = fs::canonicalize(&active_database)
         .map_err(|error| format!("Could not locate the local pharmacy database: {error}"))?;
     if source == active_canonical {
         return Err("Choose a backup file other than the active pharmacy database.".to_owned());
     }
-    validate_backup_database(&source)?;
 
     let config_directory = active_database
         .parent()
         .ok_or_else(|| "Could not locate the local pharmacy database folder.".to_owned())?;
     let staged_database = unique_internal_path(config_directory, "restore-stage", "db");
-    create_snapshot(&source, &staged_database)?;
+    let photo_parent = active_photo_directory
+        .parent()
+        .ok_or_else(|| "Could not locate local medicine photo storage.".to_owned())?;
+    fs::create_dir_all(photo_parent)
+        .map_err(|error| format!("Could not access local medicine photo storage: {error}"))?;
+    let staged_photo_directory =
+        unique_internal_path(photo_parent, "restore-photo-stage", "dir");
 
-    let migration_result = (|| {
+    let staging_result = (|| {
+        let summary = match source_format {
+            BackupSourceFormat::CompleteArchive => {
+                let package_summary =
+                    stage_complete_backup(&source, &staged_database, &staged_photo_directory)?;
+                RestoredPhotoSummary {
+                    photo_count: package_summary.photo_count,
+                    ignored_orphaned_photo_count: package_summary
+                        .ignored_orphaned_photo_count,
+                }
+            }
+            BackupSourceFormat::LegacyDatabaseOnly => {
+                create_snapshot(&source, &staged_database)?;
+                RestoredPhotoSummary::default()
+            }
+        };
+
         validate_backup_database(&staged_database)?;
         let mut staged_connection = Connection::open(&staged_database)
             .map_err(|error| format!("Could not open the staged backup for upgrade: {error}"))?;
@@ -1542,21 +1739,46 @@ fn restore_database_backup_at(
             format!("The selected backup could not be upgraded safely: {error}")
         })?;
         drop(staged_connection);
-        validate_backup_database(&staged_database)
-    })();
-    if let Err(error) = migration_result {
-        let _ = fs::remove_file(&staged_database);
-        return Err(error);
-    }
+        validate_backup_database(&staged_database)?;
 
-    let safety_backup = match create_internal_snapshot_at(active_database, "before-restore") {
+        let photo_directory_to_validate = match source_format {
+            BackupSourceFormat::CompleteArchive => &staged_photo_directory,
+            BackupSourceFormat::LegacyDatabaseOnly => active_photo_directory,
+        };
+        let photo_count =
+            validate_photo_references(&staged_database, photo_directory_to_validate)?;
+        if source_format == BackupSourceFormat::CompleteArchive
+            && photo_count != summary.photo_count
+        {
+            return Err(
+                "The staged medicine photos do not match the restored database.".to_owned(),
+            );
+        }
+        Ok(RestoredPhotoSummary {
+            photo_count,
+            ignored_orphaned_photo_count: summary.ignored_orphaned_photo_count,
+        })
+    })();
+    let restored_photos = match staging_result {
+        Ok(summary) => summary,
+        Err(error) => {
+            remove_restore_staging(&staged_database, &staged_photo_directory);
+            return Err(error);
+        }
+    };
+
+    let safety_backup = match create_internal_snapshot_at(
+        active_database,
+        active_photo_directory,
+        "before-restore",
+    ) {
         Ok(Some(path)) => path,
         Ok(None) => {
-            let _ = fs::remove_file(&staged_database);
+            remove_restore_staging(&staged_database, &staged_photo_directory);
             return Err("A safety backup could not be created before restore.".to_owned());
         }
         Err(error) => {
-            let _ = fs::remove_file(&staged_database);
+            remove_restore_staging(&staged_database, &staged_photo_directory);
             return Err(format!(
                 "A safety backup could not be created, so restore was stopped: {error}"
             ));
@@ -1566,32 +1788,53 @@ fn restore_database_backup_at(
     let current_connection = match open_pharmacy_connection_at(active_database) {
         Ok(connection) => connection,
         Err(error) => {
-            let _ = fs::remove_file(&staged_database);
+            remove_restore_staging(&staged_database, &staged_photo_directory);
             return Err(format!(
                 "{error} Restore was stopped. Safety backup created at {}.",
                 safety_backup.display()
             ));
         }
     };
-    let (checkpoint_busy, _, _): (i64, i64, i64) = current_connection
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|error| {
-            let _ = fs::remove_file(&staged_database);
-            format!(
+    let checkpoint_result = current_connection.query_row(
+        "PRAGMA wal_checkpoint(TRUNCATE)",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+    );
+    let (checkpoint_busy, _, _) = match checkpoint_result {
+        Ok(result) => result,
+        Err(error) => {
+            drop(current_connection);
+            remove_restore_staging(&staged_database, &staged_photo_directory);
+            return Err(format!(
                 "Could not safely close the current database: {error}. Safety backup created at {}.",
                 safety_backup.display()
-            )
-        })?;
+            ));
+        }
+    };
     if checkpoint_busy != 0 {
-        let _ = fs::remove_file(&staged_database);
+        drop(current_connection);
+        remove_restore_staging(&staged_database, &staged_photo_directory);
         return Err(format!(
             "The database is busy. Close other database activity and try again. Safety backup created at {}.",
             safety_backup.display()
         ));
     }
     drop(current_connection);
+
+    let photo_swap = if source_format == BackupSourceFormat::CompleteArchive {
+        match install_staged_photo_directory(active_photo_directory, &staged_photo_directory) {
+            Ok(swap) => Some(swap),
+            Err(error) => {
+                remove_restore_staging(&staged_database, &staged_photo_directory);
+                return Err(format!(
+                    "{error} Safety backup created at {}.",
+                    safety_backup.display()
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     let install_result =
         install_staged_database(active_database, &staged_database, |installed_database| {
@@ -1600,15 +1843,33 @@ fn restore_database_backup_at(
             validate_backup_database(installed_database)
         });
     if let Err(error) = install_result {
-        let _ = fs::remove_file(&staged_database);
+        let photo_rollback = photo_swap
+            .as_ref()
+            .map(rollback_photo_directory_replacement)
+            .unwrap_or(Ok(()));
+        remove_restore_staging(&staged_database, &staged_photo_directory);
+        let rollback_message = match photo_rollback {
+            Ok(()) if photo_swap.is_some() => "The original medicine photos were restored.".to_owned(),
+            Ok(()) => String::new(),
+            Err(rollback_error) => rollback_error,
+        };
         return Err(format!(
-            "{error} Safety backup created at {}.",
+            "{error} {rollback_message} Safety backup created at {}.",
             safety_backup.display()
         ));
+    }
+    if let Some(swap) = &photo_swap {
+        cleanup_previous_photo_directory(swap);
     }
 
     Ok(DatabaseRestoreResult {
         safety_backup_path: safety_backup.display().to_string(),
+        source_format: match source_format {
+            BackupSourceFormat::CompleteArchive => "complete".to_owned(),
+            BackupSourceFormat::LegacyDatabaseOnly => "legacyDatabaseOnly".to_owned(),
+        },
+        restored_photo_count: restored_photos.photo_count,
+        ignored_orphaned_photo_count: restored_photos.ignored_orphaned_photo_count,
     })
 }
 
@@ -1618,7 +1879,12 @@ fn restore_database_backup(
     source_path: String,
 ) -> Result<DatabaseRestoreResult, String> {
     let active_database = pharmacy_database_path(&app)?;
-    restore_database_backup_at(&active_database, Path::new(&source_path))
+    let active_photo_directory = medicine_photo_directory(&app)?;
+    restore_database_backup_at(
+        &active_database,
+        &active_photo_directory,
+        Path::new(&source_path),
+    )
 }
 
 fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1652,8 +1918,11 @@ fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std
         let started_state = Arc::clone(&started_state);
         let complete_state = Arc::clone(&complete_state);
         std::thread::spawn(move || {
-            let backup_result = pharmacy_database_path(&app_handle)
-                .and_then(|database_path| create_automatic_close_backup_at(&database_path));
+            let backup_result = (|| {
+                let database_path = pharmacy_database_path(&app_handle)?;
+                let photo_directory = medicine_photo_directory(&app_handle)?;
+                create_automatic_close_backup_at(&database_path, &photo_directory)
+            })();
             match backup_result {
                 Ok(Some(path)) => {
                     eprintln!("Automatic pharmacy backup saved to {}", path.display());
@@ -5647,12 +5916,115 @@ mod purchase_tests {
 #[cfg(test)]
 mod backup_tests {
     use super::*;
+    use std::fs::File;
 
     fn create_test_backup_directory() -> PathBuf {
         let directory =
             unique_internal_path(&std::env::temp_dir(), "pharmadesk-retention-test", "dir");
         fs::create_dir_all(&directory).expect("create temporary backup directory");
         directory
+    }
+
+    fn restore_database_backup_without_photos(
+        active_database: &Path,
+        source_path: &Path,
+    ) -> Result<DatabaseRestoreResult, String> {
+        let photo_directory = active_database
+            .parent()
+            .expect("test database has a parent directory")
+            .join("medicine-photos");
+        restore_database_backup_at(active_database, &photo_directory, source_path)
+    }
+
+    fn create_test_photo_directory(directory: &Path, name: &str) -> PathBuf {
+        let photo_directory = directory.join(name);
+        fs::create_dir_all(&photo_directory).expect("create isolated medicine photo directory");
+        photo_directory
+    }
+
+    fn set_test_photo_reference(database_path: &Path, medicine_id: i64, photo_ref: &str) {
+        let connection = Connection::open(database_path).expect("open database for photo fixture");
+        connection
+            .execute(
+                "UPDATE medicines SET photo_ref = ?1 WHERE id = ?2",
+                params![photo_ref, medicine_id],
+            )
+            .expect("set test medicine photo reference");
+    }
+
+    fn test_jpeg(marker: u8) -> Vec<u8> {
+        vec![0xff, 0xd8, 0xff, 0xe0, marker, 0xff, 0xd9]
+    }
+
+    fn insert_test_medicine(
+        connection: &Connection,
+        id: i64,
+        name: &str,
+        photo_ref: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO medicines (
+                    id, name, generic_name, company, rack_location, min_stock_alert,
+                    gst_rate_basis_points, product_type, strength, composition, barcode,
+                    uses, adult_dose, child_dose, photo_ref
+                 ) VALUES (
+                    ?1, ?2, 'Backup Generic', 'Backup Labs', 'Rack R5', 3, 1800,
+                    'Tablet', '250 mg', 'Test composition', ?3, 'Test use',
+                    'One daily', 'Half daily', ?4
+                 )",
+                params![id, name, format!("MED-BACKUP-{id:03}"), photo_ref],
+            )
+            .expect("insert test medicine");
+    }
+
+    fn rewrite_zip_entry(
+        source: &Path,
+        destination: &Path,
+        target_entry: &str,
+        replacement: Option<&[u8]>,
+    ) {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let source_file = File::open(source).expect("open source test archive");
+        let mut source_archive =
+            zip::ZipArchive::new(source_file).expect("read source test archive");
+        let output_file = File::create(destination).expect("create rewritten test archive");
+        let mut output_archive = zip::ZipWriter::new(output_file);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut found_target = false;
+
+        for index in 0..source_archive.len() {
+            let mut entry = source_archive
+                .by_index(index)
+                .expect("read source test archive entry");
+            let name = entry.name().to_owned();
+            if name == target_entry {
+                found_target = true;
+                if replacement.is_none() {
+                    continue;
+                }
+            }
+            output_archive
+                .start_file(&name, options)
+                .expect("create rewritten archive entry");
+            if name == target_entry {
+                output_archive
+                    .write_all(replacement.expect("replacement bytes were provided"))
+                    .expect("write replacement test entry");
+            } else {
+                std::io::copy(&mut entry, &mut output_archive)
+                    .expect("copy test archive entry");
+            }
+        }
+        assert!(found_target, "requested archive entry must exist");
+        output_archive
+            .finish()
+            .expect("finish rewritten test archive")
+            .sync_all()
+            .expect("sync rewritten test archive");
     }
 
     fn create_active_database(directory: &Path) -> PathBuf {
@@ -6142,17 +6514,26 @@ mod backup_tests {
     }
 
     #[test]
-    fn full_database_backup_restore_round_trip_preserves_pharmacy_state_after_reopen() {
+    fn complete_backup_restore_round_trip_restores_database_and_referenced_photos() {
         let directory = create_test_backup_directory();
         let active_database = directory.join("pharmacy.db");
-        let backup_path = directory.join("user-selected-backup.db");
+        let photo_directory = create_test_photo_directory(&directory, "active-photos");
+        let backup_path = directory.join("user-selected-backup.zip");
+        let photo_ref = "medicine-1-1234567890123456789.jpg";
         let active_connection = create_restore_fixture_database(&active_database, 8);
         drop(active_connection);
+        set_test_photo_reference(&active_database, 1, photo_ref);
+        let original_photo = test_jpeg(0x01);
+        fs::write(photo_directory.join(photo_ref), &original_photo)
+            .expect("write referenced medicine photo");
 
         let destination = backup_destination_path(&active_database, &backup_path)
-            .expect("resolve the manual backup destination");
-        create_snapshot(&active_database, &destination).expect("create manual database backup");
-        validate_backup_database(&destination).expect("validate manual database backup");
+            .expect("resolve the complete backup destination");
+        let backup_summary =
+            create_complete_backup_at(&active_database, &photo_directory, &destination)
+                .expect("create complete manual backup");
+        assert_eq!(backup_summary.photo_count, 1);
+        assert_eq!(backup_summary.ignored_orphaned_photo_count, 0);
 
         let active_connection = Connection::open(&active_database).expect("open active database");
         active_connection
@@ -6171,14 +6552,22 @@ mod backup_tests {
             )
             .expect("change active records before restoring");
         drop(active_connection);
+        fs::write(photo_directory.join(photo_ref), test_jpeg(0x02))
+            .expect("change active medicine photo before restoring");
 
-        let restore_result = restore_database_backup_at(&active_database, &backup_path)
-            .expect("restore the complete database backup");
+        let restore_result =
+            restore_database_backup_at(&active_database, &photo_directory, &backup_path)
+                .expect("restore the complete database backup");
+        assert_eq!(restore_result.source_format, "complete");
+        assert_eq!(restore_result.restored_photo_count, 1);
         let safety_backup = PathBuf::from(&restore_result.safety_backup_path);
         assert!(safety_backup.is_file());
-        validate_backup_database(&safety_backup).expect("validate pre-restore safety backup");
+        let safety_database = directory.join("safety-stage.db");
+        let safety_photos = directory.join("safety-stage-photos");
+        stage_complete_backup(&safety_backup, &safety_database, &safety_photos)
+            .expect("extract pre-restore safety backup");
         let safety_connection =
-            Connection::open(&safety_backup).expect("open pre-restore safety backup");
+            Connection::open(&safety_database).expect("open pre-restore safety backup");
         let safety_medicine_name: String = safety_connection
             .query_row("SELECT name FROM medicines WHERE id = 1", [], |row| {
                 row.get(0)
@@ -6190,6 +6579,10 @@ mod backup_tests {
         assert_eq!(safety_medicine_name, "Changed medicine");
         assert_eq!(safety_sale_count, 0);
         drop(safety_connection);
+        assert_eq!(
+            fs::read(safety_photos.join(photo_ref)).expect("read safety photo"),
+            test_jpeg(0x02)
+        );
 
         // Reopening through a new connection models the app reading the restored file after reload.
         let reopened_database =
@@ -6202,7 +6595,369 @@ mod backup_tests {
             .expect("read restored schema version");
         assert_eq!(restored_version, LATEST_DATABASE_VERSION);
         drop(reopened_database);
+        assert_eq!(
+            fs::read(photo_directory.join(photo_ref)).expect("read restored medicine photo"),
+            original_photo
+        );
         fs::remove_dir_all(directory).expect("remove isolated restore database");
+    }
+
+    #[test]
+    fn complete_backup_stores_multiple_photos_and_supported_long_references() {
+        use std::io::Read;
+
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "photos");
+        let backup = directory.join("multi-photo.zip");
+        let long_reference = format!("medicine-1-{}.jpg", "7".repeat(105));
+        let second_reference = "medicine-2-123456789.jpg";
+        let connection = create_restore_fixture_database(&database, 8);
+        insert_test_medicine(&connection, 2, "Second Medicine", Some(second_reference));
+        insert_test_medicine(&connection, 3, "No Photo Medicine", None);
+        drop(connection);
+        set_test_photo_reference(&database, 1, &long_reference);
+        let first_photo = test_jpeg(0x11);
+        let second_photo = test_jpeg(0x22);
+        fs::write(photo_directory.join(&long_reference), &first_photo)
+            .expect("write long-reference photo");
+        fs::write(photo_directory.join(second_reference), &second_photo)
+            .expect("write second photo");
+
+        let summary = create_complete_backup_at(&database, &photo_directory, &backup)
+            .expect("create multi-photo backup");
+        assert_eq!(summary.photo_count, 2);
+        assert_eq!(summary.ignored_orphaned_photo_count, 0);
+
+        let mut archive =
+            zip::ZipArchive::new(File::open(&backup).expect("open multi-photo backup"))
+                .expect("read multi-photo backup");
+        assert_eq!(archive.len(), 4);
+        let mut manifest_bytes = Vec::new();
+        archive
+            .by_name("my-medical-backup.json")
+            .expect("find backup manifest")
+            .read_to_end(&mut manifest_bytes)
+            .expect("read backup manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("parse backup manifest");
+        let photos = manifest["photos"].as_array().expect("manifest photo list");
+        assert_eq!(photos.len(), 2);
+        assert_eq!(photos[0]["medicineId"], 1);
+        assert_eq!(
+            photos[0]["archivePath"],
+            format!("photos/{long_reference}")
+        );
+        assert_eq!(photos[1]["medicineId"], 2);
+        assert_eq!(
+            photos[1]["archivePath"],
+            format!("photos/{second_reference}")
+        );
+        assert!(archive.by_name("photos/medicine-3-1.jpg").is_err());
+
+        let staged_database = directory.join("staged-multi-photo.db");
+        let staged_photos = directory.join("staged-multi-photo-files");
+        let restored_summary =
+            stage_complete_backup(&backup, &staged_database, &staged_photos)
+                .expect("stage multi-photo backup");
+        assert_eq!(restored_summary.photo_count, 2);
+        assert_eq!(
+            fs::read(staged_photos.join(&long_reference)).expect("read staged long photo"),
+            first_photo
+        );
+        assert_eq!(
+            fs::read(staged_photos.join(second_reference)).expect("read staged second photo"),
+            second_photo
+        );
+        let restored_database =
+            Connection::open(&staged_database).expect("open staged multi-photo database");
+        let no_photo_reference: Option<String> = restored_database
+            .query_row(
+                "SELECT photo_ref FROM medicines WHERE id = 3",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read no-photo medicine");
+        assert_eq!(no_photo_reference, None);
+        drop(restored_database);
+        drop(archive);
+        fs::remove_dir_all(directory).expect("remove multi-photo backup fixture");
+    }
+
+    #[test]
+    fn complete_backup_without_photo_references_works_when_photo_storage_is_absent() {
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let photo_directory = directory.join("missing-photo-folder");
+        let backup = directory.join("no-photos.zip");
+        let connection = create_restore_fixture_database(&database, 8);
+        drop(connection);
+
+        let summary = create_complete_backup_at(&database, &photo_directory, &backup)
+            .expect("create backup without medicine photos");
+        assert_eq!(summary.photo_count, 0);
+        assert_eq!(summary.ignored_orphaned_photo_count, 0);
+        assert!(!photo_directory.exists());
+        let archive = zip::ZipArchive::new(File::open(&backup).expect("open no-photo backup"))
+            .expect("read no-photo backup");
+        assert_eq!(archive.len(), 2);
+
+        let staged_database = directory.join("staged-no-photo.db");
+        let staged_photos = directory.join("staged-no-photo-files");
+        let restored_summary = stage_complete_backup(&backup, &staged_database, &staged_photos)
+            .expect("stage backup without medicine photos");
+        assert_eq!(restored_summary.photo_count, 0);
+        assert!(fs::read_dir(&staged_photos)
+            .expect("read staged empty photo folder")
+            .next()
+            .is_none());
+        fs::remove_dir_all(directory).expect("remove no-photo backup fixture");
+    }
+
+    #[test]
+    fn complete_backup_rejects_unsafe_photo_references() {
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "photos");
+        let backup = directory.join("unsafe-reference.zip");
+        let connection = create_restore_fixture_database(&database, 8);
+        drop(connection);
+        set_test_photo_reference(&database, 1, "../../outside.jpg");
+
+        let error = create_complete_backup_at(&database, &photo_directory, &backup)
+            .expect_err("unsafe photo reference must stop backup creation");
+        assert!(!error.is_empty());
+        assert!(!backup.exists());
+        fs::remove_dir_all(directory).expect("remove unsafe reference fixture");
+    }
+
+    #[test]
+    fn complete_backup_reports_and_omits_unreferenced_photo_files() {
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "photos");
+        let backup = directory.join("orphan-check.zip");
+        let photo_ref = "medicine-1-12345.jpg";
+        let connection = create_restore_fixture_database(&database, 8);
+        drop(connection);
+        set_test_photo_reference(&database, 1, photo_ref);
+        fs::write(photo_directory.join(photo_ref), test_jpeg(0x31))
+            .expect("write referenced photo");
+        fs::write(photo_directory.join("orphaned-photo.jpg"), test_jpeg(0x32))
+            .expect("write orphan photo");
+
+        let summary = create_complete_backup_at(&database, &photo_directory, &backup)
+            .expect("create backup with orphan");
+        assert_eq!(summary.photo_count, 1);
+        assert_eq!(summary.ignored_orphaned_photo_count, 1);
+        let mut archive = zip::ZipArchive::new(File::open(&backup).expect("open backup"))
+            .expect("read backup archive");
+        assert_eq!(archive.len(), 3);
+        assert!(archive.by_name("photos/orphaned-photo.jpg").is_err());
+        fs::remove_dir_all(directory).expect("remove orphan backup fixture");
+    }
+
+    #[test]
+    fn backup_fails_explicitly_when_a_referenced_photo_is_missing_or_corrupt() {
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "photos");
+        let missing_backup = directory.join("missing-photo.zip");
+        let corrupt_backup = directory.join("corrupt-photo.zip");
+        let photo_ref = "medicine-1-12345.jpg";
+        let connection = create_restore_fixture_database(&database, 8);
+        drop(connection);
+        set_test_photo_reference(&database, 1, photo_ref);
+
+        let missing_error =
+            create_complete_backup_at(&database, &photo_directory, &missing_backup)
+                .expect_err("missing referenced photo must stop backup");
+        assert!(missing_error.contains(photo_ref));
+        assert!(!missing_backup.exists());
+
+        fs::write(photo_directory.join(photo_ref), b"not a JPEG")
+            .expect("write corrupt referenced photo");
+        let corrupt_error =
+            create_complete_backup_at(&database, &photo_directory, &corrupt_backup)
+                .expect_err("corrupt referenced photo must stop backup");
+        assert!(corrupt_error.contains("corrupt"));
+        assert!(!corrupt_backup.exists());
+        fs::remove_dir_all(directory).expect("remove invalid photo backup fixture");
+    }
+
+    #[test]
+    fn missing_corrupt_or_invalid_complete_archives_do_not_replace_active_data() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("active.db");
+        let source_database = directory.join("source.db");
+        let active_photos = create_test_photo_directory(&directory, "active-photos");
+        let source_photos = create_test_photo_directory(&directory, "source-photos");
+        let source_backup = directory.join("source.zip");
+        let photo_ref = "medicine-1-12345.jpg";
+
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        active_connection
+            .execute(
+                "UPDATE app_settings SET setting_value = 'Live Pharmacy'
+                 WHERE setting_key = 'pharmacy_name'",
+                [],
+            )
+            .expect("mark active data");
+        drop(active_connection);
+        let source_connection = create_restore_fixture_database(&source_database, 8);
+        drop(source_connection);
+        set_test_photo_reference(&source_database, 1, photo_ref);
+        fs::write(source_photos.join(photo_ref), test_jpeg(0x41))
+            .expect("write source referenced photo");
+        fs::write(active_photos.join("local-sentinel.bin"), b"leave active photos alone")
+            .expect("write active photo sentinel");
+        create_complete_backup_at(&source_database, &source_photos, &source_backup)
+            .expect("create source complete backup");
+
+        let missing_photo_backup = directory.join("missing-photo-entry.zip");
+        let corrupt_photo_backup = directory.join("corrupt-photo-entry.zip");
+        let corrupt_database_backup = directory.join("corrupt-database-entry.zip");
+        rewrite_zip_entry(
+            &source_backup,
+            &missing_photo_backup,
+            &format!("photos/{photo_ref}"),
+            None,
+        );
+        rewrite_zip_entry(
+            &source_backup,
+            &corrupt_photo_backup,
+            &format!("photos/{photo_ref}"),
+            Some(b"not a JPEG"),
+        );
+        rewrite_zip_entry(
+            &source_backup,
+            &corrupt_database_backup,
+            "pharmacy.db",
+            Some(b"not a SQLite database"),
+        );
+
+        for invalid_backup in [
+            &missing_photo_backup,
+            &corrupt_photo_backup,
+            &corrupt_database_backup,
+        ] {
+            let error =
+                restore_database_backup_at(&active_database, &active_photos, invalid_backup)
+                    .expect_err("invalid complete archive must not install");
+            assert!(!error.is_empty());
+            let active_connection =
+                Connection::open(&active_database).expect("reopen unchanged active database");
+            let pharmacy_name: String = active_connection
+                .query_row(
+                    "SELECT setting_value FROM app_settings
+                     WHERE setting_key = 'pharmacy_name'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read active pharmacy setting");
+            assert_eq!(pharmacy_name, "Live Pharmacy");
+            drop(active_connection);
+            assert_eq!(
+                fs::read(active_photos.join("local-sentinel.bin"))
+                    .expect("read unchanged active photo sentinel"),
+                b"leave active photos alone"
+            );
+            assert!(!directory.join("backups").exists());
+        }
+        fs::remove_dir_all(directory).expect("remove invalid complete archive fixture");
+    }
+
+    #[test]
+    fn legacy_database_restore_uses_only_matching_local_photos() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("active.db");
+        let source_database = directory.join("legacy-source.db");
+        let legacy_backup = directory.join("legacy-backup.db");
+        let active_photos = create_test_photo_directory(&directory, "active-photos");
+        let photo_ref = "medicine-1-12345.jpg";
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+        let source_connection = create_restore_fixture_database(&source_database, 8);
+        drop(source_connection);
+        set_test_photo_reference(&source_database, 1, photo_ref);
+        create_snapshot(&source_database, &legacy_backup).expect("create legacy database backup");
+        let local_photo = test_jpeg(0x51);
+        fs::write(active_photos.join(photo_ref), &local_photo)
+            .expect("write matching local medicine photo");
+
+        let restore_result =
+            restore_database_backup_at(&active_database, &active_photos, &legacy_backup)
+                .expect("restore legacy database with locally available photo");
+        assert_eq!(restore_result.source_format, "legacyDatabaseOnly");
+        assert_eq!(restore_result.restored_photo_count, 1);
+        assert_eq!(
+            fs::read(active_photos.join(photo_ref)).expect("read preserved local photo"),
+            local_photo
+        );
+
+        let active_connection = Connection::open(&active_database).expect("open restored database");
+        active_connection
+            .execute(
+                "UPDATE app_settings SET setting_value = 'Keep Current Data'
+                 WHERE setting_key = 'pharmacy_name'",
+                [],
+            )
+            .expect("change active pharmacy name");
+        drop(active_connection);
+        fs::remove_file(active_photos.join(photo_ref)).expect("remove required local photo");
+        let missing_photo_error =
+            restore_database_backup_at(&active_database, &active_photos, &legacy_backup)
+                .expect_err("legacy restore without required photo must stop");
+        assert!(missing_photo_error.contains("legacy database-only backup"));
+        let unchanged_connection =
+            Connection::open(&active_database).expect("reopen unchanged database");
+        let pharmacy_name: String = unchanged_connection
+            .query_row(
+                "SELECT setting_value FROM app_settings
+                 WHERE setting_key = 'pharmacy_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read pharmacy name after rejected legacy restore");
+        assert_eq!(pharmacy_name, "Keep Current Data");
+        drop(unchanged_connection);
+        fs::remove_dir_all(directory).expect("remove legacy restore fixture");
+    }
+
+    #[test]
+    fn failed_database_install_rolls_back_a_prior_photo_directory_swap() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let active_photos = create_test_photo_directory(&directory, "medicine-photos");
+        let staged_photos = create_test_photo_directory(&directory, "staged-photos");
+        let staged_database = directory.join("failed-staged.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+        fs::write(active_photos.join("original.jpg"), test_jpeg(0x61))
+            .expect("write original active photo");
+        fs::write(staged_photos.join("replacement.jpg"), test_jpeg(0x62))
+            .expect("write staged replacement photo");
+        fs::write(&staged_database, b"invalid staged database")
+            .expect("write invalid staged database");
+
+        let photo_swap = install_staged_photo_directory(&active_photos, &staged_photos)
+            .expect("install staged photo directory");
+        assert!(active_photos.join("replacement.jpg").is_file());
+        let database_error = install_staged_database(&active_database, &staged_database, |_| {
+            Err("simulated database verification failure".to_owned())
+        })
+        .expect_err("database install should fail");
+        assert!(database_error.contains("simulated database verification failure"));
+        rollback_photo_directory_replacement(&photo_swap)
+            .expect("restore original photo directory after database failure");
+
+        assert!(active_photos.join("original.jpg").is_file());
+        assert!(!active_photos.join("replacement.jpg").exists());
+        let restored_connection =
+            Connection::open(&active_database).expect("open rolled-back database");
+        assert_restore_fixture(&restored_connection);
+        drop(restored_connection);
+        fs::remove_dir_all(directory).expect("remove restore rollback fixture");
     }
 
     #[test]
@@ -6218,7 +6973,7 @@ mod backup_tests {
         create_snapshot(&older_database, &older_backup).expect("snapshot version-seven database");
         validate_backup_database(&older_backup).expect("validate older compatible backup");
 
-        restore_database_backup_at(&active_database, &older_backup)
+        restore_database_backup_without_photos(&active_database, &older_backup)
             .expect("restore and migrate older backup");
 
         let reopened_database =
@@ -6271,11 +7026,14 @@ mod backup_tests {
         fs::write(&corrupt_backup, b"not a SQLite database").expect("create corrupt backup file");
 
         let corrupt_error =
-            restore_database_backup_at(&active_database, &corrupt_backup).unwrap_err();
+            restore_database_backup_without_photos(&active_database, &corrupt_backup)
+                .unwrap_err();
         let future_error =
-            restore_database_backup_at(&active_database, &future_backup).unwrap_err();
+            restore_database_backup_without_photos(&active_database, &future_backup)
+                .unwrap_err();
         let incomplete_error =
-            restore_database_backup_at(&active_database, &incomplete_backup).unwrap_err();
+            restore_database_backup_without_photos(&active_database, &incomplete_backup)
+                .unwrap_err();
         assert!(!corrupt_error.is_empty());
         assert!(future_error.contains("newer MY MEDICAL database version"));
         assert!(incomplete_error.contains("stock_adjustments.previous_quantity"));
@@ -6307,7 +7065,7 @@ mod backup_tests {
         fs::write(directory.join("backups"), b"blocking file")
             .expect("block safety backup directory creation");
 
-        let error = restore_database_backup_at(&active_database, &source_backup)
+        let error = restore_database_backup_without_photos(&active_database, &source_backup)
             .expect_err("restore must stop when it cannot create a safety backup");
         assert!(error.contains("safety backup could not be created"));
         let active_connection = Connection::open(&active_database).expect("reopen active database");
@@ -6373,15 +7131,20 @@ mod backup_tests {
     fn automatic_close_backup_is_valid_and_contains_current_pharmacy_data() {
         let directory = create_test_backup_directory();
         let active_database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "active-photos");
         let connection = create_restore_fixture_database(&active_database, 8);
         drop(connection);
 
-        let backup_path = create_automatic_close_backup_at(&active_database)
+        let backup_path = create_automatic_close_backup_at(&active_database, &photo_directory)
             .expect("create close-time automatic backup")
             .expect("active database should produce a backup");
+        assert_eq!(backup_path.extension().and_then(|value| value.to_str()), Some("zip"));
         assert!(automatic_backup_marker_path(&backup_path).is_file());
-        validate_backup_database(&backup_path).expect("validate automatic backup");
-        let backup = Connection::open(&backup_path).expect("open automatic backup");
+        let staged_database = directory.join("automatic-stage.db");
+        let staged_photos = directory.join("automatic-stage-photos");
+        stage_complete_backup(&backup_path, &staged_database, &staged_photos)
+            .expect("validate and extract automatic backup");
+        let backup = Connection::open(&staged_database).expect("open automatic backup");
         assert_restore_fixture(&backup);
         drop(backup);
         assert_eq!(
@@ -6690,15 +7453,32 @@ mod business_history_tests {
     fn all_history_reset_keeps_a_valid_pre_reset_backup_and_preserves_stock() {
         let directory = unique_internal_path(&std::env::temp_dir(), "pharmacy-reset-backup", "dir");
         let (database_path, mut connection) = create_business_database(&directory);
-        let backup_path = directory.join("pre-reset.db");
+        let photo_directory = directory.join("medicine-photos");
+        fs::create_dir_all(&photo_directory).expect("create reset medicine photo directory");
+        let photo_ref = "medicine-1-987654321.jpg";
+        connection
+            .execute(
+                "UPDATE medicines SET photo_ref = ?1 WHERE id = 1",
+                [photo_ref],
+            )
+            .expect("set reset fixture photo reference");
+        let photo_bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x44, 0xff, 0xd9];
+        fs::write(photo_directory.join(photo_ref), &photo_bytes)
+            .expect("write reset fixture photo");
+        let backup_path = directory.join("pre-reset.zip");
         let backup_path_for_closure = backup_path.clone();
         let source_path_for_closure = database_path.clone();
+        let photo_directory_for_closure = photo_directory.clone();
 
         let summary = reset_business_data_with_backup(
             &mut connection,
             DataResetScope::AllBusinessHistory,
             move || {
-                create_snapshot(&source_path_for_closure, &backup_path_for_closure)?;
+                create_complete_backup_at(
+                    &source_path_for_closure,
+                    &photo_directory_for_closure,
+                    &backup_path_for_closure,
+                )?;
                 Ok(backup_path_for_closure.display().to_string())
             },
         )
@@ -6737,14 +7517,21 @@ mod business_history_tests {
         assert_eq!(setting, "Reset Test Pharmacy");
         drop(connection);
 
-        validate_backup_database(&backup_path).expect("validate retained pre-reset backup");
-        let backup = Connection::open_with_flags(&backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let staged_database = directory.join("pre-reset-stage.db");
+        let staged_photos = directory.join("pre-reset-stage-photos");
+        stage_complete_backup(&backup_path, &staged_database, &staged_photos)
+            .expect("validate retained pre-reset complete backup");
+        let backup = Connection::open_with_flags(&staged_database, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("open retained backup");
         assert_eq!(count(&backup, "sales"), 1);
         assert_eq!(count(&backup, "purchases"), 1);
         assert_eq!(count(&backup, "order_list_items"), 1);
         assert_eq!(stock(&backup), 9);
         drop(backup);
+        assert_eq!(
+            fs::read(staged_photos.join(photo_ref)).expect("read retained reset photo"),
+            photo_bytes
+        );
         fs::remove_dir_all(directory).expect("remove isolated database");
     }
 }
