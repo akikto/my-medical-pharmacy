@@ -118,11 +118,11 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
       }
       const result = await createDatabaseBackup(destination);
       const photoLabel = result.photoCount === 1 ? "photo" : "photos";
-      const orphanLabel =
-        result.ignoredOrphanedPhotoCount === 1 ? "file was" : "files were";
+      const attachmentLabel =
+        result.attachmentCount === 1 ? "invoice attachment" : "invoice attachments";
       setNotice({
         kind: "success",
-        message: `Complete backup created: ${result.path}. ${result.photoCount} referenced medicine ${photoLabel} included; ${result.ignoredOrphanedPhotoCount} unreferenced ${orphanLabel} omitted.`,
+        message: `Complete backup created: ${result.path}. ${result.photoCount} referenced medicine ${photoLabel} and ${result.attachmentCount} purchase ${attachmentLabel} included. Omitted unreferenced files: ${result.ignoredOrphanedPhotoCount} medicine photos and ${result.ignoredOrphanedAttachmentCount} purchase attachments.`,
       });
     } catch (error) {
       setNotice({ kind: "error", message: getError(error, "Complete backup could not be created.") });
@@ -181,14 +181,19 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
       onDatabaseRestored();
       const photoLabel =
         result.restoredPhotoCount === 1 ? "photo" : "photos";
+      const attachmentLabel =
+        result.restoredAttachmentCount === 1
+          ? "purchase attachment"
+          : "purchase attachments";
       const restoreContents =
         result.sourceFormat === "complete"
-          ? `${result.restoredPhotoCount} referenced medicine ${photoLabel} restored`
-          : `${result.restoredPhotoCount} referenced medicine ${photoLabel} matched from this device`;
+          ? `${result.restoredPhotoCount} referenced medicine ${photoLabel} and ${result.restoredAttachmentCount} ${attachmentLabel} restored`
+          : `${result.restoredPhotoCount} referenced medicine ${photoLabel} and ${result.restoredAttachmentCount} ${attachmentLabel} matched from this device`;
       const omittedPhotos =
         result.sourceFormat === "complete" &&
-        result.ignoredOrphanedPhotoCount > 0
-          ? ` ${result.ignoredOrphanedPhotoCount} unreferenced files were omitted when this backup was created.`
+        (result.ignoredOrphanedPhotoCount > 0 ||
+          result.ignoredOrphanedAttachmentCount > 0)
+          ? ` Unreferenced files omitted from the backup: ${result.ignoredOrphanedPhotoCount} medicine photos and ${result.ignoredOrphanedAttachmentCount} purchase attachments.`
           : "";
       setNotice({
         kind: "success",

@@ -19,9 +19,13 @@ import type {
   RecentPurchase,
   Supplier,
   SupplierFormValues,
+  StoreSettings,
 } from "../../types";
 import { formatDate, formatMoney, toCents } from "../../utils/money";
+import { calculateGstInvoiceTotals } from "../../utils/gst";
+import { getStoreSettings } from "../../services/settingsService";
 import { SupplierFormDialog } from "./SupplierFormDialog";
+import { PurchaseHistoryWorkspace } from "./PurchaseHistoryWorkspace";
 import "./purchases.css";
 
 interface PurchaseDraftLine extends PurchaseLineInput {
@@ -55,9 +59,13 @@ export function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [medicines, setMedicines] = useState<MedicineInventoryRow[]>([]);
   const [recentPurchases, setRecentPurchases] = useState<RecentPurchase[]>([]);
+  const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
   const [invoiceNo, setInvoiceNo] = useState("");
   const [purchaseDate, setPurchaseDate] = useState(localToday);
+  const [gstEnabled, setGstEnabled] = useState(false);
+  const [gstPricingMode, setGstPricingMode] = useState<"INCLUSIVE" | "EXCLUSIVE">("EXCLUSIVE");
+  const [placeOfSupply, setPlaceOfSupply] = useState("");
   const [items, setItems] = useState<PurchaseDraftLine[]>([blankLine(1)]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -78,12 +86,17 @@ export function PurchasesPage() {
       getSuppliers(),
       getInventoryMedicines(),
       getRecentPurchases(8),
+      getStoreSettings(),
     ])
-      .then(([supplierRows, medicineRows, purchaseRows]) => {
+      .then(([supplierRows, medicineRows, purchaseRows, settings]) => {
         if (cancelled) return;
         setSuppliers(supplierRows);
         setMedicines(medicineRows);
         setRecentPurchases(purchaseRows);
+        setStoreSettings(settings);
+        setGstEnabled(settings.gst_enabled);
+        setGstPricingMode(settings.gst_pricing_mode);
+        setPlaceOfSupply(settings.gst_pharmacy_state_code);
         if (supplierRows.length === 1) setSelectedSupplierId(String(supplierRows[0].id));
         if (medicineRows.length > 0) {
           setItems((current) =>
@@ -105,14 +118,38 @@ export function PurchasesPage() {
   }, [purchaseRefreshKey, supplierRefreshKey]);
 
   const purchaseTotal = useMemo(
-    () =>
-      items.reduce(
-        (total, item) =>
-          total + toCents(item.purchase_rate) * (Number.isSafeInteger(item.quantity) ? item.quantity : 0),
-        0,
-      ) / 100,
-    [items],
+    () => calculateGstInvoiceTotals(
+      items.map((item) => ({
+        quantity: Number.isSafeInteger(item.quantity) ? item.quantity : 0,
+        unit_price_cents: toCents(item.purchase_rate),
+        item_discount_cents: 0,
+        gst_rate_basis_points: medicines.find((medicine) => medicine.id === item.medicine_id)?.gst_rate_basis_points ?? null,
+        gst_rate_override_basis_points: item.gst_rate_override_basis_points ?? null,
+      })),
+      0,
+      gstEnabled,
+      storeSettings?.gst_default_rate_basis_points ?? null,
+      gstPricingMode,
+      storeSettings?.gst_pharmacy_state_code ?? "",
+      placeOfSupply || null,
+    ).grand_total_cents / 100,
+    [items, medicines, gstEnabled, gstPricingMode, storeSettings, placeOfSupply],
   );
+  const gstSummary = useMemo(() => calculateGstInvoiceTotals(
+    items.map((item) => ({
+      quantity: Number.isSafeInteger(item.quantity) ? item.quantity : 0,
+      unit_price_cents: toCents(item.purchase_rate),
+      item_discount_cents: 0,
+      gst_rate_basis_points: medicines.find((medicine) => medicine.id === item.medicine_id)?.gst_rate_basis_points ?? null,
+      gst_rate_override_basis_points: item.gst_rate_override_basis_points ?? null,
+    })),
+    0,
+    gstEnabled,
+    storeSettings?.gst_default_rate_basis_points ?? null,
+    gstPricingMode,
+    storeSettings?.gst_pharmacy_state_code ?? "",
+    placeOfSupply || null,
+  ), [items, medicines, gstEnabled, gstPricingMode, storeSettings, placeOfSupply]);
 
   function updateLine(rowId: number, values: Partial<PurchaseLineInput>) {
     setItems((current) =>
@@ -160,6 +197,8 @@ export function PurchasesPage() {
         supplier_id: Number(selectedSupplierId),
         invoice_no: invoiceNo,
         purchase_date: purchaseDate,
+        gst_pricing_mode: gstPricingMode,
+        place_of_supply_state_code: placeOfSupply || null,
         items: items.map(({ rowId: _rowId, ...item }) => item),
       });
       setNotice(
@@ -167,6 +206,9 @@ export function PurchasesPage() {
       );
       setInvoiceNo("");
       setPurchaseDate(localToday());
+      setGstEnabled(storeSettings?.gst_enabled ?? false);
+      setGstPricingMode(storeSettings?.gst_pricing_mode ?? "EXCLUSIVE");
+      setPlaceOfSupply(storeSettings?.gst_pharmacy_state_code ?? "");
       setItems([blankLine(rowIdRef.current++)]);
       setPurchaseRefreshKey((current) => current + 1);
     } catch (error) {
@@ -200,6 +242,7 @@ export function PurchasesPage() {
       {loadError && (
         <div className="workspace-error workspace-error--banner" role="alert">
           <AlertCircle size={16} /> {loadError}
+          <button className="button button-secondary" onClick={() => { setSupplierRefreshKey((current) => current + 1); setPurchaseRefreshKey((current) => current + 1); }} type="button">Retry</button>
         </div>
       )}
 
@@ -243,7 +286,14 @@ export function PurchasesPage() {
                 <select
                   className="workspace-input"
                   data-testid="select-purchase-supplier"
-                  onChange={(event) => setSelectedSupplierId(event.target.value)}
+                  onChange={(event) => {
+                    setSelectedSupplierId(event.target.value);
+                    const supplier = suppliers.find((row) => String(row.id) === event.target.value);
+                    if (supplier?.state_code) setPlaceOfSupply(supplier.state_code);
+                    else if (storeSettings?.gst_pharmacy_state_code) {
+                      setPlaceOfSupply(storeSettings.gst_pharmacy_state_code);
+                    }
+                  }}
                   required
                   value={selectedSupplierId}
                 >
@@ -292,6 +342,39 @@ export function PurchasesPage() {
             </label>
           </div>
 
+          <div className="purchase-gst-controls">
+            <label className="purchase-gst-toggle">
+              <input
+                checked={gstEnabled}
+                disabled
+                onChange={(event) => setGstEnabled(event.target.checked)}
+                type="checkbox"
+              />
+              <span className="purchase-gst-check" aria-hidden="true" />
+              <span><strong>GST {gstEnabled ? "enabled" : "disabled"} for this store</strong><small>Controlled by pharmacy GST settings.</small></span>
+            </label>
+            {gstEnabled && (
+              <div className="purchase-gst-fields">
+                <label className="field-label">
+                  Pricing
+                  <select className="workspace-input" onChange={(event) => setGstPricingMode(event.target.value as "INCLUSIVE" | "EXCLUSIVE")} value={gstPricingMode}>
+                    <option value="EXCLUSIVE">GST added to rate</option>
+                    <option value="INCLUSIVE">Rate includes GST</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  Place of supply
+                  <input className="workspace-input" inputMode="numeric" maxLength={2} onChange={(event) => setPlaceOfSupply(event.target.value.replace(/\D/g, ""))} placeholder="State code" value={placeOfSupply} />
+                </label>
+                <div className="purchase-gst-note">
+                  <span>{gstSummary.tax_type === "IGST" ? "Inter-state · IGST" : "Intra-state · CGST + SGST"}</span>
+                  <strong>{gstSummary.missing_rate ? "Rate missing on one or more medicines" : `GST ${formatMoney(gstSummary.total_gst_cents / 100)}`}</strong>
+                </div>
+              </div>
+            )}
+            {!gstEnabled && <span className="purchase-gst-config-note">Enable GST in Settings to calculate tax on supplier invoices.</span>}
+          </div>
+
           <div className="purchase-lines-header">
             <div>
               <h3>Invoice line items</h3>
@@ -319,6 +402,7 @@ export function PurchasesPage() {
                   <th scope="col">MRP</th>
                   <th scope="col">Sale rate</th>
                   <th scope="col">Qty</th>
+                  <th scope="col">GST %</th>
                   <th scope="col">Line total</th>
                   <th scope="col"><span className="sr-only">Remove line</span></th>
                 </tr>
@@ -350,6 +434,21 @@ export function PurchasesPage() {
                         onChange={(event) => updateLine(item.rowId, { batch_no: event.target.value })}
                         required
                         value={item.batch_no}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`GST rate override on line ${index + 1}; leave blank for medicine rate`}
+                        className="purchase-line-input purchase-line-input--number"
+                        max={100}
+                        min={0}
+                        onChange={(event) => updateLine(item.rowId, {
+                          gst_rate_override_basis_points: event.target.value === "" ? null : Math.round(Number(event.target.value) * 100),
+                        })}
+                        placeholder={String(((medicines.find((medicine) => medicine.id === item.medicine_id)?.gst_rate_basis_points ?? storeSettings?.gst_default_rate_basis_points ?? 0) / 100))}
+                        step="0.01"
+                        type="number"
+                        value={item.gst_rate_override_basis_points == null ? "" : item.gst_rate_override_basis_points / 100}
                       />
                     </td>
                     <td>
@@ -441,6 +540,7 @@ export function PurchasesPage() {
             <div>
               <span>Invoice total</span>
               <strong>{formatMoney(purchaseTotal)}</strong>
+              {gstEnabled && <small className="purchase-total-tax-caption">Taxable {formatMoney(gstSummary.taxable_cents / 100)} · GST {formatMoney(gstSummary.total_gst_cents / 100)}</small>}
             </div>
             <button
               className="button button-primary purchase-save-button"
@@ -497,6 +597,12 @@ export function PurchasesPage() {
           </div>
         )}
       </section>
+
+      <PurchaseHistoryWorkspace
+        suppliers={suppliers}
+        refreshKey={purchaseRefreshKey}
+        onMutation={() => setPurchaseRefreshKey((current) => current + 1)}
+      />
 
       {supplierDialog && (
         <SupplierFormDialog

@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Params, Row};
+use rusqlite::{params, Connection, OptionalExtension, Params, Row};
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -108,6 +108,7 @@ pub(crate) struct SupplierRecord {
     whatsapp_phone: Option<String>,
     address: Option<String>,
     notes: Option<String>,
+    state_code: Option<String>,
     balance_due: f64,
 }
 
@@ -149,6 +150,89 @@ pub(crate) struct RecentPurchaseRecord {
     purchase_date: String,
     item_count: i64,
     total_units: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PurchaseHistoryRecord {
+    id: i64,
+    invoice_no: String,
+    supplier_id: Option<i64>,
+    supplier_name: Option<String>,
+    total_amount: f64,
+    purchase_date: String,
+    total_gst: f64,
+    status: String,
+    supplier_balance_due: f64,
+    item_count: i64,
+    total_units: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PurchaseLineDetailRecord {
+    id: i64,
+    medicine_id: i64,
+    medicine_name: String,
+    batch_id: i64,
+    batch_no: String,
+    expiry_date: String,
+    quantity: i64,
+    returned_quantity: i64,
+    available_quantity: i64,
+    rate: f64,
+    total: f64,
+    gst_rate_basis_points: i64,
+    total_gst: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PurchaseAttachmentRecord {
+    id: i64,
+    file_name: String,
+    mime_type: String,
+    size_bytes: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PurchaseDetailsRecord {
+    id: i64,
+    invoice_no: String,
+    supplier_id: Option<i64>,
+    supplier_name: Option<String>,
+    purchase_date: String,
+    total_amount: f64,
+    status: String,
+    gst_enabled: bool,
+    gst_pricing_mode: String,
+    tax_type: String,
+    place_of_supply_state_code: Option<String>,
+    taxable_amount: f64,
+    cgst_amount: f64,
+    sgst_amount: f64,
+    igst_amount: f64,
+    total_gst: f64,
+    lines: Vec<PurchaseLineDetailRecord>,
+    attachments: Vec<PurchaseAttachmentRecord>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SupplierLedgerEntryRecord {
+    id: i64,
+    entry_type: String,
+    reference: Option<String>,
+    debit: f64,
+    credit: f64,
+    payment_method: Option<String>,
+    transaction_reference: Option<String>,
+    note: Option<String>,
+    created_at: String,
+    running_balance: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SupplierLedgerRecord {
+    opening_balance: f64,
+    current_balance: f64,
+    entries: Vec<SupplierLedgerEntryRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -700,7 +784,7 @@ fn query_suppliers(
     query_rows(
         connection,
         r#"SELECT
-             id, name, contact_person, phone, whatsapp_phone, address, notes, balance_due
+             id, name, contact_person, phone, whatsapp_phone, address, notes, state_code, balance_due
            FROM suppliers
            WHERE ?1 IS NULL
               OR name LIKE ?1 ESCAPE '!'
@@ -720,6 +804,7 @@ fn query_suppliers(
                 whatsapp_phone: row.get("whatsapp_phone")?,
                 address: row.get("address")?,
                 notes: row.get("notes")?,
+                state_code: row.get("state_code")?,
                 balance_due: row.get("balance_due")?,
             })
         },
@@ -940,6 +1025,268 @@ fn query_recent_purchases(
             })
         },
     )
+}
+
+fn query_purchase_history(
+    connection: &Connection,
+    search_term: &str,
+    supplier_id: Option<i64>,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+) -> Result<Vec<PurchaseHistoryRecord>, String> {
+    let pattern = contains_pattern(search_term);
+    query_rows(
+        connection,
+        r#"SELECT p.id, p.invoice_no, p.supplier_id, s.name AS supplier_name,
+                  p.total_amount, p.purchase_date, p.total_gst, p.status,
+                  COALESCE(s.balance_due, 0) AS supplier_balance_due,
+                  COUNT(pi.id) AS item_count, COALESCE(SUM(pi.quantity), 0) AS total_units
+           FROM purchases p
+           LEFT JOIN suppliers s ON s.id = p.supplier_id
+           LEFT JOIN purchase_items pi ON pi.purchase_id = p.id
+           WHERE (?1 IS NULL OR p.invoice_no LIKE ?1 ESCAPE '!' OR COALESCE(s.name, '') LIKE ?1 ESCAPE '!')
+             AND (?2 IS NULL OR p.supplier_id = ?2)
+             AND (?3 IS NULL OR p.purchase_date >= ?3)
+             AND (?4 IS NULL OR p.purchase_date <= ?4)
+           GROUP BY p.id
+           ORDER BY p.purchase_date DESC, p.id DESC"#,
+        params![pattern, supplier_id, from_date, to_date],
+        |row| {
+            Ok(PurchaseHistoryRecord {
+                id: row.get("id")?,
+                invoice_no: row.get("invoice_no")?,
+                supplier_id: row.get("supplier_id")?,
+                supplier_name: row.get("supplier_name")?,
+                total_amount: row.get("total_amount")?,
+                purchase_date: row.get("purchase_date")?,
+                total_gst: row.get("total_gst")?,
+                status: row.get("status")?,
+                supplier_balance_due: row.get("supplier_balance_due")?,
+                item_count: row.get("item_count")?,
+                total_units: row.get("total_units")?,
+            })
+        },
+    )
+}
+
+fn query_purchase_details(
+    connection: &Connection,
+    purchase_id: i64,
+) -> Result<PurchaseDetailsRecord, String> {
+    if purchase_id <= 0 {
+        return Err("Purchase id must be a positive whole number.".to_owned());
+    }
+    let header = connection
+        .query_row(
+            r#"SELECT p.id, p.invoice_no, p.supplier_id, s.name, p.purchase_date,
+                      p.total_amount, p.status, p.gst_enabled, p.gst_pricing_mode,
+                      p.tax_type, p.place_of_supply_state_code, p.taxable_amount,
+                      p.cgst_amount, p.sgst_amount, p.igst_amount, p.total_gst
+               FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id
+               WHERE p.id = ?1"#,
+            [purchase_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, f64>(11)?,
+                    row.get::<_, f64>(12)?,
+                    row.get::<_, f64>(13)?,
+                    row.get::<_, f64>(14)?,
+                    row.get::<_, f64>(15)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the purchase invoice: {error}"))?
+        .ok_or_else(|| "The purchase invoice no longer exists.".to_owned())?;
+    let lines = query_rows(
+        connection,
+        r#"SELECT pi.id, b.medicine_id, m.name AS medicine_name, pi.batch_id,
+                  b.batch_no, b.expiry_date, pi.quantity,
+                  COALESCE((SELECT SUM(pri.quantity) FROM purchase_return_items pri
+                            WHERE pri.purchase_item_id = pi.id), 0) AS returned_quantity,
+                  CAST(ROUND(pi.rate * 100) AS INTEGER) AS rate_cents,
+                  pi.total, pi.gst_rate_basis_points, pi.total_gst
+           FROM purchase_items pi
+           JOIN medicine_batches b ON b.id = pi.batch_id
+           JOIN medicines m ON m.id = b.medicine_id
+           WHERE pi.purchase_id = ?1 ORDER BY pi.id"#,
+        [purchase_id],
+        |row| {
+            let quantity: i64 = row.get("quantity")?;
+            let returned_quantity: i64 = row.get("returned_quantity")?;
+            Ok(PurchaseLineDetailRecord {
+                id: row.get("id")?,
+                medicine_id: row.get("medicine_id")?,
+                medicine_name: row.get("medicine_name")?,
+                batch_id: row.get("batch_id")?,
+                batch_no: row.get("batch_no")?,
+                expiry_date: row.get("expiry_date")?,
+                quantity,
+                returned_quantity,
+                available_quantity: quantity.saturating_sub(returned_quantity),
+                rate: row.get::<_, i64>("rate_cents")? as f64 / 100.0,
+                total: row.get("total")?,
+                gst_rate_basis_points: row.get("gst_rate_basis_points")?,
+                total_gst: row.get("total_gst")?,
+            })
+        },
+    )?;
+    let attachments = query_rows(
+        connection,
+        "SELECT id, file_name, mime_type, size_bytes FROM purchase_attachments WHERE purchase_id = ?1 ORDER BY id",
+        [purchase_id],
+        |row| {
+            Ok(PurchaseAttachmentRecord {
+                id: row.get("id")?,
+                file_name: row.get("file_name")?,
+                mime_type: row.get("mime_type")?,
+                size_bytes: row.get("size_bytes")?,
+            })
+        },
+    )?;
+    Ok(PurchaseDetailsRecord {
+        id: header.0,
+        invoice_no: header.1,
+        supplier_id: header.2,
+        supplier_name: header.3,
+        purchase_date: header.4,
+        total_amount: header.5,
+        status: header.6,
+        gst_enabled: header.7,
+        gst_pricing_mode: header.8,
+        tax_type: header.9,
+        place_of_supply_state_code: header.10,
+        taxable_amount: header.11,
+        cgst_amount: header.12,
+        sgst_amount: header.13,
+        igst_amount: header.14,
+        total_gst: header.15,
+        lines,
+        attachments,
+    })
+}
+
+fn query_supplier_ledger(
+    connection: &Connection,
+    supplier_id: i64,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
+    entry_type: Option<&str>,
+    search_term: &str,
+) -> Result<SupplierLedgerRecord, String> {
+    if supplier_id <= 0 {
+        return Err("Supplier id must be a positive whole number.".to_owned());
+    }
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM suppliers WHERE id = ?1)",
+            [supplier_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not validate the supplier: {error}"))?;
+    if !exists {
+        return Err("The supplier no longer exists.".to_owned());
+    }
+    let filter_type = entry_type.map(str::to_ascii_uppercase);
+    if filter_type
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "PURCHASE" | "PURCHASE_RETURN" | "PAYMENT" | "ADJUSTMENT"))
+    {
+        return Err("Choose a supported supplier ledger transaction type.".to_owned());
+    }
+    let needle = search_term.trim().to_lowercase();
+    let rows = query_rows(
+        connection,
+        r#"SELECT id, entry_type, reference, debit_cents, credit_cents,
+                  payment_method, transaction_reference, note, created_at
+           FROM supplier_ledger WHERE supplier_id = ?1
+           ORDER BY created_at ASC, id ASC"#,
+        [supplier_id],
+        |row| {
+            Ok((
+                row.get::<_, i64>("id")?,
+                row.get::<_, String>("entry_type")?,
+                row.get::<_, Option<String>>("reference")?,
+                row.get::<_, i64>("debit_cents")?,
+                row.get::<_, i64>("credit_cents")?,
+                row.get::<_, Option<String>>("payment_method")?,
+                row.get::<_, Option<String>>("transaction_reference")?,
+                row.get::<_, Option<String>>("note")?,
+                row.get::<_, String>("created_at")?,
+            ))
+        },
+    )?;
+    let mut balance_cents = 0_i64;
+    let mut opening_balance_cents = 0_i64;
+    let mut entries = Vec::new();
+    for (
+        id,
+        entry_type,
+        reference,
+        debit_cents,
+        credit_cents,
+        payment_method,
+        transaction_reference,
+        note,
+        created_at,
+    ) in rows
+    {
+        balance_cents = balance_cents
+            .checked_add(debit_cents)
+            .and_then(|balance| balance.checked_sub(credit_cents))
+            .ok_or_else(|| "Supplier ledger balance exceeds the supported amount.".to_owned())?;
+        let entry_date = created_at.get(..10).unwrap_or(created_at.as_str());
+        let before_range = from_date.is_some_and(|from| entry_date < from);
+        if before_range {
+            opening_balance_cents = balance_cents;
+        }
+        let matches_search = needle.is_empty()
+            || reference.as_deref().unwrap_or_default().to_lowercase().contains(&needle)
+            || transaction_reference
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(&needle)
+            || note
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(&needle);
+        if !before_range
+            && to_date.is_none_or(|to| entry_date <= to)
+            && filter_type.as_deref().is_none_or(|filter| filter == entry_type)
+            && matches_search
+        {
+            entries.push(SupplierLedgerEntryRecord {
+                id,
+                entry_type,
+                reference,
+                debit: debit_cents as f64 / 100.0,
+                credit: credit_cents as f64 / 100.0,
+                payment_method,
+                transaction_reference,
+                note,
+                created_at,
+                running_balance: balance_cents as f64 / 100.0,
+            });
+        }
+    }
+    Ok(SupplierLedgerRecord {
+        opening_balance: opening_balance_cents as f64 / 100.0,
+        current_balance: balance_cents as f64 / 100.0,
+        entries,
+    })
 }
 
 fn map_sale(row: &Row<'_>) -> rusqlite::Result<SaleRecord> {
@@ -1537,6 +1884,73 @@ pub(crate) fn get_recent_purchases(
     limit: i64,
 ) -> Result<Vec<RecentPurchaseRecord>, String> {
     query_recent_purchases(&open_pharmacy_connection(&app)?, limit)
+}
+
+#[tauri::command]
+pub(crate) fn get_purchase_history(
+    app: AppHandle,
+    search_term: String,
+    supplier_id: Option<i64>,
+    from_date: Option<String>,
+    to_date: Option<String>,
+) -> Result<Vec<PurchaseHistoryRecord>, String> {
+    let connection = open_pharmacy_connection(&app)?;
+    if supplier_id.is_some_and(|id| id <= 0) {
+        return Err("Supplier id must be a positive whole number.".to_owned());
+    }
+    if let Some(date) = from_date.as_deref() {
+        validate_iso_date(&connection, date, "start date")?;
+    }
+    if let Some(date) = to_date.as_deref() {
+        validate_iso_date(&connection, date, "end date")?;
+    }
+    if from_date.as_deref().zip(to_date.as_deref()).is_some_and(|(from, to)| from > to) {
+        return Err("The purchase start date cannot be after the end date.".to_owned());
+    }
+    query_purchase_history(
+        &connection,
+        &search_term,
+        supplier_id,
+        from_date.as_deref(),
+        to_date.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn get_purchase_details(
+    app: AppHandle,
+    purchase_id: i64,
+) -> Result<PurchaseDetailsRecord, String> {
+    query_purchase_details(&open_pharmacy_connection(&app)?, purchase_id)
+}
+
+#[tauri::command]
+pub(crate) fn get_supplier_ledger(
+    app: AppHandle,
+    supplier_id: i64,
+    from_date: Option<String>,
+    to_date: Option<String>,
+    entry_type: Option<String>,
+    search_term: String,
+) -> Result<SupplierLedgerRecord, String> {
+    let connection = open_pharmacy_connection(&app)?;
+    if let Some(date) = from_date.as_deref() {
+        validate_iso_date(&connection, date, "start date")?;
+    }
+    if let Some(date) = to_date.as_deref() {
+        validate_iso_date(&connection, date, "end date")?;
+    }
+    if from_date.as_deref().zip(to_date.as_deref()).is_some_and(|(from, to)| from > to) {
+        return Err("The supplier ledger start date cannot be after the end date.".to_owned());
+    }
+    query_supplier_ledger(
+        &connection,
+        supplier_id,
+        from_date.as_deref(),
+        to_date.as_deref(),
+        entry_type.as_deref(),
+        &search_term,
+    )
 }
 
 #[tauri::command]
@@ -2212,6 +2626,8 @@ mod tests {
                     supplier_id: 1,
                     invoice_no: "QA-P-1".to_owned(),
                     purchase_date: today.clone(),
+                    gst_pricing_mode: None,
+                    place_of_supply_state_code: None,
                     items: vec![crate::PurchaseItemRequest {
                         medicine_id: 1,
                         batch_no: "QA-B-1".to_owned(),
@@ -2220,6 +2636,7 @@ mod tests {
                         mrp_cents: 800,
                         sale_rate_cents: 700,
                         quantity: 10,
+                        gst_rate_override_basis_points: None,
                     }],
                 },
             )

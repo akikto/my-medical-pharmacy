@@ -100,6 +100,7 @@ export interface Supplier {
   whatsapp_phone: string | null;
   address: string | null;
   notes: string | null;
+  state_code?: string | null;
   balance_due: number;
 }
 
@@ -110,6 +111,7 @@ export interface SupplierFormValues {
   whatsapp_phone: string;
   address: string;
   notes: string;
+  state_code?: string;
 }
 
 export interface Purchase {
@@ -128,12 +130,17 @@ export interface PurchaseLineInput {
   mrp: number;
   sale_rate: number;
   quantity: number;
+  gst_rate_override_basis_points?: number | null;
 }
+
+export type GstPricingMode = "INCLUSIVE" | "EXCLUSIVE";
 
 export interface CreatePurchaseInput {
   supplier_id: EntityId;
   invoice_no: string;
   purchase_date: ISODate;
+  gst_pricing_mode?: GstPricingMode;
+  place_of_supply_state_code?: string | null;
   items: PurchaseLineInput[];
 }
 
@@ -151,6 +158,102 @@ export interface RecentPurchase {
   purchase_date: ISODate;
   item_count: number;
   total_units: number;
+}
+
+export interface PurchaseHistoryRecord extends RecentPurchase {
+  total_gst: number;
+  status: "ACTIVE" | "CANCELLED";
+  supplier_balance_due: number;
+}
+
+export interface PurchaseLineDetail {
+  id: EntityId;
+  medicine_id: EntityId;
+  medicine_name: string;
+  batch_id: EntityId;
+  batch_no: string;
+  expiry_date: ISODate;
+  quantity: number;
+  returned_quantity: number;
+  available_quantity: number;
+  rate: number;
+  total: number;
+  gst_rate_basis_points: number;
+  total_gst: number;
+}
+
+export interface PurchaseAttachment {
+  id: EntityId;
+  file_name: string;
+  mime_type: "application/pdf" | "image/jpeg" | "image/png";
+  size_bytes: number;
+}
+
+export interface PurchaseDetails extends Purchase {
+  supplier_name: string | null;
+  status: "ACTIVE" | "CANCELLED";
+  gst_enabled: boolean;
+  gst_pricing_mode: GstPricingMode;
+  tax_type: "NONE" | "CGST_SGST" | "IGST";
+  place_of_supply_state_code: string | null;
+  taxable_amount: number;
+  cgst_amount: number;
+  sgst_amount: number;
+  igst_amount: number;
+  total_gst: number;
+  lines: PurchaseLineDetail[];
+  attachments: PurchaseAttachment[];
+}
+
+export interface PurchaseReturnInput {
+  purchase_id: EntityId;
+  return_date: ISODate;
+  note?: string | null;
+  items: Array<{ purchase_item_id: EntityId; quantity: number }>;
+}
+
+export interface PurchaseReturnResponse {
+  returnId: EntityId;
+  totalCents: number;
+}
+
+export interface SupplierPaymentInput {
+  supplier_id: EntityId;
+  payment_date: ISODate;
+  amount: number;
+  payment_method: "CASH" | "BANK" | "UPI" | "OTHER";
+  transaction_reference?: string | null;
+  note?: string | null;
+}
+
+export interface SupplierPaymentResponse {
+  ledgerEntryId: EntityId;
+  balanceDueCents: number;
+}
+
+export type SupplierLedgerEntryType =
+  | "PURCHASE"
+  | "PURCHASE_RETURN"
+  | "PAYMENT"
+  | "ADJUSTMENT";
+
+export interface SupplierLedgerEntry {
+  id: EntityId;
+  entry_type: SupplierLedgerEntryType;
+  reference: string | null;
+  debit: number;
+  credit: number;
+  payment_method: string | null;
+  transaction_reference: string | null;
+  note: string | null;
+  created_at: string;
+  running_balance: number;
+}
+
+export interface SupplierLedger {
+  opening_balance: number;
+  current_balance: number;
+  entries: SupplierLedgerEntry[];
 }
 
 export interface OrderListItem {
@@ -415,6 +518,8 @@ export interface DatabaseBackupResult {
   path: string;
   photoCount: number;
   ignoredOrphanedPhotoCount: number;
+  attachmentCount: number;
+  ignoredOrphanedAttachmentCount: number;
 }
 
 export interface DatabaseRestoreResult {
@@ -422,6 +527,8 @@ export interface DatabaseRestoreResult {
   sourceFormat: "complete" | "legacyDatabaseOnly";
   restoredPhotoCount: number;
   ignoredOrphanedPhotoCount: number;
+  restoredAttachmentCount: number;
+  ignoredOrphanedAttachmentCount: number;
 }
 
 export interface CartItem {

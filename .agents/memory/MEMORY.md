@@ -8,3 +8,5 @@
 - [GitHub workflow pushes](github-workflow-push.md) — Repo write access may not include workflow-file permission, and uploading Git objects does not update the branch ref.
 - [GST calculation parity](gst-calculation-parity.md) — Keep live GST preview and Rust invoice totals consistent using paise arithmetic and matching precedence.
 - [Order suggestion policy](order-suggestion-policy.md) — Use deterministic restock targets, subtract sellable stock and pending orders, and flag sparse sales history.
+- [MY MEDICAL Phase 3 scope](phase3-scope.md) — Keep Home and completed Phase 1/2 behavior unchanged; access SQLite only through typed native commands.
+- [Supplier ledger migration](supplier-ledger-migration.md) — Backfill invoice debits, then reconcile to the legacy balance so migration does not change what suppliers are owed.

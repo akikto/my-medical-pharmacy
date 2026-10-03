@@ -23,6 +23,7 @@ export function SupplierFormDialog({
   const [whatsappPhone, setWhatsappPhone] = useState(supplier?.whatsapp_phone ?? "");
   const [address, setAddress] = useState(supplier?.address ?? "");
   const [notes, setNotes] = useState(supplier?.notes ?? "");
+  const [stateCode, setStateCode] = useState(supplier?.state_code ?? "");
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,6 +34,7 @@ export function SupplierFormDialog({
       whatsapp_phone: whatsappPhone,
       address,
       notes,
+      state_code: stateCode,
     });
   }
 
@@ -112,6 +114,19 @@ export function SupplierFormDialog({
               onChange={(event) => setAddress(event.target.value)}
               rows={3}
               value={address}
+            />
+          </label>
+          <label className="field-label">
+            GST state code <span className="field-optional">Optional</span>
+            <input
+              className="workspace-input"
+              data-testid="input-supplier-state-code"
+              inputMode="numeric"
+              maxLength={2}
+              onChange={(event) => setStateCode(event.target.value.replace(/\D/g, ""))}
+              pattern="\d{2}"
+              placeholder="e.g. 29"
+              value={stateCode}
             />
           </label>
           <label className="field-label">
