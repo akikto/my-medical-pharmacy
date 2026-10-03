@@ -32,6 +32,8 @@ enum FinancialReportType {
     SalesSummary,
     PurchaseSummary,
     ProfitAndLoss,
+    Expenses,
+    FinancialSummary,
     StockValuation,
     ProductSales,
     CompanySales,
@@ -139,9 +141,84 @@ pub(crate) struct ProfitAndLossReport {
     cogs: Option<f64>,
     gross_profit: Option<f64>,
     gross_margin_percent: Option<f64>,
+    operating_expenses: f64,
+    net_profit: Option<f64>,
+    net_margin_percent: Option<f64>,
     cost_unavailable_invoices: i64,
-    expense_note: String,
     product_rows: Vec<ProductSalesRow>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpenseReportRow {
+    id: i64,
+    expense_date: String,
+    category_name: String,
+    description: String,
+    amount: f64,
+    payment_method: String,
+    reference_number: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpenseCategoryTotal {
+    category_name: String,
+    amount: f64,
+    count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpensePaymentTotal {
+    payment_method: String,
+    amount: f64,
+    count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpensePeriodTotal {
+    period: String,
+    amount: f64,
+    count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExpenseReport {
+    range: ReportDateRange,
+    total_expenses: f64,
+    active_count: i64,
+    cancelled_count: i64,
+    category_totals: Vec<ExpenseCategoryTotal>,
+    payment_method_totals: Vec<ExpensePaymentTotal>,
+    daily_totals: Vec<ExpensePeriodTotal>,
+    monthly_totals: Vec<ExpensePeriodTotal>,
+    rows: Vec<ExpenseReportRow>,
+    total_rows: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FinancialSummaryReport {
+    range: ReportDateRange,
+    gross_sales: f64,
+    sales_returns: f64,
+    net_sales: f64,
+    gross_purchases: f64,
+    purchase_returns: f64,
+    net_purchases: f64,
+    cogs: Option<f64>,
+    gross_profit: Option<f64>,
+    operating_expenses: f64,
+    net_profit: Option<f64>,
+    customer_outstanding: f64,
+    supplier_outstanding: f64,
+    stock_valuation: f64,
+    stock_quantity: i64,
+    cost_unavailable_invoices: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -334,6 +411,8 @@ pub(crate) enum FinancialReportData {
     SalesSummary(SalesSummaryReport),
     PurchaseSummary(PurchaseSummaryReport),
     ProfitAndLoss(ProfitAndLossReport),
+    Expenses(ExpenseReport),
+    FinancialSummary(FinancialSummaryReport),
     StockValuation(StockValuationReport),
     ProductSales(ProductSalesReport),
     CompanySales(CompanySalesReport),
@@ -508,6 +587,14 @@ pub(crate) fn get_financial_report(
         FinancialReportType::ProfitAndLoss => {
             let range = required_range(&connection, request.range.as_ref())?;
             query_profit_and_loss(&connection, range).map(FinancialReportData::ProfitAndLoss)
+        }
+        FinancialReportType::Expenses => {
+            let range = required_range(&connection, request.range.as_ref())?;
+            query_expenses_report(&connection, range).map(FinancialReportData::Expenses)
+        }
+        FinancialReportType::FinancialSummary => {
+            let range = required_range(&connection, request.range.as_ref())?;
+            query_financial_summary(&connection, range).map(FinancialReportData::FinancialSummary)
         }
         FinancialReportType::StockValuation => {
             query_stock_valuation(&connection, request.near_expiry_days.unwrap_or(30))
@@ -1434,6 +1521,10 @@ fn query_profit_and_loss(
     let gross_profit = cogs.map(|cost| net_sales - cost);
     let gross_margin_percent = gross_profit
         .and_then(|profit| (net_sales.abs() > f64::EPSILON).then_some(profit * 100.0 / net_sales));
+    let operating_expenses = money(query_operating_expense_cents(connection, range)?);
+    let net_profit = gross_profit.map(|profit| profit - operating_expenses);
+    let net_margin_percent = net_profit
+        .and_then(|profit| (net_sales.abs() > f64::EPSILON).then_some(profit * 100.0 / net_sales));
     let products = query_product_sales(connection, range, None, None, 1, 20)?.rows;
     Ok(ProfitAndLossReport {
         range: range.clone(),
@@ -1443,10 +1534,226 @@ fn query_profit_and_loss(
         cogs,
         gross_profit,
         gross_margin_percent,
+        operating_expenses,
+        net_profit,
+        net_margin_percent,
         cost_unavailable_invoices: cogs_totals.1,
-        expense_note: "Operating expenses are not modeled in this app and are not included."
-            .to_owned(),
         product_rows: products,
+    })
+}
+
+fn query_operating_expense_cents(
+    connection: &Connection,
+    range: &ReportDateRange,
+) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT COALESCE(SUM(amount_cents), 0)
+             FROM expenses
+             WHERE status = 'ACTIVE' AND expense_date BETWEEN ?1 AND ?2",
+            params![range.start_date, range.end_date],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not calculate operating expenses: {error}"))
+}
+
+fn query_expenses_report(
+    connection: &Connection,
+    range: &ReportDateRange,
+) -> Result<ExpenseReport, String> {
+    validate_range(range)?;
+    let (active_cents, active_count, cancelled_count, total_rows): (i64, i64, i64, i64) =
+        connection
+            .query_row(
+                r#"SELECT
+                     COALESCE(SUM(CASE WHEN status = 'ACTIVE' THEN amount_cents ELSE 0 END), 0),
+                     SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END),
+                     SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END),
+                     COUNT(*)
+                   FROM expenses WHERE expense_date BETWEEN ?1 AND ?2"#,
+                params![range.start_date, range.end_date],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        row.get(3)?,
+                    ))
+                },
+            )
+            .map_err(|error| format!("Could not calculate expense report totals: {error}"))?;
+
+    let category_totals = checked_query(
+        connection,
+        r#"SELECT c.name, SUM(e.amount_cents), COUNT(*)
+           FROM expenses e JOIN expense_categories c ON c.id = e.category_id
+           WHERE e.status = 'ACTIVE' AND e.expense_date BETWEEN ?1 AND ?2
+           GROUP BY c.id, c.name
+           ORDER BY SUM(e.amount_cents) DESC, c.name COLLATE NOCASE"#,
+        params![range.start_date, range.end_date],
+        |row| {
+            Ok(ExpenseCategoryTotal {
+                category_name: row.get(0)?,
+                amount: money(row.get(1)?),
+                count: row.get(2)?,
+            })
+        },
+    )?;
+
+    let payment_method_amounts = checked_query(
+        connection,
+        r#"SELECT payment_method, SUM(amount_cents), COUNT(*)
+           FROM expenses
+           WHERE status = 'ACTIVE' AND expense_date BETWEEN ?1 AND ?2
+           GROUP BY payment_method"#,
+        params![range.start_date, range.end_date],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
+    let payment_method_totals = ["CASH", "BANK", "UPI", "OTHER"]
+        .into_iter()
+        .map(|method| {
+            let (amount_cents, count) = payment_method_amounts
+                .iter()
+                .find(|(payment_method, _, _)| payment_method == method)
+                .map(|(_, amount_cents, count)| (*amount_cents, *count))
+                .unwrap_or((0, 0));
+            ExpensePaymentTotal {
+                payment_method: method.to_owned(),
+                amount: money(amount_cents),
+                count,
+            }
+        })
+        .collect();
+
+    let period_totals = |sql: &str| {
+        checked_query(
+            connection,
+            sql,
+            params![range.start_date, range.end_date],
+            |row| {
+                Ok(ExpensePeriodTotal {
+                    period: row.get(0)?,
+                    amount: money(row.get(1)?),
+                    count: row.get(2)?,
+                })
+            },
+        )
+    };
+    let daily_totals = period_totals(
+        r#"SELECT expense_date, SUM(amount_cents), COUNT(*)
+           FROM expenses
+           WHERE status = 'ACTIVE' AND expense_date BETWEEN ?1 AND ?2
+           GROUP BY expense_date ORDER BY expense_date"#,
+    )?;
+    let monthly_totals = period_totals(
+        r#"SELECT substr(expense_date, 1, 7), SUM(amount_cents), COUNT(*)
+           FROM expenses
+           WHERE status = 'ACTIVE' AND expense_date BETWEEN ?1 AND ?2
+           GROUP BY substr(expense_date, 1, 7) ORDER BY substr(expense_date, 1, 7)"#,
+    )?;
+    let rows = checked_query(
+        connection,
+        r#"SELECT e.id, e.expense_date, c.name, e.description, e.amount_cents,
+                  e.payment_method, e.reference_number, e.status
+           FROM expenses e JOIN expense_categories c ON c.id = e.category_id
+           WHERE e.expense_date BETWEEN ?1 AND ?2
+           ORDER BY e.expense_date DESC, e.id DESC LIMIT ?3"#,
+        params![range.start_date, range.end_date, REPORT_MAX_ROWS],
+        |row| {
+            Ok(ExpenseReportRow {
+                id: row.get(0)?,
+                expense_date: row.get(1)?,
+                category_name: row.get(2)?,
+                description: row.get(3)?,
+                amount: money(row.get(4)?),
+                payment_method: row.get(5)?,
+                reference_number: row.get(6)?,
+                status: row.get(7)?,
+            })
+        },
+    )?;
+    Ok(ExpenseReport {
+        range: range.clone(),
+        total_expenses: money(active_cents),
+        active_count,
+        cancelled_count,
+        category_totals,
+        payment_method_totals,
+        daily_totals,
+        monthly_totals,
+        rows,
+        total_rows,
+    })
+}
+
+fn query_customer_outstanding(connection: &Connection) -> Result<f64, String> {
+    let cents: i64 = connection
+        .query_row(
+            r#"WITH all_entries AS (
+                 SELECT customer_id, debit_cents, credit_cents FROM customer_ledger
+                 UNION ALL
+                 SELECT customer_id, debit_cents, credit_cents FROM customer_ledger_events
+               ),
+               balances AS (
+                 SELECT customer_id, SUM(debit_cents - credit_cents) AS outstanding_cents
+                 FROM all_entries GROUP BY customer_id
+               )
+               SELECT COALESCE(SUM(CASE WHEN outstanding_cents > 0
+                                        THEN outstanding_cents ELSE 0 END), 0)
+               FROM balances"#,
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not calculate current customer outstanding: {error}"))?;
+    Ok(money(cents))
+}
+
+fn query_supplier_outstanding(connection: &Connection) -> Result<f64, String> {
+    let cents: i64 = connection
+        .query_row(
+            r#"SELECT COALESCE(SUM(CASE WHEN outstanding_cents > 0
+                                        THEN outstanding_cents ELSE 0 END), 0)
+               FROM (
+                 SELECT supplier_id, SUM(debit_cents - credit_cents) AS outstanding_cents
+                 FROM supplier_ledger GROUP BY supplier_id
+               )"#,
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not calculate current supplier outstanding: {error}"))?;
+    Ok(money(cents))
+}
+
+fn query_financial_summary(
+    connection: &Connection,
+    range: &ReportDateRange,
+) -> Result<FinancialSummaryReport, String> {
+    let profit = query_profit_and_loss(connection, range)?;
+    let purchases = query_purchase_summary(connection, range, None)?;
+    let stock = query_stock_valuation(connection, 30)?;
+    Ok(FinancialSummaryReport {
+        range: range.clone(),
+        gross_sales: profit.gross_sales,
+        sales_returns: profit.sales_returns,
+        net_sales: profit.net_sales,
+        gross_purchases: purchases.gross_purchases,
+        purchase_returns: purchases.purchase_returns,
+        net_purchases: purchases.net_purchases,
+        cogs: profit.cogs,
+        gross_profit: profit.gross_profit,
+        operating_expenses: profit.operating_expenses,
+        net_profit: profit.net_profit,
+        customer_outstanding: query_customer_outstanding(connection)?,
+        supplier_outstanding: query_supplier_outstanding(connection)?,
+        stock_valuation: stock.total_stock_cost_value,
+        stock_quantity: stock.total_stock_quantity,
+        cost_unavailable_invoices: profit.cost_unavailable_invoices,
     })
 }
 
@@ -2124,6 +2431,9 @@ mod tests {
         let profit = query_profit_and_loss(&connection, &report_range).expect("empty profit");
         assert_money(profit.net_sales, 0.0);
         assert_eq!(profit.cogs, Some(0.0));
+        assert_money(profit.operating_expenses, 0.0);
+        assert_eq!(profit.gross_profit, Some(0.0));
+        assert_eq!(profit.net_profit, Some(0.0));
         assert!(profit.product_rows.is_empty());
 
         let gst = query_gst_report(&connection, &report_range).expect("empty GST");
@@ -2156,6 +2466,10 @@ mod tests {
         assert_money(profit.net_sales, 50.0);
         assert_eq!(profit.cogs, Some(30.0));
         assert_eq!(profit.gross_profit, Some(20.0));
+        assert_money(profit.operating_expenses, 0.0);
+        assert_eq!(profit.net_profit, Some(20.0));
+        assert_eq!(profit.gross_margin_percent, Some(40.0));
+        assert_eq!(profit.net_margin_percent, Some(40.0));
         assert_eq!(profit.cost_unavailable_invoices, 0);
         assert_eq!(profit.product_rows.len(), 1);
 
@@ -2253,6 +2567,96 @@ mod tests {
         assert_money(stock.near_expiry_cost_value, 40.0);
         assert_eq!(stock.low_stock_items, 1);
         assert_eq!(stock.total_rows, 3);
+    }
+
+    #[test]
+    fn expense_reports_and_financial_summary_exclude_cancelled_costs() {
+        let connection = financial_fixture();
+        let rent_id: i64 = connection
+            .query_row(
+                "SELECT id FROM expense_categories WHERE name = 'Rent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("find seeded rent category");
+        let salary_id: i64 = connection
+            .query_row(
+                "SELECT id FROM expense_categories WHERE name = 'Salary'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("find seeded salary category");
+        connection
+            .execute(
+                r#"INSERT INTO expenses
+                   (expense_date, category_id, description, amount_cents, payment_method, reference_number)
+                   VALUES ('2025-03-10', ?1, 'Shop rent', 5000, 'CASH', 'RENT-1')"#,
+                [rent_id],
+            )
+            .expect("insert active cash expense");
+        connection
+            .execute(
+                r#"INSERT INTO expenses
+                   (expense_date, category_id, description, amount_cents, payment_method, reference_number)
+                   VALUES ('2025-03-11', ?1, 'Staff payroll', 2500, 'BANK', 'SAL-1')"#,
+                [salary_id],
+            )
+            .expect("insert active bank expense");
+        connection
+            .execute(
+                r#"INSERT INTO expenses
+                   (expense_date, category_id, description, amount_cents, payment_method, status)
+                   VALUES ('2025-03-11', ?1, 'Voided bill', 9000, 'UPI', 'CANCELLED')"#,
+                [rent_id],
+            )
+            .expect("insert cancelled expense");
+
+        let report_range = range("2025-03-10", "2025-03-12");
+        let expenses = query_expenses_report(&connection, &report_range).expect("expense report");
+        assert_money(expenses.total_expenses, 75.0);
+        assert_eq!(expenses.active_count, 2);
+        assert_eq!(expenses.cancelled_count, 1);
+        assert_eq!(expenses.total_rows, 3);
+        assert_eq!(expenses.rows.len(), 3);
+        assert_eq!(expenses.daily_totals.len(), 2);
+        assert_eq!(expenses.monthly_totals.len(), 1);
+        assert_money(expenses.monthly_totals[0].amount, 75.0);
+        assert_money(
+            expenses
+                .payment_method_totals
+                .iter()
+                .find(|row| row.payment_method == "CASH")
+                .expect("cash total")
+                .amount,
+            50.0,
+        );
+        assert_money(
+            expenses
+                .payment_method_totals
+                .iter()
+                .find(|row| row.payment_method == "UPI")
+                .expect("UPI total")
+                .amount,
+            0.0,
+        );
+        assert!(expenses.rows.iter().any(|row| row.status == "CANCELLED"));
+
+        let profit = query_profit_and_loss(&connection, &report_range).expect("P&L with expenses");
+        assert_eq!(profit.gross_profit, Some(20.0));
+        assert_money(profit.operating_expenses, 75.0);
+        assert_eq!(profit.net_profit, Some(-55.0));
+        assert_eq!(profit.gross_margin_percent, Some(40.0));
+        assert_eq!(profit.net_margin_percent, Some(-110.0));
+
+        let summary =
+            query_financial_summary(&connection, &report_range).expect("financial summary");
+        assert_money(summary.net_sales, 50.0);
+        assert_money(summary.operating_expenses, 75.0);
+        assert_eq!(summary.net_profit, Some(-55.0));
+        assert_money(summary.customer_outstanding, 39.0);
+        assert_money(summary.supplier_outstanding, 39.0);
+        assert_money(summary.stock_valuation, 840.0);
+        assert_eq!(summary.stock_quantity, 10);
     }
 
     #[test]

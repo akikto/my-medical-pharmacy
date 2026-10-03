@@ -10,6 +10,8 @@ export type FinancialReportType =
   | "sales_summary"
   | "purchase_summary"
   | "profit_and_loss"
+  | "expenses"
+  | "financial_summary"
   | "stock_valuation"
   | "product_sales"
   | "company_sales"
@@ -116,9 +118,72 @@ export interface ProfitAndLossReport {
   cogs: number | null;
   grossProfit: number | null;
   grossMarginPercent: number | null;
+  operatingExpenses: number;
+  netProfit: number | null;
+  netMarginPercent: number | null;
   costUnavailableInvoices: number;
-  expenseNote: string;
   productRows: ProductSalesRow[];
+}
+
+export interface ExpenseReportRow {
+  id: number;
+  expenseDate: string;
+  categoryName: string;
+  description: string;
+  amount: number;
+  paymentMethod: "CASH" | "BANK" | "UPI" | "OTHER";
+  referenceNumber: string | null;
+  status: "ACTIVE" | "CANCELLED";
+}
+
+export interface ExpenseCategoryTotal {
+  categoryName: string;
+  amount: number;
+  count: number;
+}
+
+export interface ExpensePaymentTotal {
+  paymentMethod: "CASH" | "BANK" | "UPI" | "OTHER";
+  amount: number;
+  count: number;
+}
+
+export interface ExpensePeriodTotal {
+  period: string;
+  amount: number;
+  count: number;
+}
+
+export interface ExpenseReport {
+  range: ReportDateRange;
+  totalExpenses: number;
+  activeCount: number;
+  cancelledCount: number;
+  categoryTotals: ExpenseCategoryTotal[];
+  paymentMethodTotals: ExpensePaymentTotal[];
+  dailyTotals: ExpensePeriodTotal[];
+  monthlyTotals: ExpensePeriodTotal[];
+  rows: ExpenseReportRow[];
+  totalRows: number;
+}
+
+export interface FinancialSummaryReport {
+  range: ReportDateRange;
+  grossSales: number;
+  salesReturns: number;
+  netSales: number;
+  grossPurchases: number;
+  purchaseReturns: number;
+  netPurchases: number;
+  cogs: number | null;
+  grossProfit: number | null;
+  operatingExpenses: number;
+  netProfit: number | null;
+  customerOutstanding: number;
+  supplierOutstanding: number;
+  stockValuation: number;
+  stockQuantity: number;
+  costUnavailableInvoices: number;
 }
 
 export interface StockValuationRow {
@@ -265,6 +330,8 @@ export type FinancialReportData =
   | { reportType: "sales_summary"; data: SalesSummaryReport }
   | { reportType: "purchase_summary"; data: PurchaseSummaryReport }
   | { reportType: "profit_and_loss"; data: ProfitAndLossReport }
+  | { reportType: "expenses"; data: ExpenseReport }
+  | { reportType: "financial_summary"; data: FinancialSummaryReport }
   | { reportType: "stock_valuation"; data: StockValuationReport }
   | { reportType: "product_sales"; data: ProductSalesReport }
   | { reportType: "company_sales"; data: CompanySalesReport }
@@ -290,6 +357,8 @@ export type FinancialReportRequest =
       supplierId?: number | null;
     })
   | (DateRangeRequest & { reportType: "profit_and_loss" })
+  | (DateRangeRequest & { reportType: "expenses" })
+  | (DateRangeRequest & { reportType: "financial_summary" })
   | { reportType: "stock_valuation"; nearExpiryDays: number }
   | (PagedRequest & { reportType: "product_sales" })
   | (PagedRequest & { reportType: "company_sales" })

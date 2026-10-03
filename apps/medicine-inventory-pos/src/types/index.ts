@@ -1,6 +1,7 @@
 export type EntityId = number;
 export type ISODate = string;
 export type ISODateTime = string;
+export type * from "./expenses";
 
 export interface Medicine {
   id: EntityId;
@@ -699,6 +700,7 @@ export type AppSection =
   | "suppliers"
   | "customers"
   | "sales"
+  | "expenses"
   | "reports"
   | "settings";
 

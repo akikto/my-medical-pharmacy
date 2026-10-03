@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   UsersRound,
   Receipt,
+  Wallet,
   X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
@@ -23,6 +24,7 @@ import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
 import { CustomersPage } from "./components/customers/CustomersPage";
 import { SalesPage } from "./components/sales/SalesPage";
+import { ExpensesPage } from "./components/expenses/ExpensesPage";
 import { ReportsView } from "./components/reports/ReportsView";
 import { StoreSettings } from "./components/settings/StoreSettings";
 import "./components/workspace/workspace.css";
@@ -40,6 +42,7 @@ const navigation: Array<{
   { id: "suppliers", label: "Suppliers", icon: UsersRound },
   { id: "customers", label: "Customers & credit", icon: UsersRound },
   { id: "sales", label: "Sales", icon: Receipt },
+  { id: "expenses", label: "Expenses", icon: Wallet },
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
@@ -201,6 +204,8 @@ export default function App() {
           />
         ) : activeSection === "sales" ? (
           <SalesPage />
+        ) : activeSection === "expenses" ? (
+          <ExpensesPage />
         ) : activeSection === "reports" ? (
           <ReportsView onOpenCustomerLedger={openCustomerLedger} />
         ) : activeSection === "settings" ? (

@@ -22,6 +22,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod backup_package;
+mod expenses;
 mod financial_reports;
 mod purchase_management;
 mod reads;
@@ -45,7 +46,7 @@ use reads::{
     search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 10;
+const LATEST_DATABASE_VERSION: i64 = 11;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -960,6 +961,44 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
                )"#,
             "CREATE INDEX idx_sale_corrections_sale ON sale_corrections(sale_id, id)",
         ]),
+        11 => Ok(&[
+            r#"CREATE TABLE expense_categories (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                 active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 CHECK (length(trim(name)) > 0 AND length(name) <= 60)
+               )"#,
+            r#"INSERT INTO expense_categories (name) VALUES
+                 ('Rent'),
+                 ('Electricity'),
+                 ('Salary'),
+                 ('Transport'),
+                 ('Internet/Phone'),
+                 ('Maintenance'),
+                 ('Office Supplies'),
+                 ('Other')"#,
+            r#"CREATE TABLE expenses (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 expense_date TEXT NOT NULL CHECK (
+                   length(expense_date) = 10
+                   AND date(expense_date) = expense_date
+                 ),
+                 category_id INTEGER NOT NULL REFERENCES expense_categories(id) ON DELETE RESTRICT,
+                 description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 500),
+                 amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+                 payment_method TEXT NOT NULL CHECK (payment_method IN ('CASH', 'BANK', 'UPI', 'OTHER')),
+                 reference_number TEXT CHECK (reference_number IS NULL OR length(reference_number) <= 100),
+                 status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'CANCELLED')),
+                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"#,
+            "CREATE INDEX idx_expenses_date_id ON expenses(expense_date DESC, id DESC)",
+            "CREATE INDEX idx_expenses_category_date ON expenses(category_id, expense_date DESC)",
+            "CREATE INDEX idx_expenses_payment_date ON expenses(payment_method, expense_date DESC)",
+            "CREATE INDEX idx_expenses_status_date ON expenses(status, expense_date DESC)",
+        ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
 }
@@ -1403,6 +1442,29 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
             &connection,
             "stock_adjustments",
             &["previous_quantity", "new_quantity"],
+        )?;
+    }
+    if version >= 11 {
+        require_backup_columns(
+            &connection,
+            "expense_categories",
+            &["id", "name", "active", "created_at", "updated_at"],
+        )?;
+        require_backup_columns(
+            &connection,
+            "expenses",
+            &[
+                "id",
+                "expense_date",
+                "category_id",
+                "description",
+                "amount_cents",
+                "payment_method",
+                "reference_number",
+                "status",
+                "created_at",
+                "updated_at",
+            ],
         )?;
     }
 
@@ -5825,6 +5887,12 @@ pub fn run() {
             get_sales_report_rows,
             financial_reports::get_report_date_range,
             financial_reports::get_financial_report,
+            expenses::get_expense_categories,
+            expenses::get_expenses,
+            expenses::save_expense_category,
+            expenses::set_expense_category_active,
+            expenses::save_expense,
+            expenses::cancel_expense,
             get_weekly_sales,
             get_order_list,
             get_dashboard_inventory_summary,
@@ -5878,6 +5946,12 @@ pub fn run() {
         get_sales_report_rows,
         financial_reports::get_report_date_range,
         financial_reports::get_financial_report,
+        expenses::get_expense_categories,
+        expenses::get_expenses,
+        expenses::save_expense_category,
+        expenses::set_expense_category_active,
+        expenses::save_expense,
+        expenses::cancel_expense,
         get_weekly_sales,
         get_order_list,
         get_dashboard_inventory_summary,
@@ -8033,7 +8107,44 @@ mod backup_tests {
         let photo_directory = create_test_photo_directory(&directory, "active-photos");
         let backup_path = directory.join("user-selected-backup.zip");
         let photo_ref = "medicine-1-1234567890123456789.jpg";
-        let active_connection = create_restore_fixture_database(&active_database, 8);
+        let active_connection =
+            create_restore_fixture_database(&active_database, LATEST_DATABASE_VERSION);
+        let rent_id: i64 = active_connection
+            .query_row(
+                "SELECT id FROM expense_categories WHERE name = 'Rent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("find seeded rent category");
+        active_connection
+            .execute(
+                "INSERT INTO expense_categories (name, active) VALUES ('Backup Utilities', 0)",
+                [],
+            )
+            .expect("create inactive expense category");
+        let inactive_category_id = active_connection.last_insert_rowid();
+        active_connection
+            .execute(
+                r#"INSERT INTO expenses
+                   (id, expense_date, category_id, description, amount_cents,
+                    payment_method, reference_number, status, created_at, updated_at)
+                   VALUES (501, '2026-09-01', ?1, 'September rent', 42563,
+                           'BANK', 'BANK-REF-501', 'ACTIVE',
+                           '2026-09-01 10:15:00', '2026-09-04 11:30:00')"#,
+                [rent_id],
+            )
+            .expect("create active expense backup fixture");
+        active_connection
+            .execute(
+                r#"INSERT INTO expenses
+                   (id, expense_date, category_id, description, amount_cents,
+                    payment_method, reference_number, status, created_at, updated_at)
+                   VALUES (502, '2026-09-02', ?1, 'Cancelled utility bill', 8500,
+                           'UPI', NULL, 'CANCELLED',
+                           '2026-09-02 10:15:00', '2026-09-03 11:30:00')"#,
+                [inactive_category_id],
+            )
+            .expect("create cancelled expense backup fixture");
         drop(active_connection);
         set_test_photo_reference(&active_database, 1, photo_ref);
         let original_photo = test_jpeg(0x01);
@@ -8061,6 +8172,11 @@ mod backup_tests {
                 DELETE FROM order_list_items;
                 UPDATE app_settings SET setting_value = 'Changed pharmacy'
                   WHERE setting_key = 'pharmacy_name';
+                UPDATE expenses SET amount_cents = 99999, status = 'CANCELLED',
+                    payment_method = 'OTHER', reference_number = 'CHANGED'
+                  WHERE id = 501;
+                UPDATE expense_categories SET name = 'Changed Utilities', active = 1
+                  WHERE name = 'Backup Utilities';
                 "#,
             )
             .expect("change active records before restoring");
@@ -8107,6 +8223,83 @@ mod backup_tests {
             })
             .expect("read restored schema version");
         assert_eq!(restored_version, LATEST_DATABASE_VERSION);
+        let restored_expense: (
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+        ) = reopened_database
+            .query_row(
+                r#"SELECT e.expense_date, c.name, e.amount_cents, e.payment_method,
+                          e.reference_number, e.status, e.created_at, e.updated_at
+                   FROM expenses e JOIN expense_categories c ON c.id = e.category_id
+                   WHERE e.id = 501"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("read restored active expense");
+        let cancelled_expense: (String, i64, String, Option<String>, String) = reopened_database
+            .query_row(
+                r#"SELECT expense_date, amount_cents, payment_method, reference_number, status
+                   FROM expenses WHERE id = 502"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read restored cancelled expense");
+        let restored_category_active: bool = reopened_database
+            .query_row(
+                "SELECT active = 1 FROM expense_categories WHERE name = 'Backup Utilities'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored category status");
+        assert_eq!(
+            restored_expense,
+            (
+                "2026-09-01".to_owned(),
+                "Rent".to_owned(),
+                42_563,
+                "BANK".to_owned(),
+                Some("BANK-REF-501".to_owned()),
+                "ACTIVE".to_owned(),
+                "2026-09-01 10:15:00".to_owned(),
+                "2026-09-04 11:30:00".to_owned(),
+            )
+        );
+        assert_eq!(
+            cancelled_expense,
+            (
+                "2026-09-02".to_owned(),
+                8_500,
+                "UPI".to_owned(),
+                None,
+                "CANCELLED".to_owned(),
+            )
+        );
+        assert!(!restored_category_active);
         drop(reopened_database);
         assert_eq!(
             fs::read(photo_directory.join(photo_ref)).expect("read restored medicine photo"),
@@ -8754,6 +8947,46 @@ mod backup_tests {
         assert_eq!(adjustment_snapshot, (None, None));
         drop(reopened_database);
         fs::remove_dir_all(directory).expect("remove isolated legacy restore database");
+    }
+
+    #[test]
+    fn restore_migrates_version_ten_backup_and_seeds_expense_categories() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let source_database = directory.join("version-ten-source.db");
+        let source_backup = directory.join("version-ten-backup.db");
+        let active_connection = create_restore_fixture_database(&active_database, 10);
+        drop(active_connection);
+        let source_connection = create_restore_fixture_database(&source_database, 10);
+        drop(source_connection);
+        create_snapshot(&source_database, &source_backup).expect("snapshot version-ten database");
+        validate_backup_database(&source_backup).expect("validate pre-expense backup");
+
+        restore_database_backup_without_photos(&active_database, &source_backup)
+            .expect("restore and migrate version-ten backup");
+
+        let reopened_database =
+            Connection::open(&active_database).expect("reopen migrated expense database");
+        let restored_version: i64 = reopened_database
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated schema version");
+        let seeded_categories: i64 = reopened_database
+            .query_row(
+                "SELECT COUNT(*) FROM expense_categories",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count seeded expense categories");
+        let restored_expenses: i64 = reopened_database
+            .query_row("SELECT COUNT(*) FROM expenses", [], |row| row.get(0))
+            .expect("count migrated expenses");
+        assert_eq!(restored_version, LATEST_DATABASE_VERSION);
+        assert_eq!(seeded_categories, 8);
+        assert_eq!(restored_expenses, 0);
+        drop(reopened_database);
+        fs::remove_dir_all(directory).expect("remove version-ten restore fixture");
     }
 
     #[test]

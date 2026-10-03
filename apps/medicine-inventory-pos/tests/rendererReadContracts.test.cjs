@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const Module = require("node:module");
+const path = require("node:path");
 const { afterEach, beforeEach, describe, it } = require("node:test");
 const ts = require("typescript");
 const { createFixture, invokeRead, state } = require("./rendererReadFixture.cjs");
@@ -107,6 +108,9 @@ const {
   buildStockWorkbookBuffer,
   filterStockExportRows,
 } = require("../src/services/inventoryWorkbookService.ts");
+const {
+  exportFinancialReportExcel,
+} = require("../src/services/financialReportExportService.ts");
 const {
   createDatabaseBackup,
   restoreDatabaseBackup,
@@ -1353,5 +1357,183 @@ describe("stock export workbook", () => {
     const manyWorkbook = new ExcelJS.Workbook();
     await manyWorkbook.xlsx.load(await buildStockWorkbookBuffer(rows));
     assert.equal(manyWorkbook.getWorksheet("Stock").rowCount, 301);
+  });
+});
+
+describe("expense and financial report surfaces", () => {
+  it("connects the Expenses workspace to native CRUD and exposes print/PDF controls", () => {
+    const expensesPage = fs.readFileSync(
+      path.join(__dirname, "../src/components/expenses/ExpensesPage.tsx"),
+      "utf8",
+    );
+    const reportsPage = fs.readFileSync(
+      path.join(__dirname, "../src/components/reports/ReportsPage.tsx"),
+      "utf8",
+    );
+
+    for (const serviceCall of [
+      "getExpenseCategories",
+      "getExpenses",
+      "saveExpense",
+      "saveExpenseCategory",
+      "setExpenseCategoryActive",
+      "cancelExpense",
+    ]) {
+      assert.match(expensesPage, new RegExp(`\\b${serviceCall}\\b`));
+    }
+    assert.match(expensesPage, /window\.confirm/);
+    assert.match(expensesPage, /status === "CANCELLED"/);
+    assert.match(expensesPage, /data-testid="page-expenses"/);
+    assert.match(reportsPage, /data-testid="button-print-report"/);
+    assert.match(reportsPage, /window\.print\(\)/);
+    assert.match(reportsPage, /\{ id: "expenses"/);
+    assert.match(reportsPage, /\{ id: "financial_summary", title: "Financial Summary", group: "Overview" \}/);
+    assert.match(reportsPage, /\["Trading", "Overview", "Inventory", "Analysis", "Balances", "Tax"\]/);
+  });
+
+  it("exports expense breakdowns and cancelled ledger rows as an Excel workbook", async () => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    let downloadedBlob = null;
+    let downloadedFilename = null;
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: (blob) => {
+        downloadedBlob = blob;
+        return "blob:expense-test";
+      },
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: () => {},
+    });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { setTimeout: (callback) => { callback(); return 0; } },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        createElement: () => ({
+          click: () => {},
+          set download(filename) { downloadedFilename = filename; },
+          set href(_href) {},
+        }),
+      },
+    });
+
+    try {
+      const range = { startDate: "2025-03-10", endDate: "2025-03-12" };
+      const settings = {
+        pharmacy_name: "MY MEDICAL",
+        address: "",
+        contact_number: "",
+        drug_license_number: "",
+      };
+      const report = {
+        reportType: "expenses",
+        data: {
+          range,
+          totalExpenses: 75,
+          activeCount: 2,
+          cancelledCount: 1,
+          categoryTotals: [{ categoryName: "Rent", amount: 50, count: 1 }],
+          paymentMethodTotals: [{ paymentMethod: "CASH", amount: 50, count: 1 }],
+          dailyTotals: [{ period: "2025-03-10", amount: 50, count: 1 }],
+          monthlyTotals: [{ period: "2025-03", amount: 75, count: 2 }],
+          rows: [
+            {
+              id: 1,
+              expenseDate: "2025-03-10",
+              categoryName: "Rent",
+              description: "Shop rent",
+              amount: 50,
+              paymentMethod: "CASH",
+              referenceNumber: "RENT-1",
+              status: "ACTIVE",
+            },
+            {
+              id: 2,
+              expenseDate: "2025-03-11",
+              categoryName: "Rent",
+              description: "Voided bill",
+              amount: 90,
+              paymentMethod: "UPI",
+              referenceNumber: null,
+              status: "CANCELLED",
+            },
+          ],
+          totalRows: 2,
+        },
+      };
+      await exportFinancialReportExcel(report, settings);
+      assert.equal(downloadedFilename, "my-medical-expenses-2025-03-10-to-2025-03-12.xlsx");
+      assert.ok(downloadedBlob instanceof Blob);
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await downloadedBlob.arrayBuffer());
+      const summary = workbook.getWorksheet("Expense Summary");
+      const ledger = workbook.getWorksheet("Expense Ledger");
+      assert.ok(summary);
+      assert.ok(ledger);
+      const summaryValues = summary.getSheetValues().flat().filter(Boolean);
+      assert.ok(summaryValues.includes("Expense by category"));
+      assert.ok(summaryValues.includes("Expense by payment method"));
+      assert.ok(summaryValues.includes("Daily expense totals"));
+      assert.ok(summaryValues.includes("Monthly expense totals"));
+      assert.equal(ledger.getCell("G10").value, "ACTIVE");
+      assert.equal(ledger.getCell("G11").value, "CANCELLED");
+      assert.equal(ledger.getCell("D11").value, 90);
+
+      const financialReport = {
+        reportType: "financial_summary",
+        data: {
+          range,
+          grossSales: 1000,
+          salesReturns: 100,
+          netSales: 900,
+          grossPurchases: 500,
+          purchaseReturns: 20,
+          netPurchases: 480,
+          cogs: 450,
+          grossProfit: 450,
+          operatingExpenses: 75,
+          netProfit: 375,
+          customerOutstanding: 50,
+          supplierOutstanding: 30,
+          stockValuation: 1500,
+          stockQuantity: 20,
+          costUnavailableInvoices: 0,
+        },
+      };
+      await exportFinancialReportExcel(financialReport, settings);
+      assert.equal(
+        downloadedFilename,
+        "my-medical-financial_summary-2025-03-10-to-2025-03-12.xlsx",
+      );
+      const financialWorkbook = new ExcelJS.Workbook();
+      await financialWorkbook.xlsx.load(await downloadedBlob.arrayBuffer());
+      const financialSheet = financialWorkbook.getWorksheet("Financial Summary");
+      assert.ok(financialSheet);
+      assert.equal(financialSheet.getCell("A18").value, "Operating expenses");
+      assert.equal(financialSheet.getCell("B18").value, 75);
+      assert.equal(financialSheet.getCell("A19").value, "Net profit");
+      assert.equal(financialSheet.getCell("B19").value, 375);
+    } finally {
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else delete globalThis.window;
+      if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+      else delete globalThis.document;
+      if (originalCreateObjectURL) Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+      else delete URL.createObjectURL;
+      if (originalRevokeObjectURL) Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+      else delete URL.revokeObjectURL;
+    }
   });
 });
