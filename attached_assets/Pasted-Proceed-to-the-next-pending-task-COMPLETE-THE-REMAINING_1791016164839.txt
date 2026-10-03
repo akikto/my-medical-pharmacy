@@ -1,0 +1,117 @@
+Proceed to the next pending task: COMPLETE THE REMAINING CHECKOUT/POS WORK.
+
+IMPORTANT:
+- Do NOT commit.
+- Do NOT push.
+- Do NOT publish.
+- Do NOT change Home/dashboard.
+- Do NOT redesign unrelated screens.
+- Preserve all completed Inventory, Medicine, Batch, Supplier and Purchase work.
+- Preserve all Phase 1 GST, Customer, Credit/Due and UPI behavior.
+- Use isolated QA data for testing.
+- Do not modify existing pharmacy data.
+
+First inspect the current POS/Checkout implementation and identify exactly which requested Checkout/POS items are still missing from the original Phase 2 requirements.
+
+Prioritize only the remaining POS-related items, including where applicable:
+
+1. Barcode billing integration
+2. Medicine/customer smart suggestions
+3. GST display and editable POS GST behavior
+4. Credit/Due customer flow
+5. UPI payment + transaction reference
+6. Cash/change calculation
+7. Receipt/invoice data
+8. Quick Amount Bill, if not already implemented
+9. Any remaining checkout usability requirements from the original Phase 2 scope
+
+Do NOT implement unrelated future features such as:
+- Bluetooth printer
+- Camera barcode scanner
+- Prescription reader
+- SMS/WhatsApp sharing
+- Sales return
+- Purchase return
+- P&L
+- Roles
+unless the current implementation explicitly requires a small foundation for the checkout work.
+
+For each missing POS feature:
+- implement it using the existing architecture
+- preserve existing behavior
+- use typed native Tauri commands
+- no arbitrary renderer SQL
+- use transactional writes for financial/stock operations
+- preserve FEFO enforcement
+- preserve historical GST snapshots
+- do not silently modify existing invoices
+
+TEST REQUIREMENTS
+
+Create/update isolated tests for:
+- barcode → medicine → FEFO batch
+- quantity
+- price
+- discount
+- GST-inclusive pricing
+- GST-exclusive pricing
+- medicine GST precedence
+- POS GST override
+- customer selection
+- credit sale
+- due creation
+- cash payment/change
+- UPI payment/reference
+- UPI remains explicitly unverified
+- checkout validation
+- invalid quantity/price
+- empty cart
+- historical invoice preservation
+
+VISUAL QA:
+Check:
+- 1366x768
+- 1440x900
+- 1920x1080
+
+Check:
+- no horizontal overflow
+- no clipped checkout controls
+- cart remains usable
+- GST summary readable
+- payment controls readable
+- customer/due information readable
+- dialogs fit
+- Tab / Shift+Tab
+- Escape
+- Enter
+- F2 medicine search
+- F9 checkout
+
+IMPORTANT NATIVE QA NOTE:
+The current Linux container cannot render Tauri WebKitGTK because the environment reports EGL_BAD_PARAMETER and lacks /dev/dri. Do NOT make speculative rendering fixes for this environment. Chromium QA may be used for frontend layout verification, but do not claim native Tauri visual PASS from this container.
+
+Run:
+- pnpm test
+- pnpm run typecheck
+- pnpm run build
+- cargo test --manifest-path src-tauri/Cargo.toml
+- pnpm exec tauri build --bundles deb
+- git diff --check
+
+Do not run broad cargo formatting.
+
+FINAL REPORT:
+- list every remaining POS item found
+- mark each PASS / IMPLEMENTED / NOT APPLICABLE / BLOCKED
+- exact files changed
+- renderer test count
+- Rust test count
+- build results
+- visual QA results
+- any known limitations
+- confirm Home unchanged
+- confirm existing pharmacy data unchanged
+- confirm no commit
+- confirm no push
+- confirm no publish
