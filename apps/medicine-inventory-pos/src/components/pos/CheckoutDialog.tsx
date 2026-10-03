@@ -10,6 +10,7 @@ import { createUpiPaymentLink } from "../../utils/upi";
 
 interface CheckoutDialogProps {
   customerId: number | null;
+  customerBalanceDue: number | null;
   customerStateCode: string | null;
   customerName: string;
   customerPhone: string;
@@ -49,6 +50,7 @@ const paymentModes: Array<{ value: PaymentMode; label: string }> = [
 
 export function CheckoutDialog({
   customerId,
+  customerBalanceDue,
   customerStateCode,
   customerName,
   customerPhone,
@@ -247,6 +249,16 @@ export function CheckoutDialog({
             </label>
           </div>
 
+          {customerId !== null && (
+            <div
+              className="customer-balance-summary"
+              data-testid="text-existing-customer-balance"
+            >
+              <span>Existing balance due</span>
+              <strong>{formatMoney(customerBalanceDue ?? 0)}</strong>
+            </div>
+          )}
+
           <fieldset className="payment-fieldset">
             <legend>Payment method</legend>
             <div className="payment-mode-options">
@@ -268,6 +280,11 @@ export function CheckoutDialog({
 
           {paymentMode === "UPI" ? (
             <div className="checkout-upi-fields">
+              <div className="checkout-upi-identity" data-testid="text-configured-upi-id">
+                <span>Pay to</span>
+                <strong>{upiDisplayName || "Pharmacy UPI"}</strong>
+                <code>{upiId || "No UPI ID configured"}</code>
+              </div>
               {upiLink ? (
                 <button
                   className="button button-secondary"

@@ -33,6 +33,7 @@ interface MedicineSearchRow {
   gst_rate_basis_points: number | null;
   created_at: string;
   available_stock: number;
+  exact_barcode_match: boolean;
   batch_id: EntityId | null;
   batch_medicine_id: EntityId | null;
   batch_no: string | null;
@@ -518,6 +519,7 @@ export async function searchMedicines(
       created_at: row.created_at,
     },
     available_stock: row.available_stock,
+    exact_barcode_match: Boolean(row.exact_barcode_match),
     fefo_batch: toMedicineBatch(row),
   }));
 }

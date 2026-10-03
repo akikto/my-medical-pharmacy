@@ -54,6 +54,11 @@ const {
   getWeekRange,
 } = require("../src/components/dashboard/weeklySalesModel.ts");
 const {
+  normalizeBarcode,
+  parseSalePriceDraft,
+  resolveBarcodeLookup,
+} = require("../src/components/pos/posBillingModel.ts");
+const {
   buildBarcodeLabelSources,
   parseBarcodeLabelQuantity,
   maximumBarcodeLabelQuantity,
@@ -193,7 +198,12 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       results.map((row) => [row.medicine.id, row.available_stock, row.fefo_batch?.id ?? null]),
       [[1, 10, 2], [2, 0, null]],
     );
-    assert.deepEqual(Object.keys(results[0]), ["medicine", "available_stock", "fefo_batch"]);
+    assert.deepEqual(Object.keys(results[0]), [
+      "medicine",
+      "available_stock",
+      "exact_barcode_match",
+      "fefo_batch",
+    ]);
     assert.deepEqual(Object.keys(results[0].medicine), [
       "id",
       "name",
@@ -228,7 +238,7 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     await assert.rejects(searchMedicines("Alpha", 0), /Search limit must be between 1 and 100/);
   });
 
-  it("prioritizes exact barcode matches and exact-barcode batches", async () => {
+  it("resolves exact barcodes to medicines while keeping search batches FEFO", async () => {
     fixture.insertMedicine({ id: 1, name: "Zeta" });
     fixture.insertMedicine({ id: 2, name: "Alpha" });
     fixture.insertBatch({
@@ -259,9 +269,70 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     const matches = await searchMedicines("SCAN-123");
     assert.deepEqual(
       matches.map((row) => [row.medicine.name, row.fefo_batch?.id]),
-      [["Zeta", 2], ["Alpha", 3]],
+      [["Zeta", 1], ["Alpha", 3]],
+    );
+    assert.equal(matches[0].exact_barcode_match, true);
+    assert.equal(matches[1].exact_barcode_match, false);
+    assert.deepEqual(
+      (await getSellableBatches(matches[0].medicine.id)).map((batch) => batch.id),
+      [1, 2],
+    );
+    assert.equal(
+      resolveBarcodeLookup(matches, " scan-123 ").kind,
+      "match",
     );
     assert.deepEqual(await searchMedicines("ABSENT-CODE"), []);
+  });
+
+  it("searches saved product identifiers and surfaces exact duplicate barcodes for explicit choice", async () => {
+    fixture.insertMedicine({
+      id: 1,
+      name: "Cough relief",
+      company: "Northstar",
+      productType: "Syrup",
+      strength: "100 mg / 5 ml",
+      composition: "dextromethorphan",
+      barcode: "DUP-100",
+    });
+    fixture.insertMedicine({
+      id: 2,
+      name: "Cold tablets",
+      company: "Harbor Labs",
+      productType: "Tablet",
+      strength: "10 mg",
+      composition: "cetirizine",
+    });
+    fixture.insertBatch({ id: 1, medicineId: 1, currentStock: 3 });
+    fixture.insertBatch({
+      id: 2,
+      medicineId: 2,
+      currentStock: 4,
+      barcode: "DUP-100",
+    });
+
+    assert.equal((await searchMedicines("Northstar"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("Syrup"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("100 mg / 5 ml"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("dextromethorphan"))[0].medicine.id, 1);
+
+    const exactMatches = await searchMedicines("dup-100");
+    const resolution = resolveBarcodeLookup(exactMatches, " dup-100 ");
+    assert.equal(normalizeBarcode(" dup-100 "), "DUP-100");
+    assert.equal(resolution.kind, "ambiguous");
+    if (resolution.kind === "ambiguous") {
+      assert.deepEqual(
+        resolution.matches.map((match) => match.medicine.id).sort(),
+        [1, 2],
+      );
+    }
+  });
+
+  it("validates invoice-only sale-price drafts to cents precision", () => {
+    assert.equal(parseSalePriceDraft(" 14.2 "), 14.2);
+    assert.equal(parseSalePriceDraft("0"), 0);
+    assert.equal(parseSalePriceDraft("14.239"), null);
+    assert.equal(parseSalePriceDraft(""), null);
+    assert.equal(parseSalePriceDraft("₹14"), null);
   });
 
   it("orders batches and allocates sellable stock by FEFO, including empty and insufficient cases", async () => {

@@ -45,6 +45,11 @@ import { calculateGstInvoiceTotals, type GstPricingMode } from "../../utils/gst"
 import { formatDate, formatDateTime, formatMoney, fromCents, toCents } from "../../utils/money";
 import { CheckoutDialog } from "./CheckoutDialog";
 import { ReceiptPrint } from "./ReceiptPrint";
+import {
+  normalizeBarcode,
+  parseSalePriceDraft,
+  resolveBarcodeLookup,
+} from "./posBillingModel";
 import "./gst.css";
 
 type Notice = { kind: "success" | "error" | "info"; message: string };
@@ -85,6 +90,12 @@ export function POSBilling({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedResultIndex, setSelectedResultIndex] = useState(0);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [salePriceDrafts, setSalePriceDrafts] = useState<Record<number, string>>({});
+  const [barcodeResolution, setBarcodeResolution] = useState<{
+    code: string;
+    matches: MedicineSearchResult[];
+  } | null>(null);
+  const [barcodeSelectionArmed, setBarcodeSelectionArmed] = useState(false);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [gstPricingMode, setGstPricingMode] = useState<GstPricingMode>("EXCLUSIVE");
@@ -95,6 +106,7 @@ export function POSBilling({
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [customerStateCode, setCustomerStateCode] = useState<string | null>(null);
+  const [customerBalanceDue, setCustomerBalanceDue] = useState<number | null>(null);
   const [upiTransactionId, setUpiTransactionId] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -169,6 +181,7 @@ export function POSBilling({
       itemCount: cart.reduce((total, item) => total + item.quantity, 0),
     };
   }, [cart, cashTenderedInput, gstTotals, paymentMode]);
+  const visibleSearchResults = barcodeResolution?.matches ?? searchResults;
 
   useEffect(() => {
     let cancelled = false;
@@ -275,27 +288,23 @@ export function POSBilling({
   }, [flatDiscountInput, totals.maxFlatDiscount]);
 
   const addMedicine = useCallback(
-    (result: MedicineSearchResult, exactBatchId?: number) => {
+    (result: MedicineSearchResult) => {
       const task = addQueueRef.current.then(async () => {
         try {
           const batches = await getSellableBatches(result.medicine.id);
           const currentCart = cartRef.current;
-          const batch = exactBatchId
-            ? batches.find((candidate) => candidate.id === exactBatchId)
-            : batches.find((candidate) => {
-                const existing = currentCart.find(
-                  (item) => item.batch_id === candidate.id,
-                );
-                return (existing?.quantity ?? 0) < candidate.current_stock;
-              });
+          const batch = batches.find((candidate) => {
+            const existing = currentCart.find(
+              (item) => item.batch_id === candidate.id,
+            );
+            return (existing?.quantity ?? 0) < candidate.current_stock;
+          });
 
           if (!batch) {
             throw new Error(
-              exactBatchId
-                ? "That scanned batch is expired or out of stock."
-                : batches.length === 0
-                  ? "No unexpired stock is available for this medicine."
-                  : "The available batch quantity is already in the cart.",
+              batches.length === 0
+                ? "No unexpired stock is available for this medicine."
+                : "The available batch quantity is already in the cart.",
             );
           }
 
@@ -334,6 +343,8 @@ export function POSBilling({
                 },
               ];
           replaceCart(() => next);
+          setBarcodeResolution(null);
+          setBarcodeSelectionArmed(false);
           setSearchQuery("");
           setSearchResults([]);
           setNotice({
@@ -356,25 +367,31 @@ export function POSBilling({
 
   const addScannedBarcode = useCallback(
     async (barcode: string) => {
-      const code = barcode.trim().toUpperCase();
+      const code = normalizeBarcode(barcode);
       if (!code) {
         return;
       }
       try {
-        const matches = await searchMedicines(code, 15);
-        const exactBatch = matches.find(
-          (result) => result.fefo_batch?.barcode?.trim().toUpperCase() === code,
-        );
-        const exactMedicine = matches.find(
-          (result) => result.medicine.barcode?.trim().toUpperCase() === code,
-        );
-        const exact = exactBatch ?? exactMedicine;
-        if (!exact?.fefo_batch) {
+        const matches = await searchMedicines(code, 100);
+        const lookup = resolveBarcodeLookup(matches, code);
+        if (lookup.kind === "not-found") {
           throw new Error(`No available stock matches barcode ${code}.`);
         }
-        await addMedicine(exact, exact.fefo_batch.id);
+        if (lookup.kind === "ambiguous") {
+          setSearchQuery(code);
+          setBarcodeResolution({ code, matches: lookup.matches });
+          setBarcodeSelectionArmed(false);
+          setSelectedResultIndex(0);
+          setNotice({
+            kind: "info",
+            message: `Barcode ${code} matches multiple medicines. Choose the correct medicine; stock will be allocated by FEFO.`,
+          });
+          return;
+        }
+        await addMedicine(lookup.result);
       } catch (error) {
         setNotice({ kind: "error", message: getErrorMessage(error) });
+        setBarcodeResolution(null);
         setSearchQuery("");
       }
     },
@@ -437,6 +454,33 @@ export function POSBilling({
   }, [addScannedBarcode, checkoutOpen, receiptSale]);
 
   const openCheckout = useCallback(() => {
+    const invalidPriceItem = cartRef.current.find((item) => {
+      const draft = salePriceDrafts[item.batch_id];
+      if (draft === undefined) {
+        return false;
+      }
+      const price = parseSalePriceDraft(draft);
+      if (price === null) {
+        return true;
+      }
+      const lineGrossCents = toCents(price) * item.quantity;
+      return (
+        !Number.isSafeInteger(lineGrossCents) ||
+        lineGrossCents < toCents(item.item_discount)
+      );
+    });
+    if (invalidPriceItem) {
+      setNotice({
+        kind: "error",
+        message: "Fix the sale price before opening checkout.",
+      });
+      document
+        .querySelector<HTMLInputElement>(
+          `[data-testid="input-sale-price-${invalidPriceItem.batch_id}"]`,
+        )
+        ?.focus();
+      return;
+    }
     if (cartRef.current.length === 0) {
       setNotice({ kind: "info", message: "Add a medicine before opening checkout." });
       searchInputRef.current?.focus();
@@ -478,6 +522,7 @@ export function POSBilling({
     paymentMode,
     settings,
     settingsError,
+    salePriceDrafts,
     totals.grandTotal,
     totals.missingGstRate,
   ]);
@@ -506,6 +551,8 @@ export function POSBilling({
           event.preventDefault();
           setSearchQuery("");
           setSearchResults([]);
+          setBarcodeResolution(null);
+          setBarcodeSelectionArmed(false);
           setSearchError(null);
           searchInputRef.current?.focus();
         }
@@ -516,17 +563,31 @@ export function POSBilling({
   }, [checkoutOpen, openCheckout, receiptSale, searchQuery]);
 
   function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown" && searchResults.length > 0) {
+    const results = visibleSearchResults;
+    if (event.key === "ArrowDown" && results.length > 0) {
       event.preventDefault();
-      setSelectedResultIndex((current) => (current + 1) % searchResults.length);
-    } else if (event.key === "ArrowUp" && searchResults.length > 0) {
+      setSelectedResultIndex((current) => (current + 1) % results.length);
+      if (barcodeResolution) {
+        setBarcodeSelectionArmed(true);
+      }
+    } else if (event.key === "ArrowUp" && results.length > 0) {
       event.preventDefault();
       setSelectedResultIndex(
-        (current) => (current - 1 + searchResults.length) % searchResults.length,
+        (current) => (current - 1 + results.length) % results.length,
       );
-    } else if (event.key === "Enter" && searchResults[selectedResultIndex]) {
+      if (barcodeResolution) {
+        setBarcodeSelectionArmed(true);
+      }
+    } else if (event.key === "Enter" && results[selectedResultIndex]) {
       event.preventDefault();
-      void addMedicine(searchResults[selectedResultIndex]);
+      if (barcodeResolution && !barcodeSelectionArmed) {
+        setNotice({
+          kind: "info",
+          message: "This barcode is ambiguous. Use the arrow keys to choose a medicine first.",
+        });
+        return;
+      }
+      void addMedicine(results[selectedResultIndex]);
     }
   }
 
@@ -557,6 +618,67 @@ export function POSBilling({
         };
       }),
     );
+  }
+
+  function changeSalePrice(batchId: number, salePrice: number): boolean {
+    const item = cartRef.current.find((entry) => entry.batch_id === batchId);
+    if (!item || !Number.isFinite(salePrice) || salePrice < 0) {
+      return false;
+    }
+    const salePriceCents = toCents(salePrice);
+    const lineGrossCents = salePriceCents * item.quantity;
+    if (
+      !Number.isSafeInteger(lineGrossCents) ||
+      toCents(item.item_discount) > lineGrossCents
+    ) {
+      return false;
+    }
+
+    replaceCart((current) =>
+      current.map((entry) => {
+        if (entry.batch_id !== batchId) {
+          return entry;
+        }
+        const updated = { ...entry, unit_price: fromCents(salePriceCents) };
+        return { ...updated, line_total: lineTotal(updated) };
+      }),
+    );
+    return true;
+  }
+
+  function changeSalePriceDraft(batchId: number, value: string) {
+    setSalePriceDrafts((current) => ({ ...current, [batchId]: value }));
+    const price = parseSalePriceDraft(value);
+    if (price !== null) {
+      changeSalePrice(batchId, price);
+    }
+  }
+
+  function commitSalePriceDraft(batchId: number) {
+    const item = cartRef.current.find((entry) => entry.batch_id === batchId);
+    if (!item) {
+      return;
+    }
+    const draft = salePriceDrafts[batchId] ?? item.unit_price.toFixed(2);
+    const price = parseSalePriceDraft(draft);
+    if (price === null || !changeSalePrice(batchId, price)) {
+      setNotice({
+        kind: "error",
+        message:
+          price === null
+            ? "Enter a non-negative sale price with up to two decimal places."
+            : "The sale price cannot be lower than the current item discount.",
+      });
+      setSalePriceDrafts((current) => ({
+        ...current,
+        [batchId]: item.unit_price.toFixed(2),
+      }));
+      return;
+    }
+    setSalePriceDrafts((current) => ({
+      ...current,
+      [batchId]: fromCents(toCents(price)).toFixed(2),
+    }));
   }
 
   function changeItemDiscount(batchId: number, discount: number) {
@@ -619,6 +741,11 @@ export function POSBilling({
   function removeFromCart(batchId: number) {
     const item = cartRef.current.find((entry) => entry.batch_id === batchId);
     replaceCart((current) => current.filter((entry) => entry.batch_id !== batchId));
+    setSalePriceDrafts((current) => {
+      const next = { ...current };
+      delete next[batchId];
+      return next;
+    });
     if (item) {
       setNotice({ kind: "info", message: `${item.medicine_name} removed from the bill.` });
     }
@@ -655,12 +782,14 @@ export function POSBilling({
       setReceiptSale(completed);
       setPrintReceiptOnOpen(true);
       replaceCart(() => []);
+      setSalePriceDrafts({});
       setFlatDiscountInput("0");
       setCashTenderedInput("0");
       setCustomerName("");
       setCustomerPhone("");
       setCustomerId(null);
       setCustomerStateCode(null);
+      setCustomerBalanceDue(null);
       setUpiTransactionId("");
       setPaymentMode("CASH");
       setGstPricingMode(settings?.gst_pricing_mode ?? "EXCLUSIVE");
@@ -673,12 +802,14 @@ export function POSBilling({
     } catch (error) {
       if (error instanceof SaleDetailsUnavailableError) {
         replaceCart(() => []);
+        setSalePriceDrafts({});
         setFlatDiscountInput("0");
         setCashTenderedInput("0");
         setCustomerName("");
         setCustomerPhone("");
         setCustomerId(null);
         setCustomerStateCode(null);
+        setCustomerBalanceDue(null);
         setUpiTransactionId("");
         setPaymentMode("CASH");
         setGstPricingMode(settings?.gst_pricing_mode ?? "EXCLUSIVE");
@@ -762,7 +893,7 @@ export function POSBilling({
               <div className="search-label-icon"><Barcode size={18} /></div>
               <div>
                 <strong>Find a medicine</strong>
-                <span>Name, generic name, or barcode</span>
+                  <span>Name, company, product details, or barcode</span>
               </div>
             </div>
             <div className="medicine-search-wrap">
@@ -771,10 +902,14 @@ export function POSBilling({
                 aria-autocomplete="list"
                 aria-controls="medicine-search-results"
                 aria-expanded={Boolean(searchQuery.trim())}
-                aria-label="Search medicines by name or barcode"
+                aria-label="Search medicines by name, company, product details, or barcode"
                 autoComplete="off"
                 data-testid="input-medicine-search"
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => {
+                  setBarcodeResolution(null);
+                  setBarcodeSelectionArmed(false);
+                  setSearchQuery(event.target.value);
+                }}
                 onKeyDown={handleSearchKeyDown}
                 placeholder="Scan barcode or type a medicine name…"
                 ref={searchInputRef}
@@ -789,6 +924,8 @@ export function POSBilling({
                   data-testid="button-clear-search"
                   onClick={() => {
                     setSearchQuery("");
+                    setBarcodeResolution(null);
+                    setBarcodeSelectionArmed(false);
                     searchInputRef.current?.focus();
                   }}
                   type="button"
@@ -803,20 +940,30 @@ export function POSBilling({
                   role="listbox"
                   data-testid="list-search-results"
                 >
-                  {searchLoading ? (
+                  {barcodeResolution && (
+                    <div
+                      className="barcode-resolution"
+                      data-testid="status-barcode-resolution"
+                      role="status"
+                    >
+                      Barcode {barcodeResolution.code} matches multiple medicines.
+                      Choose the correct item; its sellable stock will use FEFO.
+                    </div>
+                  )}
+                  {!barcodeResolution && searchLoading ? (
                     <div className="search-result-message">
                       <span className="small-spinner" /> Searching local inventory…
                     </div>
-                  ) : searchError ? (
+                  ) : !barcodeResolution && searchError ? (
                     <div className="search-result-message search-result-message--error">
                       <AlertCircle size={17} /> {searchError}
                     </div>
-                  ) : searchResults.length === 0 ? (
+                  ) : visibleSearchResults.length === 0 ? (
                     <div className="search-result-message">
                       No matching medicines found in local inventory.
                     </div>
                   ) : (
-                    searchResults.map((result, index) => {
+                    visibleSearchResults.map((result, index) => {
                       const batch = result.fefo_batch;
                       const isSelected = selectedResultIndex === index;
                       return (
@@ -826,7 +973,12 @@ export function POSBilling({
                           data-testid={`option-medicine-${result.medicine.id}`}
                           key={result.medicine.id}
                           onClick={() => void addMedicine(result)}
-                          onMouseEnter={() => setSelectedResultIndex(index)}
+                          onMouseEnter={() => {
+                            setSelectedResultIndex(index);
+                            if (barcodeResolution) {
+                              setBarcodeSelectionArmed(true);
+                            }
+                          }}
                           role="option"
                           type="button"
                         >
@@ -834,9 +986,16 @@ export function POSBilling({
                           <span className="result-main">
                             <strong>{result.medicine.name}</strong>
                             <span>
-                              {[result.medicine.generic_name, batch?.batch_no && `Batch ${batch.batch_no}`]
+                              {[
+                                result.medicine.generic_name,
+                                result.medicine.company,
+                                result.medicine.product_type,
+                                result.medicine.strength,
+                                result.medicine.composition,
+                                batch?.batch_no && `FEFO batch ${batch.batch_no}`,
+                              ]
                                 .filter(Boolean)
-                                .join(" · ") || "No generic name"}
+                                .join(" · ") || "No saved identifiers"}
                             </span>
                           </span>
                           <span className="result-stock">
@@ -850,10 +1009,13 @@ export function POSBilling({
                       );
                     })
                   )}
-                  {searchResults.length > 0 && (
+                  {visibleSearchResults.length > 0 && (
                     <div className="search-results-footer">
                       <span><kbd>↑</kbd><kbd>↓</kbd> to select</span>
-                      <span><kbd>Enter</kbd> to add</span>
+                      <span>
+                        <kbd>Enter</kbd>{" "}
+                        {barcodeResolution ? "to choose" : "to add"}
+                      </span>
                       <span><kbd>Esc</kbd> to clear</span>
                     </div>
                   )}
@@ -886,6 +1048,7 @@ export function POSBilling({
                   data-testid="button-clear-cart"
                   onClick={() => {
                     replaceCart(() => []);
+                    setSalePriceDrafts({});
                     setCashTenderedInput("0");
                     setNotice({ kind: "info", message: "Bill cleared." });
                   }}
@@ -920,7 +1083,7 @@ export function POSBilling({
                     <tr>
                       <th scope="col">Medicine</th>
                       <th scope="col">Batch / expiry</th>
-                      <th scope="col">Unit price</th>
+                      <th scope="col">Sale price</th>
                       <th scope="col">Quantity</th>
                       <th scope="col">Discount</th>
                       {gstEnabled && <th scope="col">GST rate</th>}
@@ -955,7 +1118,33 @@ export function POSBilling({
                               </span>
                             </div>
                           </td>
-                          <td className="table-money">{formatMoney(item.unit_price)}</td>
+                          <td>
+                            <label className="sale-price-input">
+                              <span aria-hidden="true">₹</span>
+                              <input
+                                aria-label={`${item.medicine_name} sale price for this bill`}
+                                data-testid={`input-sale-price-${item.batch_id}`}
+                                inputMode="decimal"
+                                maxLength={18}
+                                onBlur={() => commitSalePriceDraft(item.batch_id)}
+                                onChange={(event) =>
+                                  changeSalePriceDraft(item.batch_id, event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    event.currentTarget.blur();
+                                  }
+                                }}
+                                title="Changes this invoice only; batch pricing is unchanged."
+                                type="text"
+                                value={
+                                  salePriceDrafts[item.batch_id] ??
+                                  item.unit_price.toFixed(2)
+                                }
+                              />
+                            </label>
+                          </td>
                           <td>
                             <div className="quantity-control">
                               <button
@@ -1377,6 +1566,7 @@ export function POSBilling({
           }
           cgstAmount={totals.cgst}
           customerId={customerId}
+          customerBalanceDue={customerBalanceDue}
           customerName={customerName}
           customerPhone={customerPhone}
           customerStateCode={customerStateCode}
@@ -1388,6 +1578,7 @@ export function POSBilling({
           onCustomerSelect={(customer: Customer | null) => {
             setCustomerId(customer?.id ?? null);
             setCustomerStateCode(customer?.state_code ?? null);
+            setCustomerBalanceDue(customer?.balance_due ?? null);
             if (customer) {
               setCustomerName(customer.name);
               setCustomerPhone(customer.phone ?? "");

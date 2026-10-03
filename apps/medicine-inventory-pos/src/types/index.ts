@@ -302,6 +302,7 @@ export interface FefoAllocation {
 export interface MedicineSearchResult {
   medicine: Medicine;
   available_stock: number;
+  exact_barcode_match: boolean;
   fefo_batch: MedicineBatch | null;
 }
 
