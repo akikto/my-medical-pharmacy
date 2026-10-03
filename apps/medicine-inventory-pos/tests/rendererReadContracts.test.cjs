@@ -42,6 +42,7 @@ const { getSuppliers } = require("../src/services/supplierService.ts");
 const { getStoreSettings } = require("../src/services/settingsService.ts");
 const { getRecentPurchases } = require("../src/services/purchaseService.ts");
 const { getRecentSales, getSaleDetails } = require("../src/services/salesService.ts");
+const { calculateOrderSuggestion } = require("../src/services/orderSuggestion.ts");
 const { getDashboardSnapshot } = require("../src/services/dashboardService.ts");
 const {
   getSalesReport,
@@ -52,6 +53,16 @@ const {
   formatCompactMoney,
   getWeekRange,
 } = require("../src/components/dashboard/weeklySalesModel.ts");
+const {
+  buildBarcodeLabelSources,
+  parseBarcodeLabelQuantity,
+  maximumBarcodeLabelQuantity,
+} = require("../src/services/barcodeLabelService.ts");
+const {
+  buildStockWorkbookBuffer,
+  filterStockExportRows,
+} = require("../src/services/inventoryWorkbookService.ts");
+const ExcelJS = require("exceljs");
 let fixture;
 
 beforeEach(() => {
@@ -99,8 +110,17 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       name: "Alpha",
       genericName: "Amoxicillin",
       company: "North Labs",
+      productType: "Capsule",
+      strength: "500 mg",
+      composition: "Amoxicillin trihydrate",
+      barcode: "0123456789012",
+      uses: "Testing medicine metadata",
+      adultDose: "One capsule",
+      childDose: "Ask a clinician",
+      photoRef: "medicine-1.jpg",
       rackLocation: "Rack-East",
       minStockAlert: 4,
+      gstRateBasisPoints: 1800,
     });
     fixture.insertMedicine({ id: 2, name: "alpha", minStockAlert: 1 });
     fixture.insertMedicine({ id: 3, name: "Beta" });
@@ -179,11 +199,27 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       "name",
       "generic_name",
       "company",
+      "product_type",
+      "strength",
+      "composition",
+      "barcode",
+      "uses",
+      "adult_dose",
+      "child_dose",
+      "photo_ref",
       "rack_location",
       "min_stock_alert",
       "gst_rate_basis_points",
       "created_at",
     ]);
+    assert.equal(results[0].medicine.product_type, "Capsule");
+    assert.equal(results[0].medicine.barcode, "0123456789012");
+    assert.equal(results[0].medicine.gst_rate_basis_points, 1800);
+    const masterBarcodeMatch = await searchMedicines("0123456789012");
+    assert.deepEqual(
+      masterBarcodeMatch.map((row) => [row.medicine.id, row.fefo_batch?.id ?? null]),
+      [[1, 2]],
+    );
     assert.deepEqual(await searchMedicines("no such medicine"), []);
     assert.deepEqual(
       (await searchMedicines("Alpha", 1)).map((row) => row.medicine.id),
@@ -877,5 +913,246 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       () => invokeRead("execute_sql_transaction", { query: "UPDATE medicines" }),
       /Unsupported typed native read command/,
     );
+  });
+});
+
+describe("inventory order quantity suggestions", () => {
+  it("uses the reorder floor when sales history is insufficient and excludes expired stock", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 0,
+        reorderLevel: 5,
+        soldUnits30Days: 0,
+        salesDays30Days: 0,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 10,
+        suggestedAdditionalQuantity: 10,
+        limitedSalesHistory: true,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("subtracts pending orders from a target based on recent usage", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 2,
+        reorderLevel: 5,
+        soldUnits30Days: 15,
+        salesDays30Days: 9,
+        pendingOrderQuantity: 4,
+      }),
+      {
+        targetStock: 15,
+        suggestedAdditionalQuantity: 9,
+        limitedSalesHistory: false,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("suggests nothing when sellable stock already meets the target", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 20,
+        reorderLevel: 5,
+        soldUnits30Days: 8,
+        salesDays30Days: 10,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 10,
+        suggestedAdditionalQuantity: 0,
+        limitedSalesHistory: false,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("caps suggestions at the order-list limit and rejects invalid stock values", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 0,
+        reorderLevel: 1_000_000_000,
+        soldUnits30Days: 0,
+        salesDays30Days: 0,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 2_000_000_000,
+        suggestedAdditionalQuantity: 1_000_000_000,
+        limitedSalesHistory: true,
+        suggestionCapped: true,
+      },
+    );
+    assert.throws(
+      () =>
+        calculateOrderSuggestion({
+          sellableStock: -1,
+          reorderLevel: 1,
+          soldUnits30Days: 0,
+          salesDays30Days: 0,
+          pendingOrderQuantity: 0,
+        }),
+      /Sellable stock must be a non-negative whole number/,
+    );
+  });
+});
+
+describe("barcode label preparation", () => {
+  it("uses saved batch barcodes first and the saved medicine barcode as fallback", () => {
+    const medicine = {
+      id: 1,
+      name: "Test medicine",
+      barcode: "MASTER-123",
+      strength: "250 mg",
+      product_type: "Capsule",
+    };
+    const sources = buildBarcodeLabelSources(
+      [medicine, { ...medicine, id: 2, name: "No barcode", barcode: null }],
+      [[
+        {
+          id: 10,
+          medicine_id: 1,
+          batch_no: "BATCH-A",
+          barcode: "BATCH-10",
+          expiry_date: "2027-01-01",
+          purchase_rate: 2,
+          mrp: 3,
+          sale_rate: 2.5,
+          current_stock: 4,
+        },
+        {
+          id: 11,
+          medicine_id: 1,
+          batch_no: "BATCH-B",
+          barcode: null,
+          expiry_date: "2027-06-01",
+          purchase_rate: 2,
+          mrp: 3,
+          sale_rate: 2.5,
+          current_stock: 4,
+        },
+      ], []],
+    );
+
+    assert.deepEqual(
+      sources.map((source) => [source.key, source.barcode, source.batch?.batch_no ?? null]),
+      [
+        ["batch-1-10", "BATCH-10", "BATCH-A"],
+        ["batch-1-11", "MASTER-123", "BATCH-B"],
+        ["medicine-2", null, null],
+      ],
+    );
+  });
+
+  it("validates a bounded whole-number label quantity", () => {
+    assert.equal(maximumBarcodeLabelQuantity, 500);
+    assert.equal(parseBarcodeLabelQuantity("1"), 1);
+    assert.equal(parseBarcodeLabelQuantity("500"), 500);
+    assert.equal(parseBarcodeLabelQuantity(""), null);
+    assert.equal(parseBarcodeLabelQuantity("0"), null);
+    assert.equal(parseBarcodeLabelQuantity("1.5"), null);
+    assert.equal(parseBarcodeLabelQuantity("501"), null);
+  });
+});
+
+describe("stock export workbook", () => {
+  const makeMedicine = (id, name = `Medicine ${id}`) => ({
+    id,
+    name,
+    generic_name: null,
+    company: "Example Company",
+    product_type: "Tablet",
+    strength: "250 mg",
+    composition: null,
+    barcode: `MED-${id}`,
+    uses: null,
+    adult_dose: null,
+    child_dose: null,
+    photo_ref: null,
+    rack_location: "A-01",
+    min_stock_alert: 5,
+    gst_rate_basis_points: 500,
+    created_at: "2026-01-01",
+    available_stock: 12,
+    expired_stock: 0,
+    near_expiry_stock: 0,
+    batch_count: 1,
+  });
+
+  const makeBatch = (id, medicineId, expiryDate) => ({
+    id,
+    medicine_id: medicineId,
+    batch_no: `BATCH-${id}`,
+    expiry_date: expiryDate,
+    purchase_rate: 10.5,
+    mrp: 15,
+    sale_rate: 13,
+    current_stock: 12,
+    barcode: `LOT-${id}`,
+  });
+
+  it("filters expired and near-expiry batches at inclusive date boundaries", () => {
+    const rows = [
+      { medicine: makeMedicine(1), batch: makeBatch(1, 1, "2026-10-02") },
+      { medicine: makeMedicine(2), batch: makeBatch(2, 2, "2026-10-03") },
+      { medicine: makeMedicine(3), batch: makeBatch(3, 3, "2026-11-02") },
+      { medicine: makeMedicine(4), batch: makeBatch(4, 4, "2026-11-03") },
+      { medicine: makeMedicine(5), batch: null },
+    ];
+    const today = new Date(2026, 9, 3);
+
+    assert.deepEqual(
+      filterStockExportRows(rows, "expired", today).map(({ batch }) => batch.batch_no),
+      ["BATCH-1"],
+    );
+    assert.deepEqual(
+      filterStockExportRows(rows, "near-expiry", today).map(({ batch }) => batch.batch_no),
+      ["BATCH-2", "BATCH-3"],
+    );
+    assert.equal(filterStockExportRows(rows, "all", today).length, rows.length);
+  });
+
+  it("preserves data and exports numeric cells and long medicine names", async () => {
+    const longName = "Very long medicine name ".repeat(5);
+    const rows = [
+      {
+        medicine: makeMedicine(1, longName),
+        batch: makeBatch(1, 1, "2027-03-01"),
+      },
+    ];
+    const before = structuredClone(rows);
+    const buffer = await buildStockWorkbookBuffer(rows);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const sheet = workbook.getWorksheet("Stock");
+
+    assert.deepEqual(rows, before);
+    assert.equal(sheet.getCell("A2").value, longName);
+    assert.equal(sheet.getCell("D2").value, "LOT-1");
+    assert.equal(sheet.getCell("G2").value, 12);
+    assert.equal(typeof sheet.getCell("G2").value, "number");
+    assert.equal(sheet.getCell("I2").value, 15);
+    assert.equal(sheet.getCell("M2").value, "Healthy");
+  });
+
+  it("creates a valid header-only workbook for empty exports and handles many rows", async () => {
+    const emptyWorkbook = new ExcelJS.Workbook();
+    await emptyWorkbook.xlsx.load(await buildStockWorkbookBuffer([]));
+    const emptySheet = emptyWorkbook.getWorksheet("Stock");
+    assert.equal(emptySheet.rowCount, 1);
+    assert.equal(emptySheet.getCell("A1").value, "Medicine");
+    assert.equal(emptySheet.getCell("M1").value, "Stock Status");
+
+    const rows = Array.from({ length: 300 }, (_, index) => ({
+      medicine: makeMedicine(index + 1),
+      batch: makeBatch(index + 1, index + 1, "2027-03-01"),
+    }));
+    const manyWorkbook = new ExcelJS.Workbook();
+    await manyWorkbook.xlsx.load(await buildStockWorkbookBuffer(rows));
+    assert.equal(manyWorkbook.getWorksheet("Stock").rowCount, 301);
   });
 });

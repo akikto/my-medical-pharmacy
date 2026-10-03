@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { StoreSettings } from "../types";
+import type { ImportedMedicineRecord, StoreSettings } from "../types";
 
 export type PharmacyMutation =
   | {
@@ -7,6 +7,14 @@ export type PharmacyMutation =
       name: string;
       generic_name: string | null;
       company: string | null;
+      product_type: string | null;
+      strength: string | null;
+      composition: string | null;
+      barcode: string | null;
+      uses: string | null;
+      adult_dose: string | null;
+      child_dose: string | null;
+      photo_ref: string | null;
       rack_location: string | null;
       min_stock_alert: number;
       gst_rate_basis_points: number | null;
@@ -17,6 +25,14 @@ export type PharmacyMutation =
       name: string;
       generic_name: string | null;
       company: string | null;
+      product_type: string | null;
+      strength: string | null;
+      composition: string | null;
+      barcode: string | null;
+      uses: string | null;
+      adult_dose: string | null;
+      child_dose: string | null;
+      photo_ref: string | null;
       rack_location: string | null;
       min_stock_alert: number;
       gst_rate_basis_points: number | null;
@@ -36,6 +52,23 @@ export type PharmacyMutation =
       medicine_id: number;
       quantity_change: number;
       reason: string;
+    }
+  | {
+      kind: "adjust_batch_stock_bulk";
+      adjustments: Array<{
+        batch_id: number;
+        medicine_id: number;
+        quantity_change: number;
+      }>;
+      reason: string;
+    }
+  | {
+      kind: "update_bulk_reorder_thresholds";
+      updates: Array<{ medicine_id: number; min_stock_alert: number }>;
+    }
+  | {
+      kind: "import_medicines";
+      records: ImportedMedicineRecord[];
     }
   | {
       kind: "deduct_stock";

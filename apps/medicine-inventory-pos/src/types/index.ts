@@ -7,6 +7,14 @@ export interface Medicine {
   name: string;
   generic_name: string | null;
   company: string | null;
+  product_type: string | null;
+  strength: string | null;
+  composition: string | null;
+  barcode: string | null;
+  uses: string | null;
+  adult_dose: string | null;
+  child_dose: string | null;
+  photo_ref: string | null;
   rack_location: string | null;
   min_stock_alert: number;
   gst_rate_basis_points: number | null;
@@ -26,6 +34,16 @@ export interface MedicineFormValues {
   name: string;
   generic_name: string;
   company: string;
+  product_type: string;
+  strength: string;
+  composition: string;
+  barcode: string;
+  uses: string;
+  adult_dose: string;
+  child_dose: string;
+  photo_ref: string | null;
+  photo_upload_bytes?: number[] | null;
+  photo_remove?: boolean;
   rack_location: string;
   min_stock_alert: number;
   gst_rate_basis_points: number | null;
@@ -41,6 +59,37 @@ export interface MedicineBatch {
   sale_rate: number;
   current_stock: number;
   barcode: string | null;
+}
+
+export interface ImportedMedicineRecord {
+  medicine_id: number | null;
+  name: string;
+  generic_name: string | null;
+  company: string | null;
+  product_type: string | null;
+  strength: string | null;
+  composition: string | null;
+  barcode: string | null;
+  uses: string | null;
+  adult_dose: string | null;
+  child_dose: string | null;
+  rack_location: string | null;
+  min_stock_alert: number | null;
+  gst_rate_basis_points: number | null;
+  opening_batch: {
+    batch_no: string;
+    expiry_date: string;
+    purchase_rate_cents: number;
+    mrp_cents: number;
+    sale_rate_cents: number;
+    opening_stock: number;
+  } | null;
+}
+
+export interface MedicineOrderUsage {
+  medicine_id: EntityId;
+  sold_units_30_days: number;
+  sales_days_30_days: number;
 }
 
 export interface Supplier {
