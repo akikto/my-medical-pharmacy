@@ -195,7 +195,7 @@ export default function App() {
         ) : activeSection === "settings" ? (
           <StoreSettings
             onDatabaseRestored={() => {
-              window.setTimeout(() => window.location.reload(), 500);
+              window.setTimeout(() => window.location.reload(), 1500);
             }}
           />
         ) : (

@@ -170,17 +170,26 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
     setBackupAction("restore");
     setNotice(null);
     try {
-      await restoreDatabaseBackup(source);
+      const result = await restoreDatabaseBackup(source);
       setRestorePath(null);
+      onDatabaseRestored();
+      setNotice({
+        kind: "success",
+        message: `Database restored. Safety copy saved at ${result.safetyBackupPath}. The app is refreshing its data.`,
+      });
     } catch (error) {
-      setNotice({ kind: "error", message: getError(error, "The database could not be restored. The existing data remains unchanged.") });
+      setNotice({
+        kind: "error",
+        message: getError(
+          error,
+          "The database restore failed. Review the error and safety-backup status before retrying.",
+        ),
+      });
       setBackupAction(null);
       return;
     } finally {
       setBackupAction(null);
     }
-    onDatabaseRestored();
-    setNotice({ kind: "success", message: "Database restored successfully. Pharmacy records have been refreshed." });
   }
 
   return (
@@ -362,7 +371,7 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
                 <span className="settings-save-state" data-testid="status-settings-dirty">
                   {isDirty ? "Unsaved changes" : "All changes saved"}
                 </span>
-                <button className="button button-primary" data-testid="button-save-settings" disabled={!isDirty || isSaving} type="submit">
+                <button className="button button-primary" data-testid="button-save-settings" disabled={!isDirty || isSaving || backupAction !== null || restorePath !== null} type="submit">
                   {isSaving ? <LoaderCircle className="settings-button-spin" size={15} /> : <Save size={15} />}
                   {isSaving ? "Saving details…" : "Save details"}
                 </button>
@@ -382,11 +391,11 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
               <span><strong>Private and local</strong><small>Your sales, stock, and settings stay on this device unless you choose a destination.</small></span>
             </div>
             <div className="backup-actions">
-              <button className="button button-primary settings-backup-button" data-testid="button-create-backup" disabled={backupAction !== null} onClick={() => void handleBackup()} type="button">
+              <button className="button button-primary settings-backup-button" data-testid="button-create-backup" disabled={backupAction !== null || restorePath !== null} onClick={() => void handleBackup()} type="button">
                 {backupAction === "backup" ? <LoaderCircle className="settings-button-spin" size={15} /> : <ArrowDownToLine size={15} />}
                 {backupAction === "backup" ? "Creating backup…" : "Create backup"}
               </button>
-              <button className="button button-secondary settings-restore-button" data-testid="button-select-restore" disabled={backupAction !== null} onClick={() => void beginRestore()} type="button">
+              <button className="button button-secondary settings-restore-button" data-testid="button-select-restore" disabled={backupAction !== null || restorePath !== null} onClick={() => void beginRestore()} type="button">
                 {backupAction === "restore" ? <LoaderCircle className="settings-button-spin" size={15} /> : <RotateCcw size={15} />}
                 Restore from backup
               </button>
@@ -417,7 +426,7 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
               <button
                 className="button button-secondary dev-demo-button"
                 data-testid="button-seed-dev-demo"
-                disabled={isSeedingDemo || isLoading || backupAction !== null}
+                disabled={isSeedingDemo || isLoading || backupAction !== null || restorePath !== null}
                 onClick={() => void handleSeedDemoData()}
                 type="button"
               >

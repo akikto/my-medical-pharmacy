@@ -415,6 +415,10 @@ export interface DatabaseBackupResult {
   path: string;
 }
 
+export interface DatabaseRestoreResult {
+  safetyBackupPath: string;
+}
+
 export interface CartItem {
   medicine_id: EntityId;
   batch_id: EntityId;

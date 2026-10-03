@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { DatabaseBackupResult } from "../types";
+import type { DatabaseBackupResult, DatabaseRestoreResult } from "../types";
 
 const databaseFilter = [{ name: "MY MEDICAL database backup", extensions: ["db"] }];
 
@@ -46,10 +46,12 @@ export async function selectRestoreSource(): Promise<string | null> {
   return null;
 }
 
-export async function restoreDatabaseBackup(sourcePath: string): Promise<void> {
+export async function restoreDatabaseBackup(
+  sourcePath: string,
+): Promise<DatabaseRestoreResult> {
   if (!sourcePath.trim()) {
     throw new Error("Choose a database backup file to restore.");
   }
 
-  await invoke("restore_database_backup", { sourcePath });
+  return invoke<DatabaseRestoreResult>("restore_database_backup", { sourcePath });
 }
