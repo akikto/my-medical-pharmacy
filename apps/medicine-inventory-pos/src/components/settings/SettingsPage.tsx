@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { createDatabaseBackup, restoreDatabaseBackup, selectBackupDestination, selectRestoreSource } from "../../services/backupService";
 import { getStoreSettings, saveStoreSettings } from "../../services/settingsService";
 import type { StoreSettings } from "../../types";
+import { DataResetPanel } from "./DataResetPanel";
 import "./settings.css";
 
 interface SettingsPageProps {
@@ -263,6 +264,8 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
             </div>
             <p className="backup-caution">Restore replaces this device’s active database. A safety copy is saved first.</p>
           </section>
+
+          <DataResetPanel />
 
           <section className="settings-device-note">
             <span><CheckCircle2 size={15} /></span>

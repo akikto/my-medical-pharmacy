@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Local database and native file dialog access for the MY MEDICAL window.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save"]}}
+{"default":{"identifier":"default","description":"Local database and native file dialog access for the MY MEDICAL window.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save","opener:allow-open-url"]}}

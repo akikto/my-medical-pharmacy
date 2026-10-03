@@ -41,6 +41,7 @@ interface EmptyDatabaseCounts {
   sales: number | string;
   sale_items: number | string;
   stock_adjustments: number | string;
+  order_list_items: number | string;
   app_settings: number | string;
 }
 
@@ -114,18 +115,27 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
 const supplierFixtures: Record<DemoSupplierKey, SupplierFormValues> = {
   north: {
     name: "DEV DEMO · North District Supply",
+    contact_person: "",
     phone: "",
+    whatsapp_phone: "",
     address: "Development fixture only · North region",
+    notes: "",
   },
   west: {
     name: "DEV DEMO · Western Medical Trade",
+    contact_person: "",
     phone: "",
+    whatsapp_phone: "",
     address: "Development fixture only · West region",
+    notes: "",
   },
   south: {
     name: "DEV DEMO · Southern Pharmacy Wholesale",
+    contact_person: "",
     phone: "",
+    whatsapp_phone: "",
     address: "Development fixture only · South region",
+    notes: "",
   },
 };
 

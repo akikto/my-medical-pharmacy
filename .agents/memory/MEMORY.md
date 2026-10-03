@@ -2,4 +2,6 @@
 - [Tauri Rust build environment](tauri-rust-build-environment.md) — Pin Rust 1.90, set Nix's zlib link path, merge GTK schemas for dialogs, and pass `.deb` flags directly to Tauri.
 - [Tauri browser preview](tauri-browser-preview.md) — Standard Chromium lacks the native bridge needed by local SQL; test data-backed screens inside Tauri.
 - [Historical sales profit](historical-sales-profit.md) — Use sale-time purchase-cost snapshots; do not estimate old invoice profit from a batch's current replenishment cost.
+- [Business reset stock preservation](business-reset-stock-preservation.md) — History cleanup must not infer current quantity changes from removed transaction records.
+- [Nested Rust package installer](nested-rust-package-installer.md) — The Rust installer can initialize a root Cargo project instead of targeting the nested Tauri crate.
 - [GitHub workflow pushes](github-workflow-push.md) — Repo write access may not include workflow-file permission, and uploading Git objects does not update the branch ref.

@@ -17,6 +17,7 @@ import { useCallback } from "react";
 import type { AppSection } from "./types";
 import { POSBilling } from "./components/pos/POSBilling";
 import { DashboardPage } from "./components/dashboard/DashboardPage";
+import { OrderListPage } from "./components/orders/OrderListPage";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
@@ -32,6 +33,7 @@ const navigation: Array<{
 }> = [
   { id: "home", label: "Home", icon: House },
   { id: "pos", label: "POS Billing", icon: ClipboardList },
+  { id: "orders", label: "Today's Order List", icon: ClipboardList },
   { id: "inventory", label: "Inventory & Batches", icon: Boxes },
   { id: "purchases", label: "Purchases", icon: Pill },
   { id: "suppliers", label: "Suppliers", icon: UsersRound },
@@ -174,6 +176,8 @@ export default function App() {
             initialSearchQuery={pendingSaleSearch ?? undefined}
             onInitialSearchConsumed={clearPendingSaleSearch}
           />
+        ) : activeSection === "orders" ? (
+          <OrderListPage onNavigateToSuppliers={() => navigateToSection("suppliers")} />
         ) : activeSection === "inventory" ? (
           <InventoryPage />
         ) : activeSection === "purchases" ? (
