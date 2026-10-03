@@ -11,7 +11,11 @@ Rust 1.90.0 may be installed without its `rustfmt` component. If `cargo fmt` rep
 
 **How to apply:** Install only the `rustfmt` component if formatting checks require it; do not change the project’s pinned compiler version.
 
-Some shells can report the `rust-stable` module as installed while `rustup` has no installed or default toolchain. If Cargo reports that no default is configured, install and select the pinned project version with `rustup toolchain install 1.90.0 --profile minimal && rustup default 1.90.0`.
+Shell executions may not share `rustup` state: a toolchain installed or selected in one invocation can be absent/defaultless in another. When Cargo metadata reports no selected toolchain, prefix the command with `RUSTUP_TOOLCHAIN=1.90.0`; this materializes and selects the pinned version for that invocation.
+
+**Why:** Rust 1.90.0 worked in one shell, but a later Tauri build shell had no default and could not run `cargo metadata`; explicitly selecting the pinned toolchain made the package build succeed.
+
+**How to apply:** Prefix Rust and Tauri build commands with `RUSTUP_TOOLCHAIN=1.90.0` when a shell reports no installed/default toolchain. Do not switch to latest stable.
 
 The `zlib` system dependency can be present in the Nix store while Cargo test linking still fails to find `-lz`. Run linked Rust tests with `LIBRARY_PATH="$(pkg-config --variable=libdir zlib)"` set for the command. `cargo check` does not link the test harness and can pass without that setting.
 
