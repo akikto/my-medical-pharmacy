@@ -1,0 +1,100 @@
+Before starting the next major feature phase, fix the remaining backup limitation:
+
+MEDICINE PHOTO BACKUP/RESTORE
+
+Current state:
+- Medicine photo bytes are stored outside SQLite.
+- The current .db backup therefore does not include medicine photos.
+
+Requirements:
+
+1. Inspect the existing medicine-photo storage implementation.
+2. Do NOT redesign the medicine image system unnecessarily.
+3. Make the existing backup/restore workflow include the medicine photo files required by the database records.
+4. Preserve offline/local operation.
+5. Do not upload photos externally.
+6. Do not expose arbitrary filesystem access to the renderer.
+
+BACKUP
+- A manual backup must include:
+  - SQLite database
+  - all referenced medicine photo files
+  - required relative/path metadata needed to restore them safely
+- Prefer a single portable backup package/file if practical.
+- Do not silently omit referenced photos.
+- Ignore only genuinely orphaned/unreferenced files, and report that behavior clearly.
+
+RESTORE
+- Restore the database and corresponding medicine photos together.
+- Validate that referenced photo files are present before finalizing the restore.
+- If a required photo is missing/corrupt:
+  - fail safely
+  - preserve the existing active database
+  - preserve the existing active photo files
+  - rollback the attempted restore
+- Do not leave the database pointing to missing files.
+
+SAFETY
+- Create the existing safety backup before replacing current data.
+- Preserve the existing 30-newest automatic-backup retention policy.
+- Do not change the current backup retention rules unless strictly necessary.
+- Do not create a second backup system.
+
+COMPATIBILITY
+- Existing older .db backups that contain no photo package should remain restorable if technically safe.
+- Do not break existing backup files.
+- Clearly distinguish legacy database-only backups from the new complete backup format.
+
+TESTS
+Use an isolated temporary database and temporary photo directory.
+
+Test:
+1. medicine with photo → backup → restore → photo exists
+2. medicine without photo → backup → restore
+3. multiple medicine photos
+4. long/odd filenames if supported
+5. missing photo in backup → restore rejected safely
+6. corrupt photo → restore rejected safely
+7. corrupt database → restore rejected safely
+8. backup with orphaned photo
+9. legacy database-only backup compatibility
+10. complete backup → modify/delete current data → restore → verify database + photos
+11. close/reopen after restore
+12. existing automatic retention policy
+
+Verify:
+- medicine metadata preserved
+- barcode preserved
+- batch/stock preserved
+- sales preserved
+- customers/due preserved
+- GST snapshots preserved
+- photos preserved
+
+Run:
+- pnpm test
+- pnpm run typecheck
+- pnpm run build
+- cargo test --manifest-path src-tauri/Cargo.toml
+- pnpm exec tauri build --bundles deb
+- git diff --check
+
+Do not run broad cargo formatting.
+
+Do not modify Home.
+Do not modify unrelated Phase 1/2 behavior.
+Do not commit.
+Do not push.
+Do not publish.
+
+Final report:
+- backup format chosen
+- photo backup/restore behavior
+- legacy compatibility
+- tests
+- renderer test count
+- Rust test count
+- build results
+- exact files changed
+- confirm existing pharmacy data was not modified
+- confirm no commit/push/publish
