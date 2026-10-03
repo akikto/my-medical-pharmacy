@@ -115,9 +115,10 @@ export async function collectCustomerPayment(
   if (!Number.isSafeInteger(amountCents)) {
     throw new Error("Collection amount is larger than the supported amount.");
   }
-  if (!["CASH", "CARD", "UPI", "OTHER"].includes(input.payment_mode)) {
+  if (!["CASH", "CARD", "UPI", "BANK", "OTHER"].includes(input.payment_mode)) {
     throw new Error("Choose a valid collection payment method.");
   }
+  const paymentReference = optionalText(input.payment_reference, 120, "Payment reference");
   const upiTransactionId = optionalText(input.upi_transaction_id ?? "", 120, "UPI transaction ID");
   if (input.payment_mode !== "UPI" && upiTransactionId) {
     throw new Error("A UPI transaction ID can only be saved for a UPI collection.");
@@ -128,6 +129,7 @@ export async function collectCustomerPayment(
       customerId: input.customer_id,
       amountCents,
       paymentMode: input.payment_mode,
+      paymentReference,
       upiTransactionId,
       note,
     },

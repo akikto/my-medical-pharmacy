@@ -314,6 +314,8 @@ export interface PurchaseItem {
 }
 
 export type PaymentMode = "CASH" | "CARD" | "UPI" | "CREDIT" | "OTHER";
+export type CustomerCollectionMode = "CASH" | "CARD" | "UPI" | "BANK" | "OTHER";
+export type SaleStatus = "ACTIVE" | "PARTIALLY_RETURNED" | "RETURNED" | "CANCELLED";
 
 export interface Sale {
   id: EntityId;
@@ -340,6 +342,10 @@ export interface Sale {
   sgst_amount?: number;
   igst_amount?: number;
   total_gst?: number;
+  status: SaleStatus;
+  payment_reference: string | null;
+  notes: string | null;
+  cancelled_at: ISODateTime | null;
   created_at: ISODateTime;
 }
 
@@ -364,11 +370,124 @@ export interface SaleItemDetail extends SaleItem {
   generic_name: string | null;
   batch_no: string;
   expiry_date: ISODate;
+  returned_quantity: number;
 }
 
 export interface SaleDetails {
   sale: Sale;
   items: SaleItemDetail[];
+  returns: SaleReturnRecord[];
+  corrections: SaleCorrectionRecord[];
+  void: SaleVoidRecord | null;
+}
+
+export interface SaleReturnRecord {
+  id: EntityId;
+  return_no: string;
+  total: number;
+  customer_due_credit: number;
+  refund_mode: CustomerCollectionMode;
+  payment_reference: string | null;
+  upi_transaction_id: string | null;
+  note: string | null;
+  created_at: ISODateTime;
+  items: Array<{
+    sale_item_id: EntityId;
+    medicine_name: string;
+    batch_no: string;
+    quantity: number;
+    refund: number;
+    total_gst: number;
+  }>;
+}
+
+export interface SaleCorrectionRecord {
+  id: EntityId;
+  before_json: string;
+  after_json: string;
+  adjustment_debit: number;
+  adjustment_credit: number;
+  adjustment_mode: CustomerCollectionMode | "ACCOUNT" | null;
+  adjustment_reference: string | null;
+  note: string | null;
+  created_at: ISODateTime;
+}
+
+export interface SaleVoidRecord {
+  refund: number;
+  refund_mode: CustomerCollectionMode | "ACCOUNT";
+  payment_reference: string | null;
+  upi_transaction_id: string | null;
+  note: string | null;
+  created_at: ISODateTime;
+}
+
+export interface SalesHistoryFilters {
+  search_invoice: string;
+  from_date: string;
+  to_date: string;
+  customer_id: EntityId | null;
+  payment_mode: PaymentMode | "";
+  status: SaleStatus | "";
+  limit?: number;
+}
+
+export interface SalesHistoryRecord {
+  id: EntityId;
+  invoice_no: string;
+  customer_id: EntityId | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  subtotal: number;
+  discount: number;
+  flat_discount: number;
+  grand_total: number;
+  payment_mode: PaymentMode;
+  payment_reference: string | null;
+  status: SaleStatus;
+  returned_total: number;
+  cash_tendered: number;
+  change_due: number;
+  created_at: ISODateTime;
+  item_count: number;
+}
+
+export interface SaleReturnInput {
+  invoice_no: string;
+  items: Array<{ sale_item_id: EntityId; quantity: number }>;
+  refund_mode: CustomerCollectionMode;
+  payment_reference: string;
+  upi_transaction_id: string;
+  note: string;
+}
+
+export interface SaleVoidInput {
+  invoice_no: string;
+  refund_mode: CustomerCollectionMode | "ACCOUNT";
+  payment_reference: string;
+  upi_transaction_id: string;
+  note: string;
+}
+
+export interface SaleCorrectionInput {
+  invoice_no: string;
+  customer_id: EntityId | null;
+  customer_name: string;
+  customer_phone: string;
+  payment_mode: PaymentMode;
+  cash_tendered: number;
+  payment_reference: string;
+  upi_transaction_id: string;
+  adjustment_mode: CustomerCollectionMode | "ACCOUNT" | "";
+  adjustment_reference: string;
+  adjustment_upi_transaction_id: string;
+  notes: string;
+  reason: string;
+  items: Array<{
+    sale_item_id: EntityId;
+    quantity: number;
+    unit_price: number;
+  }>;
 }
 
 export interface RecentSale {
@@ -431,15 +550,24 @@ export interface ExpiryAlert {
 
 export interface SalesReportSummary {
   total_revenue: number;
+  gross_sales: number;
+  returned_total: number;
+  voided_total: number;
+  net_revenue: number;
   gross_profit: number;
+  net_gross_profit: number;
   total_invoices: number;
   cash_revenue: number;
+  net_cash_revenue: number;
   cash_invoices: number;
   card_upi_revenue: number;
+  net_card_upi_revenue: number;
   card_upi_invoices: number;
   other_revenue: number;
+  net_other_revenue: number;
   other_invoices: number;
   profit_unavailable_invoices: number;
+  net_profit_unavailable_invoices: number;
 }
 
 export interface SalesReportRow {
@@ -448,6 +576,9 @@ export interface SalesReportRow {
   customer_name: string | null;
   payment_mode: PaymentMode;
   grand_total: number;
+  status: SaleStatus;
+  returned_total: number;
+  voided_total: number;
   created_at: ISODateTime;
 }
 
@@ -495,11 +626,13 @@ export interface CustomerFormValues {
 export interface CustomerLedgerEntry {
   id: EntityId;
   customer_id: EntityId;
-  entry_type: "CREDIT_SALE" | "COLLECTION";
+  entry_type: "CREDIT_SALE" | "COLLECTION" | "SALE_RETURN" | "SALE_VOID" | "SALE_CORRECTION";
   invoice_no: string | null;
+  reference: string | null;
   debit: number;
   credit: number;
   payment_mode: PaymentMode | null;
+  payment_reference: string | null;
   upi_transaction_id: string | null;
   note: string | null;
   created_at: ISODateTime;
@@ -509,7 +642,8 @@ export interface CustomerLedgerEntry {
 export interface CustomerPaymentInput {
   customer_id: EntityId;
   amount: number;
-  payment_mode: Exclude<PaymentMode, "CREDIT">;
+  payment_mode: CustomerCollectionMode;
+  payment_reference: string;
   upi_transaction_id: string | null;
   note: string;
 }

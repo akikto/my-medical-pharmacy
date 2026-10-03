@@ -274,6 +274,33 @@
   margin: 4px 0 14px;
 }
 
+.customer-ledger-filters {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.5fr) minmax(125px, 0.8fr) minmax(125px, 0.8fr) minmax(145px, 0.9fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.customer-ledger-filters > input,
+.customer-ledger-filters > label,
+.customer-ledger-filters > select {
+  min-width: 0;
+}
+
+.customer-ledger-filters > label {
+  display: grid;
+  gap: 4px;
+  color: #74877b;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.customer-ledger-filters .workspace-input {
+  min-height: 36px;
+  font-size: 11px;
+}
+
 .customer-ledger-table-wrap {
   width: 100%;
   overflow-x: auto;
@@ -477,5 +504,13 @@
   .customer-ledger-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .customer-ledger-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .customer-ledger-filters > input {
+    grid-column: 1 / -1;
   }
 }

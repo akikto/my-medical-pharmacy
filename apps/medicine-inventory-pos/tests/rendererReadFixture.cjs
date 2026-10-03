@@ -302,7 +302,7 @@ function invokeRead(command, args = {}) {
              COALESCE(SUM(item.purchase_rate_at_sale * item.quantity), 0) AS purchase_cost
            FROM in_range AS ranged LEFT JOIN sale_items AS item ON item.sale_id = ranged.id
            GROUP BY ranged.id
-         )
+         ), totals AS (
          SELECT COALESCE(SUM(ranged.grand_total), 0) AS total_revenue,
            COALESCE(SUM(CASE WHEN profit.line_count > 0
              AND profit.line_count = profit.costed_line_count
@@ -324,13 +324,26 @@ function invokeRead(command, args = {}) {
            COALESCE(SUM(CASE WHEN profit.line_count > profit.costed_line_count
              THEN 1 ELSE 0 END), 0) AS profit_unavailable_invoices
          FROM in_range AS ranged
-         LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id`,
+         LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id
+         )
+         SELECT totals.*,
+           totals.total_revenue AS gross_sales,
+           0 AS returned_total,
+           0 AS voided_total,
+           totals.total_revenue AS net_revenue,
+           totals.gross_profit AS net_gross_profit,
+           totals.cash_revenue AS net_cash_revenue,
+           totals.card_upi_revenue AS net_card_upi_revenue,
+           totals.other_revenue AS net_other_revenue,
+           totals.profit_unavailable_invoices AS net_profit_unavailable_invoices
+         FROM totals`,
         args.startDate,
         args.endDate,
       );
     case "get_sales_report_rows":
       return all(
-        `SELECT id, invoice_no, customer_name, payment_mode, grand_total, created_at
+        `SELECT id, invoice_no, customer_name, payment_mode, grand_total,
+                'ACTIVE' AS status, 0 AS returned_total, 0 AS voided_total, created_at
          FROM sales WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
          ORDER BY created_at DESC, id DESC`,
         args.startDate,
