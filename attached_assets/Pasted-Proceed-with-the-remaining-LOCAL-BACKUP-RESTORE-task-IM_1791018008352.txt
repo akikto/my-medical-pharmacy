@@ -1,0 +1,207 @@
+Proceed with the remaining LOCAL BACKUP / RESTORE task.
+
+IMPORTANT:
+- Do NOT commit.
+- Do NOT push.
+- Do NOT publish.
+- Do NOT change Home/dashboard.
+- Do NOT redesign unrelated UI.
+- Preserve all completed Phase 1 and Phase 2 functionality.
+- Do not modify existing pharmacy data.
+- Use an isolated temporary database/data directory for destructive tests.
+
+First inspect the existing backup/restore implementation and determine exactly what is already implemented.
+
+Required behavior:
+
+1. MANUAL BACKUP
+- User can create a manual backup from Settings.
+- Backup must contain the complete local pharmacy database required to restore the application state.
+- Do not silently omit:
+  - medicines
+  - batches
+  - suppliers
+  - purchases
+  - purchase items
+  - sales
+  - sale items
+  - customers
+  - customer credit/due ledger
+  - GST configuration
+  - UPI configuration
+  - order list
+  - medicine metadata
+  - barcode data
+  - other required application settings
+- Verify the generated backup is actually readable/valid before reporting success.
+
+2. RESTORE
+- User can select a valid backup file.
+- Show a clear confirmation before replacing current data.
+- Create a safety backup of the current database before restore.
+- If safety backup fails, abort restore.
+- Restore must be transactional/safe.
+- If the selected backup is invalid/corrupt/incompatible:
+  - do not destroy current data
+  - report a clear error
+- After successful restore, the restored data must be visible after application restart.
+
+3. BACKUP VALIDATION
+Validate backup integrity before accepting it.
+
+At minimum:
+- SQLite integrity check / quick_check where applicable
+- required schema/version compatibility
+- expected database structure
+- readable SQLite database
+- reject clearly invalid files
+
+4. BACKUP RETENTION
+Preserve the existing automatic-backup retention policy.
+
+Verify:
+- automatic backups remain limited according to the existing policy
+- manual backups are preserved
+- the active database is never accidentally deleted
+- cleanup failure does not destroy the active database
+
+Do not invent a new retention policy if the existing one already satisfies the requirement.
+
+5. FILE SAFETY
+- Use safe app-managed backup locations/defaults where applicable.
+- Do not allow arbitrary renderer filesystem access.
+- Use native Tauri commands for filesystem/database operations.
+- Do not expose arbitrary SQL.
+- Do not upload backups externally.
+- Do not send backup data to third-party services.
+
+6. VERSION / COMPATIBILITY
+If the database has a schema version/migration version:
+- record/validate it appropriately
+- do not restore an incompatible future schema into an older app without a clear error
+- preserve migrations
+- do not downgrade schema silently
+
+7. UI
+Check:
+- backup button
+- restore button
+- file picker
+- success message
+- failure message
+- restore confirmation
+- safety-backup status
+- loading state
+- disabled state during backup/restore
+- long filenames
+- Cancel behavior
+
+8. DATA-INTEGRITY TEST
+
+Use an isolated temporary database.
+
+Create known test data covering:
+- medicine
+- barcode
+- batch
+- stock
+- supplier
+- purchase
+- sale
+- customer
+- credit sale
+- partial due collection
+- GST settings
+- UPI settings
+- order list
+- medicine metadata
+
+Create backup.
+
+Then deliberately change/delete some test data.
+
+Restore the backup.
+
+Verify all expected records and relationships return correctly.
+
+Also verify:
+- historical GST snapshots are preserved
+- customer balance is preserved
+- batch/FEFO data is preserved
+- barcode is preserved
+- medicine metadata is preserved
+- order list is preserved
+
+9. FAILURE / ROLLBACK TESTS
+Test:
+- invalid backup
+- corrupt SQLite file
+- incompatible schema/version
+- backup destination failure if safely simulatable
+- restore failure
+- cancellation
+
+After each failure:
+- current database must remain usable
+- no partial restore must remain
+
+10. RESTART TEST
+After successful restore:
+- close the application/database
+- reopen it
+- verify restored data persists
+
+11. EXISTING AUTOMATIC BACKUP
+Verify close-time automatic backup still works.
+Verify existing 30-newest-automatic-backup retention remains intact.
+Do not create a second conflicting backup system.
+
+12. TESTS
+Run:
+- pnpm test
+- pnpm run typecheck
+- pnpm run build
+- cargo test --manifest-path src-tauri/Cargo.toml
+- pnpm exec tauri build --bundles deb
+- git diff --check
+
+Do not run broad cargo formatting.
+
+13. VISUAL QA
+Chromium/browser visual QA may be used if native Tauri rendering is blocked by the known Linux WebKit/EGL environment issue.
+
+Check:
+- 1366x768
+- 1440x900
+- 1920x1080
+
+Native Tauri visual QA must NOT be claimed as PASS if the same EGL_BAD_PARAMETER environment issue prevents rendering.
+
+14. FINAL REPORT
+
+Report:
+- Manual backup: PASS/FAIL
+- Restore: PASS/FAIL
+- Backup validation: PASS/FAIL
+- Retention: PASS/FAIL
+- Automatic backup: PASS/FAIL
+- Rollback/failure safety: PASS/FAIL
+- Restart persistence: PASS/FAIL
+- UI QA: PASS/BLOCKED
+- Exact files changed
+- Migration/schema changes, if any
+- Renderer test count
+- Rust test count
+- Typecheck/build results
+- Tauri build result
+- git diff --check
+- Any known limitations
+
+Confirm:
+- Home unchanged
+- Phase 1 unchanged
+- Phase 2 Inventory/POS unchanged except required backup integration
+- existing pharmacy data was not modified
+- no commit
+- no push
+- no publish
