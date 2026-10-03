@@ -25,12 +25,13 @@ mod reads;
 use reads::{
     get_dashboard_inventory_summary, get_dashboard_purchase_summary, get_expiry_alerts,
     get_customer_ledger, get_customers, get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
+    get_medicine_order_usage,
     get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
     get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
     get_top_selling_medicines, get_weekly_sales, get_order_list, search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 6;
+const LATEST_DATABASE_VERSION: i64 = 8;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -60,6 +61,14 @@ enum PharmacyMutation {
         name: String,
         generic_name: Option<String>,
         company: Option<String>,
+        product_type: Option<String>,
+        strength: Option<String>,
+        composition: Option<String>,
+        barcode: Option<String>,
+        uses: Option<String>,
+        adult_dose: Option<String>,
+        child_dose: Option<String>,
+        photo_ref: Option<String>,
         rack_location: Option<String>,
         min_stock_alert: i64,
         gst_rate_basis_points: Option<i64>,
@@ -69,6 +78,14 @@ enum PharmacyMutation {
         name: String,
         generic_name: Option<String>,
         company: Option<String>,
+        product_type: Option<String>,
+        strength: Option<String>,
+        composition: Option<String>,
+        barcode: Option<String>,
+        uses: Option<String>,
+        adult_dose: Option<String>,
+        child_dose: Option<String>,
+        photo_ref: Option<String>,
         rack_location: Option<String>,
         min_stock_alert: i64,
         gst_rate_basis_points: Option<i64>,
@@ -88,6 +105,16 @@ enum PharmacyMutation {
         medicine_id: i64,
         quantity_change: i64,
         reason: String,
+    },
+    AdjustBatchStockBulk {
+        adjustments: Vec<BulkStockAdjustment>,
+        reason: String,
+    },
+    UpdateBulkReorderThresholds {
+        updates: Vec<BulkReorderThreshold>,
+    },
+    ImportMedicines {
+        records: Vec<ImportedMedicineRecord>,
     },
     DeductStock {
         deductions: Vec<StockDeduction>,
@@ -144,6 +171,48 @@ enum PharmacyMutation {
 struct StockDeduction {
     batch_id: i64,
     quantity: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkStockAdjustment {
+    batch_id: i64,
+    medicine_id: i64,
+    quantity_change: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BulkReorderThreshold {
+    medicine_id: i64,
+    min_stock_alert: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportedMedicineRecord {
+    medicine_id: Option<i64>,
+    name: String,
+    generic_name: Option<String>,
+    company: Option<String>,
+    product_type: Option<String>,
+    strength: Option<String>,
+    composition: Option<String>,
+    barcode: Option<String>,
+    uses: Option<String>,
+    adult_dose: Option<String>,
+    child_dose: Option<String>,
+    rack_location: Option<String>,
+    min_stock_alert: Option<i64>,
+    gst_rate_basis_points: Option<i64>,
+    opening_batch: Option<ImportedOpeningBatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportedOpeningBatch {
+    batch_no: String,
+    expiry_date: String,
+    purchase_rate_cents: i64,
+    mrp_cents: i64,
+    sale_rate_cents: i64,
+    opening_stock: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -547,6 +616,21 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
                 )
             )"#,
             "CREATE INDEX idx_customer_ledger_customer_date ON customer_ledger(customer_id, created_at, id)",
+        ]),
+        7 => Ok(&[
+            "ALTER TABLE medicines ADD COLUMN product_type TEXT",
+            "ALTER TABLE medicines ADD COLUMN strength TEXT",
+            "ALTER TABLE medicines ADD COLUMN composition TEXT",
+            "ALTER TABLE medicines ADD COLUMN barcode TEXT",
+            "ALTER TABLE medicines ADD COLUMN uses TEXT",
+            "ALTER TABLE medicines ADD COLUMN adult_dose TEXT",
+            "ALTER TABLE medicines ADD COLUMN child_dose TEXT",
+            "ALTER TABLE medicines ADD COLUMN photo_ref TEXT",
+            "CREATE UNIQUE INDEX idx_medicines_barcode_unique ON medicines(UPPER(TRIM(barcode))) WHERE barcode IS NOT NULL AND TRIM(barcode) <> ''",
+        ]),
+        8 => Ok(&[
+            "ALTER TABLE stock_adjustments ADD COLUMN previous_quantity INTEGER CHECK (previous_quantity IS NULL OR previous_quantity >= 0)",
+            "ALTER TABLE stock_adjustments ADD COLUMN new_quantity INTEGER CHECK (new_quantity IS NULL OR new_quantity >= 0)",
         ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
@@ -1494,11 +1578,69 @@ fn normalized_optional_text(
     Ok(value)
 }
 
+fn normalized_optional_barcode(value: Option<String>) -> Result<Option<String>, String> {
+    let value = normalized_optional_text(value, 128, "Barcode")?;
+    Ok(value.map(|barcode| barcode.to_ascii_uppercase()))
+}
+
+fn normalized_optional_photo_ref(
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    let value = normalized_optional_text(value, 120, "Medicine photo reference")?;
+    if value.as_ref().is_some_and(|reference| {
+        !reference.starts_with("medicine-")
+            || !reference.ends_with(".jpg")
+            || reference.contains("..")
+            || !reference
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '.')
+    }) {
+        return Err("Medicine photo reference is invalid.".to_owned());
+    }
+    Ok(value)
+}
+
+fn normalized_photo_ref_for_medicine(
+    value: Option<String>,
+    medicine_id: i64,
+) -> Result<Option<String>, String> {
+    let value = normalized_optional_photo_ref(value)?;
+    if value.as_ref().is_some_and(|reference| {
+        reference
+            .strip_prefix(&format!("medicine-{medicine_id}-"))
+            .and_then(|suffix| suffix.strip_suffix(".jpg"))
+            .is_none_or(|stamp| stamp.is_empty() || !stamp.chars().all(|digit| digit.is_ascii_digit()))
+    }) {
+        return Err("Medicine photo reference does not belong to this record.".to_owned());
+    }
+    Ok(value)
+}
+
+fn validate_medicine_photo_bytes(bytes: &[u8]) -> Result<(), String> {
+    const MAX_MEDICINE_PHOTO_BYTES: usize = 2_000_000;
+    if bytes.len() < 4 || bytes.len() > MAX_MEDICINE_PHOTO_BYTES {
+        return Err("Medicine photo must be a JPEG image no larger than 2 MB.".to_owned());
+    }
+    if !bytes.starts_with(&[0xff, 0xd8, 0xff]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        return Err("The selected photo could not be validated as a JPEG image.".to_owned());
+    }
+    Ok(())
+}
+
 fn require_one_changed_row(rows_affected: usize, label: &str) -> Result<(), String> {
     if rows_affected != 1 {
         return Err(format!("{label} no longer exists or could not be updated."));
     }
     Ok(())
+}
+
+fn medicine_write_error(error: rusqlite::Error, action: &str) -> String {
+    let message = error.to_string();
+    if message.contains("idx_medicines_barcode_unique") {
+        "This barcode is already assigned to another medicine.".to_owned()
+    } else {
+        format!("Could not {action}: {message}")
+    }
 }
 
 fn validate_optional_gst_rate(rate: Option<i64>) -> Result<Option<i64>, String> {
@@ -1567,6 +1709,14 @@ fn apply_pharmacy_mutation_to_connection(
             name,
             generic_name,
             company,
+            product_type,
+            strength,
+            composition,
+            barcode,
+            uses,
+            adult_dose,
+            child_dose,
+            photo_ref,
             rack_location,
             min_stock_alert,
             gst_rate_basis_points,
@@ -1574,6 +1724,17 @@ fn apply_pharmacy_mutation_to_connection(
             let name = normalized_required_text(name, 120, "Medicine name")?;
             let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
             let company = normalized_optional_text(company, 120, "Company")?;
+            let product_type = normalized_optional_text(product_type, 80, "Product type")?;
+            let strength = normalized_optional_text(strength, 80, "Strength")?;
+            let composition = normalized_optional_text(composition, 500, "Composition")?;
+            let barcode = normalized_optional_barcode(barcode)?;
+            let uses = normalized_optional_text(uses, 1000, "Uses")?;
+            let adult_dose = normalized_optional_text(adult_dose, 500, "Adult dose")?;
+            let child_dose = normalized_optional_text(child_dose, 500, "Child dose")?;
+            let photo_ref = normalized_optional_photo_ref(photo_ref)?;
+            if photo_ref.is_some() {
+                return Err("Save the medicine before attaching a photo.".to_owned());
+            }
             let rack_location = normalized_optional_text(rack_location, 80, "Rack location")?;
             if !(0..=1_000_000_000).contains(&min_stock_alert) {
                 return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
@@ -1582,19 +1743,28 @@ fn apply_pharmacy_mutation_to_connection(
             let rows_affected = transaction
                 .execute(
                     r#"INSERT INTO medicines (
-                         name, generic_name, company, rack_location, min_stock_alert,
-                         gst_rate_basis_points
-                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                         name, generic_name, company, product_type, strength, composition,
+                         barcode, uses, adult_dose, child_dose, photo_ref, rack_location,
+                         min_stock_alert, gst_rate_basis_points
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
                     params![
                         name,
                         generic_name,
                         company,
+                        product_type,
+                        strength,
+                        composition,
+                        barcode,
+                        uses,
+                        adult_dose,
+                        child_dose,
+                        photo_ref,
                         rack_location,
                         min_stock_alert,
                         gst_rate_basis_points
                     ],
                 )
-                .map_err(|error| format!("Could not create the medicine: {error}"))?;
+                .map_err(|error| medicine_write_error(error, "create the medicine"))?;
             require_one_changed_row(rows_affected, "Medicine")?;
             Some(transaction.last_insert_rowid())
         }
@@ -1603,6 +1773,14 @@ fn apply_pharmacy_mutation_to_connection(
             name,
             generic_name,
             company,
+            product_type,
+            strength,
+            composition,
+            barcode,
+            uses,
+            adult_dose,
+            child_dose,
+            photo_ref,
             rack_location,
             min_stock_alert,
             gst_rate_basis_points,
@@ -1613,6 +1791,14 @@ fn apply_pharmacy_mutation_to_connection(
             let name = normalized_required_text(name, 120, "Medicine name")?;
             let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
             let company = normalized_optional_text(company, 120, "Company")?;
+            let product_type = normalized_optional_text(product_type, 80, "Product type")?;
+            let strength = normalized_optional_text(strength, 80, "Strength")?;
+            let composition = normalized_optional_text(composition, 500, "Composition")?;
+            let barcode = normalized_optional_barcode(barcode)?;
+            let uses = normalized_optional_text(uses, 1000, "Uses")?;
+            let adult_dose = normalized_optional_text(adult_dose, 500, "Adult dose")?;
+            let child_dose = normalized_optional_text(child_dose, 500, "Child dose")?;
+            let photo_ref = normalized_photo_ref_for_medicine(photo_ref, medicine_id)?;
             let rack_location = normalized_optional_text(rack_location, 80, "Rack location")?;
             if !(0..=1_000_000_000).contains(&min_stock_alert) {
                 return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
@@ -1622,20 +1808,30 @@ fn apply_pharmacy_mutation_to_connection(
                 .execute(
                     r#"UPDATE medicines
                        SET name = ?1, generic_name = ?2, company = ?3,
-                           rack_location = ?4, min_stock_alert = ?5,
-                           gst_rate_basis_points = ?6
-                       WHERE id = ?7"#,
+                           product_type = ?4, strength = ?5, composition = ?6,
+                           barcode = ?7, uses = ?8, adult_dose = ?9, child_dose = ?10,
+                           photo_ref = ?11, rack_location = ?12, min_stock_alert = ?13,
+                           gst_rate_basis_points = ?14
+                       WHERE id = ?15"#,
                     params![
                         name,
                         generic_name,
                         company,
+                        product_type,
+                        strength,
+                        composition,
+                        barcode,
+                        uses,
+                        adult_dose,
+                        child_dose,
+                        photo_ref,
                         rack_location,
                         min_stock_alert,
                         gst_rate_basis_points,
                         medicine_id
                     ],
                 )
-                .map_err(|error| format!("Could not update the medicine: {error}"))?;
+                .map_err(|error| medicine_write_error(error, "update the medicine"))?;
             require_one_changed_row(rows_affected, "Medicine")?;
             None
         }
@@ -1696,25 +1892,359 @@ fn apply_pharmacy_mutation_to_connection(
                 return Err("Enter a non-zero stock adjustment of at most 1,000,000,000 units.".to_owned());
             }
             let reason = normalized_required_text(reason, 250, "Adjustment reason")?;
+            let previous_stock: i64 = transaction
+                .query_row(
+                    "SELECT current_stock FROM medicine_batches WHERE id = ?1 AND medicine_id = ?2",
+                    params![batch_id, medicine_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("Could not read current batch stock: {error}"))?
+                .ok_or_else(|| "Medicine batch was not found.".to_owned())?;
+            let new_stock = previous_stock
+                .checked_add(quantity_change)
+                .filter(|quantity| (0..=1_000_000_000).contains(quantity))
+                .ok_or_else(|| "The stock adjustment would create an invalid quantity.".to_owned())?;
             let rows_affected = transaction
                 .execute(
                     r#"UPDATE medicine_batches
-                       SET current_stock = current_stock + ?1
+                       SET current_stock = ?1
                        WHERE id = ?2 AND medicine_id = ?3
-                         AND current_stock + ?1 BETWEEN 0 AND 1000000000"#,
-                    params![quantity_change, batch_id, medicine_id],
+                         AND current_stock = ?4"#,
+                    params![new_stock, batch_id, medicine_id, previous_stock],
                 )
                 .map_err(|error| format!("Could not adjust medicine stock: {error}"))?;
             require_one_changed_row(rows_affected, "Medicine batch")?;
             let rows_affected = transaction
                 .execute(
                     r#"INSERT INTO stock_adjustments (
-                         medicine_id, batch_id, quantity_change, reason
-                       ) VALUES (?1, ?2, ?3, ?4)"#,
-                    params![medicine_id, batch_id, quantity_change, reason],
+                         medicine_id, batch_id, quantity_change, reason,
+                         previous_quantity, new_quantity
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                    params![
+                        medicine_id,
+                        batch_id,
+                        quantity_change,
+                        reason,
+                        previous_stock,
+                        new_stock
+                    ],
                 )
                 .map_err(|error| format!("Could not record the stock adjustment: {error}"))?;
             require_one_changed_row(rows_affected, "Stock adjustment")?;
+            None
+        }
+        PharmacyMutation::AdjustBatchStockBulk {
+            adjustments,
+            reason,
+        } => {
+            if adjustments.is_empty() || adjustments.len() > 100 {
+                return Err("Choose between 1 and 100 batches for a bulk stock adjustment.".to_owned());
+            }
+            let reason = normalized_required_text(reason, 250, "Adjustment reason")?;
+            let mut seen_batches = HashMap::<i64, ()>::new();
+            for adjustment in adjustments {
+                if adjustment.batch_id <= 0 || adjustment.medicine_id <= 0 {
+                    return Err("Medicine and batch ids must be positive whole numbers.".to_owned());
+                }
+                if adjustment.quantity_change == 0
+                    || !(-1_000_000_000..=1_000_000_000)
+                        .contains(&adjustment.quantity_change)
+                {
+                    return Err("Each bulk adjustment must be a non-zero change of at most 1,000,000,000 units.".to_owned());
+                }
+                if seen_batches.insert(adjustment.batch_id, ()).is_some() {
+                    return Err("A batch can only appear once in a bulk stock adjustment.".to_owned());
+                }
+                let previous_stock: i64 = transaction
+                    .query_row(
+                        r#"SELECT current_stock
+                           FROM medicine_batches
+                           WHERE id = ?1 AND medicine_id = ?2"#,
+                        params![adjustment.batch_id, adjustment.medicine_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| format!("Could not validate a selected stock batch: {error}"))?
+                    .ok_or_else(|| "A selected stock batch no longer exists.".to_owned())?;
+                let new_stock = previous_stock
+                    .checked_add(adjustment.quantity_change)
+                    .filter(|quantity| (0..=1_000_000_000).contains(quantity))
+                    .ok_or_else(|| "A bulk adjustment would create an invalid stock quantity.".to_owned())?;
+                let rows_affected = transaction
+                    .execute(
+                        r#"UPDATE medicine_batches
+                           SET current_stock = ?1
+                           WHERE id = ?2 AND medicine_id = ?3
+                             AND current_stock = ?4"#,
+                        params![
+                            new_stock,
+                            adjustment.batch_id,
+                            adjustment.medicine_id,
+                            previous_stock
+                        ],
+                    )
+                    .map_err(|error| format!("Could not adjust a selected stock batch: {error}"))?;
+                require_one_changed_row(rows_affected, "Medicine batch")?;
+                let rows_affected = transaction
+                    .execute(
+                        r#"INSERT INTO stock_adjustments (
+                             medicine_id, batch_id, quantity_change, reason,
+                             previous_quantity, new_quantity
+                           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                        params![
+                            adjustment.medicine_id,
+                            adjustment.batch_id,
+                            adjustment.quantity_change,
+                            reason,
+                            previous_stock,
+                            new_stock
+                        ],
+                    )
+                    .map_err(|error| format!("Could not record a bulk stock adjustment: {error}"))?;
+                require_one_changed_row(rows_affected, "Stock adjustment")?;
+            }
+            None
+        }
+        PharmacyMutation::UpdateBulkReorderThresholds { updates } => {
+            if updates.is_empty() || updates.len() > 100 {
+                return Err("Choose between 1 and 100 medicines for a bulk reorder-level update.".to_owned());
+            }
+            let mut seen_medicines = HashMap::<i64, ()>::new();
+            for update in updates {
+                if update.medicine_id <= 0 {
+                    return Err("Medicine ids must be positive whole numbers.".to_owned());
+                }
+                if !(0..=1_000_000_000).contains(&update.min_stock_alert) {
+                    return Err("Reorder levels must be between 0 and 1,000,000,000 units.".to_owned());
+                }
+                if seen_medicines.insert(update.medicine_id, ()).is_some() {
+                    return Err("A medicine can only appear once in a bulk reorder-level update.".to_owned());
+                }
+                let rows_affected = transaction
+                    .execute(
+                        "UPDATE medicines SET min_stock_alert = ?1 WHERE id = ?2",
+                        params![update.min_stock_alert, update.medicine_id],
+                    )
+                    .map_err(|error| format!("Could not update a medicine reorder level: {error}"))?;
+                require_one_changed_row(rows_affected, "Medicine")?;
+            }
+            None
+        }
+        PharmacyMutation::ImportMedicines { records } => {
+            if records.is_empty() || records.len() > 1_000 {
+                return Err("Import between 1 and 1,000 valid medicine rows at a time.".to_owned());
+            }
+            let mut seen_medicine_ids = HashMap::<i64, ()>::new();
+            let mut seen_barcodes = HashMap::<String, ()>::new();
+            let mut seen_identities = HashMap::<String, ()>::new();
+            for record in records {
+                let name = normalized_required_text(record.name, 120, "Medicine name")?;
+                let generic_name = normalized_optional_text(record.generic_name, 150, "Generic name")?;
+                let company = normalized_optional_text(record.company, 120, "Company")?;
+                let product_type = normalized_optional_text(record.product_type, 80, "Product type")?;
+                let strength = normalized_optional_text(record.strength, 80, "Strength")?;
+                let composition = normalized_optional_text(record.composition, 500, "Composition")?;
+                let barcode = normalized_optional_barcode(record.barcode)?;
+                let uses = normalized_optional_text(record.uses, 1000, "Uses")?;
+                let adult_dose = normalized_optional_text(record.adult_dose, 500, "Adult dose")?;
+                let child_dose = normalized_optional_text(record.child_dose, 500, "Child dose")?;
+                let rack_location = normalized_optional_text(record.rack_location, 80, "Rack location")?;
+                if let Some(min_stock_alert) = record.min_stock_alert {
+                    if !(0..=1_000_000_000).contains(&min_stock_alert) {
+                        return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
+                    }
+                }
+                let gst_rate_basis_points = validate_optional_gst_rate(record.gst_rate_basis_points)?;
+                if let Some(barcode) = barcode.as_ref() {
+                    if seen_barcodes.insert(barcode.to_uppercase(), ()).is_some() {
+                        return Err("A barcode can only appear once in an import.".to_owned());
+                    }
+                }
+                let identity = format!(
+                    "{}|{}|{}|{}",
+                    name.to_uppercase(),
+                    company.as_deref().unwrap_or_default().to_uppercase(),
+                    product_type.as_deref().unwrap_or_default().to_uppercase(),
+                    strength.as_deref().unwrap_or_default().to_uppercase()
+                );
+                if seen_identities.insert(identity.clone(), ()).is_some() {
+                    return Err("A medicine can only appear once in an import.".to_owned());
+                }
+
+                let medicine_id = if let Some(medicine_id) = record.medicine_id {
+                    if medicine_id <= 0 {
+                        return Err("Medicine ids must be positive whole numbers.".to_owned());
+                    }
+                    if seen_medicine_ids.insert(medicine_id, ()).is_some() {
+                        return Err("A medicine can only appear once in an import.".to_owned());
+                    }
+                    let rows_affected = transaction
+                        .execute(
+                            r#"UPDATE medicines
+                               SET name = ?1, generic_name = ?2, company = ?3,
+                                   product_type = ?4, strength = ?5, composition = ?6,
+                                   barcode = ?7, uses = ?8, adult_dose = ?9, child_dose = ?10,
+                                   rack_location = ?11,
+                                   min_stock_alert = COALESCE(?12, min_stock_alert),
+                                   gst_rate_basis_points = ?13
+                               WHERE id = ?14"#,
+                            params![
+                                name,
+                                generic_name,
+                                company,
+                                product_type,
+                                strength,
+                                composition,
+                                barcode,
+                                uses,
+                                adult_dose,
+                                child_dose,
+                                rack_location,
+                                record.min_stock_alert,
+                                gst_rate_basis_points,
+                                medicine_id
+                            ],
+                        )
+                        .map_err(|error| medicine_write_error(error, "update an imported medicine"))?;
+                    require_one_changed_row(rows_affected, "Medicine")?;
+                    medicine_id
+                } else {
+                    let duplicate_identity: i64 = transaction
+                        .query_row(
+                            r#"SELECT EXISTS(
+                                 SELECT 1 FROM medicines
+                                 WHERE UPPER(TRIM(name)) = ?1
+                                   AND UPPER(TRIM(COALESCE(company, ''))) = ?2
+                                   AND UPPER(TRIM(COALESCE(product_type, ''))) = ?3
+                                   AND UPPER(TRIM(COALESCE(strength, ''))) = ?4
+                               )"#,
+                            params![
+                                name.to_uppercase(),
+                                company.as_deref().unwrap_or_default().to_uppercase(),
+                                product_type.as_deref().unwrap_or_default().to_uppercase(),
+                                strength.as_deref().unwrap_or_default().to_uppercase()
+                            ],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| format!("Could not check an imported medicine match: {error}"))?;
+                    if duplicate_identity != 0 {
+                        return Err(format!(
+                            "{name} already exists. Select Update matching medicines and review the match."
+                        ));
+                    }
+                    let rows_affected = if let Some(min_stock_alert) = record.min_stock_alert {
+                        transaction.execute(
+                            r#"INSERT INTO medicines (
+                                 name, generic_name, company, product_type, strength, composition,
+                                 barcode, uses, adult_dose, child_dose, rack_location,
+                                 min_stock_alert, gst_rate_basis_points
+                               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
+                            params![
+                                name,
+                                generic_name,
+                                company,
+                                product_type,
+                                strength,
+                                composition,
+                                barcode,
+                                uses,
+                                adult_dose,
+                                child_dose,
+                                rack_location,
+                                min_stock_alert,
+                                gst_rate_basis_points
+                            ],
+                        )
+                    } else {
+                        transaction.execute(
+                            r#"INSERT INTO medicines (
+                                 name, generic_name, company, product_type, strength, composition,
+                                 barcode, uses, adult_dose, child_dose, rack_location,
+                                 gst_rate_basis_points
+                               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+                            params![
+                                name,
+                                generic_name,
+                                company,
+                                product_type,
+                                strength,
+                                composition,
+                                barcode,
+                                uses,
+                                adult_dose,
+                                child_dose,
+                                rack_location,
+                                gst_rate_basis_points
+                            ],
+                        )
+                    }
+                    .map_err(|error| medicine_write_error(error, "create an imported medicine"))?;
+                    require_one_changed_row(rows_affected, "Medicine")?;
+                    transaction.last_insert_rowid()
+                };
+
+                if let Some(batch) = record.opening_batch {
+                    let batch_no = normalized_required_text(batch.batch_no, 120, "Batch number")?;
+                    validate_iso_date(&transaction, &batch.expiry_date, "Expiry date")?;
+                    if !(0..=100_000_000_000).contains(&batch.purchase_rate_cents)
+                        || !(0..=100_000_000_000).contains(&batch.mrp_cents)
+                        || !(0..=100_000_000_000).contains(&batch.sale_rate_cents)
+                    {
+                        return Err("Imported batch prices must be between 0 and 1,000,000,000.".to_owned());
+                    }
+                    if !(0..=1_000_000_000).contains(&batch.opening_stock) {
+                        return Err("Imported opening stock must be between 0 and 1,000,000,000 units.".to_owned());
+                    }
+                    let duplicate_batch: i64 = transaction
+                        .query_row(
+                            r#"SELECT EXISTS(
+                                 SELECT 1 FROM medicine_batches
+                                 WHERE medicine_id = ?1
+                                   AND UPPER(TRIM(batch_no)) = UPPER(TRIM(?2))
+                               )"#,
+                            params![medicine_id, batch_no],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| format!("Could not check imported batch number: {error}"))?;
+                    if duplicate_batch != 0 {
+                        return Err(format!(
+                            "Batch {batch_no} already exists for {name}. Use the purchase or batch workflow to change it."
+                        ));
+                    }
+                    let rows_affected = transaction
+                        .execute(
+                            r#"INSERT INTO medicine_batches (
+                                 medicine_id, batch_no, expiry_date, purchase_rate, mrp,
+                                 sale_rate, current_stock
+                               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                            params![
+                                medicine_id,
+                                batch_no,
+                                batch.expiry_date,
+                                batch.purchase_rate_cents as f64 / 100.0,
+                                batch.mrp_cents as f64 / 100.0,
+                                batch.sale_rate_cents as f64 / 100.0,
+                                batch.opening_stock
+                            ],
+                        )
+                        .map_err(|error| format!("Could not create an imported opening batch: {error}"))?;
+                    require_one_changed_row(rows_affected, "Medicine batch")?;
+                    let batch_id = transaction.last_insert_rowid();
+                    if batch.opening_stock > 0 {
+                        let rows_affected = transaction
+                            .execute(
+                                r#"INSERT INTO stock_adjustments (
+                                     medicine_id, batch_id, quantity_change, reason,
+                                     previous_quantity, new_quantity
+                                   ) VALUES (?1, ?2, ?3, 'Opening stock imported from Excel', 0, ?3)"#,
+                                params![medicine_id, batch_id, batch.opening_stock],
+                            )
+                            .map_err(|error| format!("Could not record the imported opening stock: {error}"))?;
+                        require_one_changed_row(rows_affected, "Opening stock adjustment")?;
+                    }
+                }
+            }
             None
         }
         PharmacyMutation::DeductStock { deductions } => {
@@ -2008,6 +2538,150 @@ fn apply_pharmacy_mutation(
     let mut connection = open_pharmacy_connection(&app)?;
     let entity_id = apply_pharmacy_mutation_to_connection(&mut connection, operation)?;
     Ok(PharmacyMutationResult { entity_id })
+}
+
+fn medicine_photo_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("medicine-photos"))
+        .map_err(|error| format!("Could not access local medicine photo storage: {error}"))
+}
+
+fn medicine_photo_path(
+    directory: &Path,
+    medicine_id: i64,
+    photo_ref: &str,
+) -> Result<PathBuf, String> {
+    let reference = normalized_photo_ref_for_medicine(Some(photo_ref.to_owned()), medicine_id)?
+        .ok_or_else(|| "Medicine photo reference is missing.".to_owned())?;
+    Ok(directory.join(reference))
+}
+
+#[tauri::command]
+fn save_medicine_photo(
+    app: AppHandle,
+    medicine_id: i64,
+    photo_bytes: Vec<u8>,
+) -> Result<String, String> {
+    if medicine_id <= 0 {
+        return Err("Medicine id must be a positive whole number.".to_owned());
+    }
+    validate_medicine_photo_bytes(&photo_bytes)?;
+
+    let mut connection = open_pharmacy_connection(&app)?;
+    let old_photo_ref: Option<String> = connection
+        .query_row(
+            "SELECT photo_ref FROM medicines WHERE id = ?1",
+            [medicine_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not find the medicine photo record: {error}"))?
+        .ok_or_else(|| "The medicine no longer exists.".to_owned())?;
+    if let Some(reference) = old_photo_ref.as_deref() {
+        normalized_photo_ref_for_medicine(Some(reference.to_owned()), medicine_id)?;
+    }
+
+    let directory = medicine_photo_directory(&app)?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create local medicine photo storage: {error}"))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "The local clock is invalid; the medicine photo was not saved.".to_owned())?
+        .as_nanos();
+    let photo_ref = format!("medicine-{medicine_id}-{timestamp}.jpg");
+    let target_path = medicine_photo_path(&directory, medicine_id, &photo_ref)?;
+    let temporary_path = directory.join(format!(".{photo_ref}.tmp"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)
+        .map_err(|error| format!("Could not stage the medicine photo: {error}"))?;
+    if let Err(error) = file.write_all(&photo_bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not write the medicine photo: {error}"));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary_path, &target_path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not store the medicine photo locally: {error}"));
+    }
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            let _ = fs::remove_file(&target_path);
+            format!("Could not begin the medicine photo update: {error}")
+        })?;
+    let rows_affected = transaction
+        .execute(
+            "UPDATE medicines SET photo_ref = ?1 WHERE id = ?2",
+            params![photo_ref, medicine_id],
+        )
+        .map_err(|error| format!("Could not update the medicine photo reference: {error}"))?;
+    if let Err(error) = require_one_changed_row(rows_affected, "Medicine") {
+        let _ = fs::remove_file(&target_path);
+        return Err(error);
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the medicine photo update: {error}"))?;
+
+    Ok(photo_ref)
+}
+
+#[tauri::command]
+fn get_medicine_photo(app: AppHandle, medicine_id: i64) -> Result<Option<Vec<u8>>, String> {
+    if medicine_id <= 0 {
+        return Err("Medicine id must be a positive whole number.".to_owned());
+    }
+    let connection = open_pharmacy_connection(&app)?;
+    let photo_ref: Option<String> = connection
+        .query_row(
+            "SELECT photo_ref FROM medicines WHERE id = ?1",
+            [medicine_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the medicine photo reference: {error}"))?
+        .ok_or_else(|| "The medicine no longer exists.".to_owned())?;
+    let Some(photo_ref) = photo_ref else {
+        return Ok(None);
+    };
+    let directory = medicine_photo_directory(&app)?;
+    let path = medicine_photo_path(&directory, medicine_id, &photo_ref)?;
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("The saved medicine photo is unavailable: {error}"))?;
+    if metadata.len() > 2_000_000 {
+        return Err("The saved medicine photo exceeds the supported size limit.".to_owned());
+    }
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("Could not read the saved medicine photo: {error}"))?;
+    validate_medicine_photo_bytes(&bytes)?;
+    Ok(Some(bytes))
+}
+
+#[tauri::command]
+fn remove_medicine_photo(app: AppHandle, medicine_id: i64) -> Result<(), String> {
+    if medicine_id <= 0 {
+        return Err("Medicine id must be a positive whole number.".to_owned());
+    }
+    let mut connection = open_pharmacy_connection(&app)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the medicine photo removal: {error}"))?;
+    let rows_affected = transaction
+        .execute(
+            "UPDATE medicines SET photo_ref = NULL WHERE id = ?1",
+            [medicine_id],
+        )
+        .map_err(|error| format!("Could not clear the medicine photo reference: {error}"))?;
+    require_one_changed_row(rows_affected, "Medicine")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the medicine photo removal: {error}"))?;
+    Ok(())
 }
 
 fn apply_order_list_mutation_to_connection(
@@ -3174,6 +3848,7 @@ pub fn run() {
             execute_sql_transaction,
             get_inventory_medicines,
             get_medicine_batches,
+            get_medicine_order_usage,
             search_medicines,
             get_fefo_batch,
             get_sellable_batches,
@@ -3197,6 +3872,9 @@ pub fn run() {
             apply_pharmacy_mutation,
             mutate_order_list,
             reset_business_data,
+            save_medicine_photo,
+            get_medicine_photo,
+            remove_medicine_photo,
             complete_sale,
             collect_customer_payment,
             complete_purchase,
@@ -3208,6 +3886,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         get_inventory_medicines,
         get_medicine_batches,
+        get_medicine_order_usage,
         search_medicines,
         get_fefo_batch,
         get_sellable_batches,
@@ -3230,6 +3909,9 @@ pub fn run() {
         apply_pharmacy_mutation,
         mutate_order_list,
         reset_business_data,
+        save_medicine_photo,
+        get_medicine_photo,
+        remove_medicine_photo,
         complete_sale,
         collect_customer_payment,
         complete_purchase,
@@ -3636,6 +4318,133 @@ mod migration_tests {
     }
 
     #[test]
+    fn version_six_upgrade_preserves_existing_stock_purchase_and_gst_snapshots() {
+        let mut connection = Connection::open_in_memory().expect("open version-six fixture");
+        connection
+            .execute_batch(
+                r#"PRAGMA foreign_keys = ON;
+                   CREATE TABLE schema_migrations (
+                       version INTEGER PRIMARY KEY,
+                       applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                   );"#,
+            )
+            .expect("create migration history");
+        for version in 1..=6 {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin historical migration");
+            for statement in migration_statements(version).expect("read migration") {
+                transaction
+                    .execute_batch(statement)
+                    .expect("apply migration");
+            }
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?1)",
+                    [version],
+                )
+                .expect("record migration");
+            transaction.commit().expect("commit migration");
+        }
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (id, name, gst_rate_basis_points)
+                VALUES (1, 'Existing medicine', 1800);
+                INSERT INTO medicine_batches (
+                    id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                ) VALUES (1, 1, 'OLD-1', '2099-12-31', 4, 8, 7, 23);
+                INSERT INTO purchases (id, invoice_no, total_amount, purchase_date)
+                VALUES (1, 'P-OLD', 8, '2026-03-02');
+                INSERT INTO purchase_items (id, purchase_id, batch_id, quantity, rate, total)
+                VALUES (1, 1, 1, 2, 4, 8);
+                INSERT INTO sales (
+                    id, invoice_no, subtotal, grand_total, gst_enabled, gst_pricing_mode,
+                    tax_type, taxable_amount, cgst_amount, sgst_amount, total_gst, created_at
+                ) VALUES (
+                    1, 'S-OLD', 118, 118, 1, 'INCLUSIVE', 'CGST_SGST',
+                    100, 9, 9, 18, '2026-03-02 12:00:00'
+                );
+                INSERT INTO sale_items (
+                    id, sale_id, batch_id, quantity, unit_price, total_price,
+                    gst_rate_basis_points, taxable_amount, cgst_amount, sgst_amount, total_gst
+                ) VALUES (1, 1, 1, 1, 118, 118, 1800, 100, 9, 9, 18);
+                "#,
+            )
+            .expect("seed existing business records");
+
+        migrate_connection(&mut connection).expect("upgrade to latest schema");
+        migrate_connection(&mut connection).expect("rerun startup migration");
+
+        let medicine_metadata: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                r#"SELECT product_type, strength, composition, barcode, uses,
+                          adult_dose, child_dose, photo_ref
+                   FROM medicines WHERE id = 1"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("read migrated medicine fields");
+        let preserved_stock: i64 = connection
+            .query_row("SELECT current_stock FROM medicine_batches WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read original stock");
+        let preserved_totals: (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM purchases),
+                     (SELECT COUNT(*) FROM sales),
+                     (SELECT COUNT(*) FROM purchase_items)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read historical transaction counts");
+        let gst_snapshot: (i64, f64, f64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     si.gst_rate_basis_points, si.total_gst, s.grand_total,
+                     m.gst_rate_basis_points
+                   FROM sale_items AS si
+                   JOIN sales AS s ON s.id = si.sale_id
+                   JOIN medicines AS m ON m.id = 1
+                   WHERE si.id = 1"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read preserved tax snapshots");
+        let integrity: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("check upgraded database integrity");
+
+        assert_eq!(medicine_metadata, (None, None, None, None, None, None, None, None));
+        assert_eq!(preserved_stock, 23);
+        assert_eq!(preserved_totals, (1, 1, 1));
+        assert_eq!(gst_snapshot, (1800, 18.0, 118.0, 1800));
+        assert_eq!(integrity, "ok");
+    }
+
+    #[test]
     fn version_five_migration_preserves_existing_version_four_business_data() {
         let mut connection = Connection::open_in_memory().expect("open existing database fixture");
         connection
@@ -3765,6 +4574,14 @@ mod pharmacy_mutation_tests {
                 name: "Test medicine".to_owned(),
                 generic_name: Some("Test generic".to_owned()),
                 company: Some("Test company".to_owned()),
+                product_type: None,
+                strength: None,
+                composition: None,
+                barcode: None,
+                uses: None,
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
                 rack_location: Some("A-1".to_owned()),
                 min_stock_alert: 5,
                 gst_rate_basis_points: None,
@@ -3772,6 +4589,147 @@ mod pharmacy_mutation_tests {
         )
         .expect("create medicine")
         .expect("medicine id")
+    }
+
+    #[test]
+    fn medicine_metadata_supports_optional_values_extensible_types_and_unique_barcodes() {
+        let mut connection = migrated_connection();
+        let medicine_id = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::CreateMedicine {
+                name: "Custom product".to_owned(),
+                generic_name: None,
+                company: Some("Example maker".to_owned()),
+                product_type: Some("Veterinary feed supplement".to_owned()),
+                strength: Some("250 mg".to_owned()),
+                composition: Some("Compound A 250 mg".to_owned()),
+                barcode: Some("  ab-102  ".to_owned()),
+                uses: Some("Used for testing".to_owned()),
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
+                rack_location: None,
+                min_stock_alert: 4,
+                gst_rate_basis_points: Some(1800),
+            },
+        )
+        .expect("create medicine with metadata")
+        .expect("medicine id");
+        let metadata: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ) = connection
+            .query_row(
+                r#"SELECT product_type, strength, composition, barcode, uses,
+                          adult_dose, child_dose, photo_ref, gst_rate_basis_points
+                   FROM medicines WHERE id = ?1"#,
+                [medicine_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .expect("read medicine metadata");
+
+        assert_eq!(
+            metadata,
+            (
+                Some("Veterinary feed supplement".to_owned()),
+                Some("250 mg".to_owned()),
+                Some("Compound A 250 mg".to_owned()),
+                Some("AB-102".to_owned()),
+                Some("Used for testing".to_owned()),
+                None,
+                None,
+                None,
+                Some(1800),
+            )
+        );
+
+        let optional_barcode_id = create_medicine(&mut connection);
+        let optional_barcode: Option<String> = connection
+            .query_row(
+                "SELECT barcode FROM medicines WHERE id = ?1",
+                [optional_barcode_id],
+                |row| row.get(0),
+            )
+            .expect("read medicine without a barcode");
+        assert_eq!(optional_barcode, None);
+
+        let duplicate = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::CreateMedicine {
+                name: "Duplicate code".to_owned(),
+                generic_name: None,
+                company: None,
+                product_type: None,
+                strength: None,
+                composition: None,
+                barcode: Some("ab-102".to_owned()),
+                uses: None,
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
+                rack_location: None,
+                min_stock_alert: 0,
+                gst_rate_basis_points: None,
+            },
+        )
+        .expect_err("normalized duplicate barcode must be rejected");
+        assert!(duplicate.contains("already assigned"));
+
+        let invalid_photo_reference = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::UpdateMedicine {
+                medicine_id,
+                name: "Custom product".to_owned(),
+                generic_name: None,
+                company: Some("Example maker".to_owned()),
+                product_type: Some("Veterinary feed supplement".to_owned()),
+                strength: Some("250 mg".to_owned()),
+                composition: Some("Compound A 250 mg".to_owned()),
+                barcode: Some("AB-102".to_owned()),
+                uses: Some("Used for testing".to_owned()),
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: Some("../outside.jpg".to_owned()),
+                rack_location: None,
+                min_stock_alert: 4,
+                gst_rate_basis_points: Some(1800),
+            },
+        )
+        .expect_err("unsafe photo references must be rejected");
+        assert!(invalid_photo_reference.contains("photo reference is invalid"));
+
+        assert_eq!(
+            normalized_photo_ref_for_medicine(Some("medicine-42-123.jpg".to_owned()), 42)
+                .expect("accept a scoped local photo reference"),
+            Some("medicine-42-123.jpg".to_owned())
+        );
+        assert!(
+            normalized_photo_ref_for_medicine(Some("medicine-43-123.jpg".to_owned()), 42)
+                .is_err(),
+            "a medicine cannot reference another medicine's photo"
+        );
+        assert!(validate_medicine_photo_bytes(&[0xff, 0xd8, 0xff, 0xd9]).is_ok());
+        assert!(validate_medicine_photo_bytes(&[0x00, 0x01, 0x02, 0x03]).is_err());
+        assert!(validate_medicine_photo_bytes(&vec![0xff; 2_000_001]).is_err());
     }
 
     #[test]
@@ -3817,6 +4775,14 @@ mod pharmacy_mutation_tests {
                 name: "Updated medicine".to_owned(),
                 generic_name: None,
                 company: Some("New company".to_owned()),
+                product_type: None,
+                strength: None,
+                composition: None,
+                barcode: None,
+                uses: None,
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
                 rack_location: Some("B-2".to_owned()),
                 min_stock_alert: 9,
                 gst_rate_basis_points: None,
@@ -3976,6 +4942,304 @@ mod pharmacy_mutation_tests {
         assert_eq!(stock, 4);
         assert_eq!(adjustments, 1);
         assert_eq!(mrp, 12.0);
+    }
+
+    #[test]
+    fn bulk_stock_adjustments_commit_together_and_record_quantity_snapshots() {
+        let mut connection = migrated_connection();
+        let first_medicine = create_medicine(&mut connection);
+        let second_medicine = create_medicine(&mut connection);
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                   ) VALUES
+                     (201, ?1, 'LOT-A', '2099-12-31', 4, 10, 9, 3),
+                     (202, ?2, 'LOT-B', '2099-12-31', 5, 11, 10, 1),
+                     (203, ?1, 'EXPIRED', '2000-01-01', 5, 11, 10, 0)"#,
+                params![first_medicine, second_medicine],
+            )
+            .expect("seed bulk stock batches");
+
+        let rejected = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::AdjustBatchStockBulk {
+                adjustments: vec![
+                    BulkStockAdjustment {
+                        batch_id: 201,
+                        medicine_id: first_medicine,
+                        quantity_change: 2,
+                    },
+                    BulkStockAdjustment {
+                        batch_id: 202,
+                        medicine_id: second_medicine,
+                        quantity_change: -2,
+                    },
+                ],
+                reason: "Count correction".to_owned(),
+            },
+        );
+        assert!(rejected.is_err());
+        let unchanged_stock: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT current_stock FROM medicine_batches WHERE id = 201), \
+                        (SELECT current_stock FROM medicine_batches WHERE id = 202)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read stock after rejected bulk operation");
+        let unchanged_adjustment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM stock_adjustments", [], |row| row.get(0))
+            .expect("count adjustments after rollback");
+        assert_eq!(unchanged_stock, (3, 1));
+        assert_eq!(unchanged_adjustment_count, 0);
+
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::AdjustBatchStockBulk {
+                adjustments: vec![
+                    BulkStockAdjustment {
+                        batch_id: 201,
+                        medicine_id: first_medicine,
+                        quantity_change: 2,
+                    },
+                    BulkStockAdjustment {
+                        batch_id: 202,
+                        medicine_id: second_medicine,
+                        quantity_change: -1,
+                    },
+                ],
+                reason: "Count correction".to_owned(),
+            },
+        )
+        .expect("save all valid bulk adjustments");
+        let final_stock: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT current_stock FROM medicine_batches WHERE id = 201), \
+                        (SELECT current_stock FROM medicine_batches WHERE id = 202)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read stock after accepted bulk operation");
+        let final_adjustment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM stock_adjustments", [], |row| row.get(0))
+            .expect("count saved bulk adjustments");
+        let quantity_snapshot: (i64, i64) = connection
+            .query_row(
+                "SELECT previous_quantity, new_quantity FROM stock_adjustments WHERE batch_id = 201",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read stock adjustment quantity snapshot");
+        assert_eq!(final_stock, (5, 0));
+        assert_eq!(final_adjustment_count, 2);
+        assert_eq!(quantity_snapshot, (3, 5));
+    }
+
+    #[test]
+    fn bulk_reorder_level_updates_are_atomic_and_leave_stock_untouched() {
+        let mut connection = migrated_connection();
+        let first_medicine = create_medicine(&mut connection);
+        let second_medicine = create_medicine(&mut connection);
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                   ) VALUES (?1, 'LOT-A', '2099-12-31', 4, 10, 9, 7)"#,
+                [first_medicine],
+            )
+            .expect("seed stock for reorder-level test");
+
+        let rejected = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::UpdateBulkReorderThresholds {
+                updates: vec![
+                    BulkReorderThreshold {
+                        medicine_id: first_medicine,
+                        min_stock_alert: 15,
+                    },
+                    BulkReorderThreshold {
+                        medicine_id: i64::MAX,
+                        min_stock_alert: 20,
+                    },
+                ],
+            },
+        );
+        assert!(rejected.is_err());
+        let unchanged_alert: i64 = connection
+            .query_row(
+                "SELECT min_stock_alert FROM medicines WHERE id = ?1",
+                [first_medicine],
+                |row| row.get(0),
+            )
+            .expect("read alert after rejected bulk update");
+        assert_eq!(unchanged_alert, 5);
+
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::UpdateBulkReorderThresholds {
+                updates: vec![
+                    BulkReorderThreshold {
+                        medicine_id: first_medicine,
+                        min_stock_alert: 15,
+                    },
+                    BulkReorderThreshold {
+                        medicine_id: second_medicine,
+                        min_stock_alert: 20,
+                    },
+                ],
+            },
+        )
+        .expect("save valid bulk reorder levels");
+        let final_alerts: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT min_stock_alert FROM medicines WHERE id = ?1), \
+                        (SELECT min_stock_alert FROM medicines WHERE id = ?2)",
+                params![first_medicine, second_medicine],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read saved reorder levels");
+        let stock: i64 = connection
+            .query_row(
+                "SELECT current_stock FROM medicine_batches WHERE medicine_id = ?1",
+                [first_medicine],
+                |row| row.get(0),
+            )
+            .expect("read stock after reorder-level update");
+        assert_eq!(final_alerts, (15, 20));
+        assert_eq!(stock, 7);
+    }
+
+    #[test]
+    fn spreadsheet_import_updates_and_adds_medicines_atomically_with_audited_opening_stock() {
+        let mut connection = migrated_connection();
+        let existing_medicine_id = create_medicine(&mut connection);
+
+        let duplicate_barcode_import = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::ImportMedicines {
+                records: vec![
+                    ImportedMedicineRecord {
+                        medicine_id: None,
+                        name: "Import one".to_owned(),
+                        generic_name: None,
+                        company: None,
+                        product_type: None,
+                        strength: None,
+                        composition: None,
+                        barcode: Some("DUP-IMPORT-CODE".to_owned()),
+                        uses: None,
+                        adult_dose: None,
+                        child_dose: None,
+                        rack_location: None,
+                        min_stock_alert: None,
+                        gst_rate_basis_points: None,
+                        opening_batch: None,
+                    },
+                    ImportedMedicineRecord {
+                        medicine_id: None,
+                        name: "Import two".to_owned(),
+                        generic_name: None,
+                        company: None,
+                        product_type: None,
+                        strength: None,
+                        composition: None,
+                        barcode: Some("DUP-IMPORT-CODE".to_owned()),
+                        uses: None,
+                        adult_dose: None,
+                        child_dose: None,
+                        rack_location: None,
+                        min_stock_alert: None,
+                        gst_rate_basis_points: None,
+                        opening_batch: None,
+                    },
+                ],
+            },
+        );
+        assert!(duplicate_barcode_import.is_err());
+        let medicine_count_after_rejection: i64 = connection
+            .query_row("SELECT COUNT(*) FROM medicines", [], |row| row.get(0))
+            .expect("count medicines after rejected import");
+        assert_eq!(medicine_count_after_rejection, 1);
+
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::ImportMedicines {
+                records: vec![
+                    ImportedMedicineRecord {
+                        medicine_id: Some(existing_medicine_id),
+                        name: "Updated imported medicine".to_owned(),
+                        generic_name: Some("Generic update".to_owned()),
+                        company: Some("Local importer".to_owned()),
+                        product_type: Some("Tablet".to_owned()),
+                        strength: Some("20 mg".to_owned()),
+                        composition: None,
+                        barcode: None,
+                        uses: None,
+                        adult_dose: None,
+                        child_dose: None,
+                        rack_location: Some("R-2".to_owned()),
+                        min_stock_alert: Some(11),
+                        gst_rate_basis_points: Some(500),
+                        opening_batch: None,
+                    },
+                    ImportedMedicineRecord {
+                        medicine_id: None,
+                        name: "New imported medicine".to_owned(),
+                        generic_name: None,
+                        company: Some("Local importer".to_owned()),
+                        product_type: Some("Syrup".to_owned()),
+                        strength: Some("100 ml".to_owned()),
+                        composition: None,
+                        barcode: Some("NEW-IMPORT-CODE".to_owned()),
+                        uses: None,
+                        adult_dose: None,
+                        child_dose: None,
+                        rack_location: None,
+                        min_stock_alert: None,
+                        gst_rate_basis_points: None,
+                        opening_batch: Some(ImportedOpeningBatch {
+                            batch_no: "OPEN-1".to_owned(),
+                            expiry_date: "2099-12-31".to_owned(),
+                            purchase_rate_cents: 1250,
+                            mrp_cents: 2000,
+                            sale_rate_cents: 1800,
+                            opening_stock: 20,
+                        }),
+                    },
+                ],
+            },
+        )
+        .expect("save valid medicine import");
+
+        let updated_medicine: (String, i64, i64) = connection
+            .query_row(
+                "SELECT name, min_stock_alert, gst_rate_basis_points FROM medicines WHERE id = ?1",
+                [existing_medicine_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read updated medicine fields");
+        let imported_batch: (String, i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT batches.batch_no, batches.current_stock,
+                          adjustments.previous_quantity, adjustments.new_quantity
+                   FROM medicine_batches AS batches
+                   JOIN stock_adjustments AS adjustments ON adjustments.batch_id = batches.id
+                   WHERE batches.batch_no = 'OPEN-1'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read imported opening batch and audit");
+        let purchases_created: i64 = connection
+            .query_row("SELECT COUNT(*) FROM purchases", [], |row| row.get(0))
+            .expect("check import did not create a purchase invoice");
+        let medicine_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM medicines", [], |row| row.get(0))
+            .expect("count imported medicines");
+        assert_eq!(updated_medicine, ("Updated imported medicine".to_owned(), 11, 500));
+        assert_eq!(imported_batch, ("OPEN-1".to_owned(), 20, 0, 20));
+        assert_eq!(purchases_created, 0);
+        assert_eq!(medicine_count, 2);
     }
 }
 
@@ -4505,6 +5769,10 @@ mod business_history_tests {
             )
             .expect("read updated order item");
         assert_eq!(updated, (7, 1, "Updated note".to_owned()));
+        let purchase_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM purchases", [], |row| row.get(0))
+            .expect("confirm preparing an order does not create a purchase invoice");
+        assert_eq!(purchase_count, 0);
 
         let invalid = apply_order_list_mutation_to_connection(
             &mut connection,

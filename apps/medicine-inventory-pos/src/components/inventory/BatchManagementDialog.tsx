@@ -1,12 +1,14 @@
 import { AlertCircle, PackagePlus, Pencil, RefreshCw, Warehouse, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { getMedicineBatches } from "../../services/inventoryService";
+import { useEffect, useRef, useState } from "react";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
+import { getMedicineBatches, getMedicinePhoto } from "../../services/inventoryService";
 import type { Medicine, MedicineBatch } from "../../types";
 import { formatDate, formatMoney } from "../../utils/money";
 
 interface BatchManagementDialogProps {
   medicine: Medicine;
   refreshKey: number;
+  suspendFocusTrap?: boolean;
   onClose: () => void;
   onEditBatch: (batch: MedicineBatch) => void;
   onAdjustStock: (batch: MedicineBatch) => void;
@@ -22,13 +24,20 @@ function localDateString(date: Date): string {
 export function BatchManagementDialog({
   medicine,
   refreshKey,
+  suspendFocusTrap = false,
   onClose,
   onEditBatch,
   onAdjustStock,
 }: BatchManagementDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useDialogFocusTrap(dialogRef, onClose, !suspendFocusTrap);
+
   const [batches, setBatches] = useState<MedicineBatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,10 +60,47 @@ export function BatchManagementDialog({
     };
   }, [medicine.id, refreshKey]);
 
+  useEffect(() => {
+    if (!medicine.photo_ref) {
+      setPhotoUrl(null);
+      setPhotoError(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void getMedicinePhoto(medicine.id)
+      .then((bytes) => {
+        if (cancelled || !bytes) return;
+        objectUrl = URL.createObjectURL(
+          new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }),
+        );
+        setPhotoUrl(objectUrl);
+        setPhotoError(null);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setPhotoError(cause instanceof Error ? cause.message : "Could not load the photo.");
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [medicine.id, medicine.photo_ref]);
+
   const today = localDateString(new Date());
   const nearExpiry = new Date();
   nearExpiry.setDate(nearExpiry.getDate() + 30);
   const nearExpiryDate = localDateString(nearExpiry);
+  const medicineDetails: Array<[string, string | null]> = [
+    ["Product type", medicine.product_type],
+    ["Strength", medicine.strength],
+    ["Composition", medicine.composition],
+    ["Barcode", medicine.barcode],
+    ["Uses", medicine.uses],
+    ["Adult dose", medicine.adult_dose],
+    ["Child dose", medicine.child_dose],
+  ];
 
   return (
     <div className="dialog-backdrop inventory-dialog-backdrop">
@@ -63,6 +109,7 @@ export function BatchManagementDialog({
         aria-modal="true"
         className="workspace-dialog workspace-dialog--wide"
         data-testid="dialog-batch-manager"
+        ref={dialogRef}
         role="dialog"
       >
         <header className="dialog-header">
@@ -78,6 +125,34 @@ export function BatchManagementDialog({
             <X size={18} />
           </button>
         </header>
+
+        {(medicine.photo_ref ||
+          medicine.product_type ||
+          medicine.strength ||
+          medicine.composition ||
+          medicine.barcode ||
+          medicine.uses ||
+          medicine.adult_dose ||
+          medicine.child_dose) && (
+          <section className="medicine-details-summary" data-testid="medicine-details-summary">
+            {photoUrl && (
+              <img
+                alt={`Photo of ${medicine.name}`}
+                className="medicine-details-photo"
+                src={photoUrl}
+              />
+            )}
+            <dl className="medicine-details-grid">
+              {medicineDetails.filter(([, value]) => value).map(([label, value]) => (
+                <div className="medicine-details-item" key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+              {photoError && <p className="medicine-details-photo-error">{photoError}</p>}
+            </dl>
+          </section>
+        )}
 
         <div className="batch-summary-strip">
           <span><Warehouse size={15} /> {batches.length} batch{batches.length === 1 ? "" : "es"}</span>

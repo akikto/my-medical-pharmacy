@@ -10,6 +10,14 @@ pub(crate) struct MedicineInventoryRecord {
     name: String,
     generic_name: Option<String>,
     company: Option<String>,
+    product_type: Option<String>,
+    strength: Option<String>,
+    composition: Option<String>,
+    barcode: Option<String>,
+    uses: Option<String>,
+    adult_dose: Option<String>,
+    child_dose: Option<String>,
+    photo_ref: Option<String>,
     rack_location: Option<String>,
     min_stock_alert: i64,
     gst_rate_basis_points: Option<i64>,
@@ -39,6 +47,14 @@ pub(crate) struct MedicineSearchRecord {
     name: String,
     generic_name: Option<String>,
     company: Option<String>,
+    product_type: Option<String>,
+    strength: Option<String>,
+    composition: Option<String>,
+    medicine_barcode: Option<String>,
+    uses: Option<String>,
+    adult_dose: Option<String>,
+    child_dose: Option<String>,
+    photo_ref: Option<String>,
     rack_location: Option<String>,
     min_stock_alert: i64,
     gst_rate_basis_points: Option<i64>,
@@ -285,6 +301,13 @@ pub(crate) struct TopSellingMedicineRecord {
     line_sales_before_invoice_discount: f64,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct MedicineOrderUsageRecord {
+    medicine_id: i64,
+    sold_units_30_days: i64,
+    sales_days_30_days: i64,
+}
+
 #[cfg(debug_assertions)]
 #[derive(Debug, Serialize)]
 pub(crate) struct DevelopmentDatabaseCounts {
@@ -349,6 +372,14 @@ fn query_inventory_medicines(
              m.name,
              m.generic_name,
              m.company,
+             m.product_type,
+             m.strength,
+             m.composition,
+             m.barcode,
+             m.uses,
+             m.adult_dose,
+             m.child_dose,
+             m.photo_ref,
              m.rack_location,
              m.min_stock_alert,
              m.gst_rate_basis_points,
@@ -380,6 +411,14 @@ fn query_inventory_medicines(
                 name: row.get("name")?,
                 generic_name: row.get("generic_name")?,
                 company: row.get("company")?,
+                product_type: row.get("product_type")?,
+                strength: row.get("strength")?,
+                composition: row.get("composition")?,
+                barcode: row.get("barcode")?,
+                uses: row.get("uses")?,
+                adult_dose: row.get("adult_dose")?,
+                child_dose: row.get("child_dose")?,
+                photo_ref: row.get("photo_ref")?,
                 rack_location: row.get("rack_location")?,
                 min_stock_alert: row.get("min_stock_alert")?,
                 gst_rate_basis_points: row.get("gst_rate_basis_points")?,
@@ -436,6 +475,14 @@ fn query_medicine_search(
              m.name,
              m.generic_name,
              m.company,
+             m.product_type,
+             m.strength,
+             m.composition,
+             m.barcode AS medicine_barcode,
+             m.uses,
+             m.adult_dose,
+             m.child_dose,
+             m.photo_ref,
              m.rack_location,
              m.min_stock_alert,
              m.gst_rate_basis_points,
@@ -464,7 +511,7 @@ fn query_medicine_search(
                  AND candidate.current_stock > 0
                  AND candidate.expiry_date >= date('now', 'localtime')
                ORDER BY
-                 CASE WHEN candidate.barcode = ?2 THEN 0 ELSE 1 END,
+                  CASE WHEN UPPER(TRIM(candidate.barcode)) = ?2 THEN 0 ELSE 1 END,
                  candidate.expiry_date ASC,
                  candidate.id ASC
                LIMIT 1
@@ -472,11 +519,13 @@ fn query_medicine_search(
            WHERE m.name LIKE ?1 ESCAPE '!'
               OR COALESCE(m.generic_name, '') LIKE ?1 ESCAPE '!'
               OR COALESCE(m.company, '') LIKE ?1 ESCAPE '!'
+               OR UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
+               OR COALESCE(m.barcode, '') LIKE ?1 ESCAPE '!'
               OR EXISTS (
                 SELECT 1 FROM medicine_batches AS barcode_batch
                 WHERE barcode_batch.medicine_id = m.id
                   AND (
-                    barcode_batch.barcode = ?2
+                    UPPER(TRIM(COALESCE(barcode_batch.barcode, ''))) = ?2
                     OR barcode_batch.barcode LIKE ?1 ESCAPE '!'
                   )
               )
@@ -484,8 +533,10 @@ fn query_medicine_search(
              CASE WHEN EXISTS (
                SELECT 1 FROM medicine_batches AS exact_barcode
                WHERE exact_barcode.medicine_id = m.id
-                 AND exact_barcode.barcode = ?2
-             ) THEN 0 ELSE 1 END,
+                  AND UPPER(TRIM(COALESCE(exact_barcode.barcode, ''))) = ?2
+              ) THEN 0
+              WHEN UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2 THEN 1
+              ELSE 2 END,
              m.name COLLATE NOCASE ASC,
              m.id ASC
            LIMIT ?3"#,
@@ -496,6 +547,14 @@ fn query_medicine_search(
                 name: row.get("name")?,
                 generic_name: row.get("generic_name")?,
                 company: row.get("company")?,
+                product_type: row.get("product_type")?,
+                strength: row.get("strength")?,
+                composition: row.get("composition")?,
+                medicine_barcode: row.get("medicine_barcode")?,
+                uses: row.get("uses")?,
+                adult_dose: row.get("adult_dose")?,
+                child_dose: row.get("child_dose")?,
+                photo_ref: row.get("photo_ref")?,
                 rack_location: row.get("rack_location")?,
                 min_stock_alert: row.get("min_stock_alert")?,
                 gst_rate_basis_points: row.get("gst_rate_basis_points")?,
@@ -1270,6 +1329,61 @@ fn query_top_selling_medicines(
     )
 }
 
+fn query_medicine_order_usage_for_date(
+    connection: &Connection,
+    medicine_id: i64,
+    as_of_date: &str,
+) -> Result<MedicineOrderUsageRecord, String> {
+    if medicine_id <= 0 {
+        return Err("Medicine id must be a positive whole number.".to_owned());
+    }
+    validate_iso_date(connection, as_of_date, "Usage date")?;
+    let mut records = query_rows(
+        connection,
+        r#"WITH recent_items AS (
+             SELECT
+               si.batch_id,
+               si.quantity,
+               date(s.created_at, 'localtime') AS sale_date
+             FROM sales AS s
+             INNER JOIN sale_items AS si ON si.sale_id = s.id
+             WHERE date(s.created_at, 'localtime')
+               BETWEEN date(?2, '-29 days') AND ?2
+               AND s.invoice_no NOT GLOB 'DEV-DEMO-SALE-*'
+           )
+           SELECT
+             m.id AS medicine_id,
+             COALESCE(SUM(recent_items.quantity), 0) AS sold_units_30_days,
+             COUNT(DISTINCT recent_items.sale_date) AS sales_days_30_days
+           FROM medicines AS m
+           LEFT JOIN medicine_batches AS b ON b.medicine_id = m.id
+           LEFT JOIN recent_items ON recent_items.batch_id = b.id
+           WHERE m.id = ?1
+           GROUP BY m.id"#,
+        params![medicine_id, as_of_date],
+        |row| {
+            Ok(MedicineOrderUsageRecord {
+                medicine_id: row.get("medicine_id")?,
+                sold_units_30_days: row.get("sold_units_30_days")?,
+                sales_days_30_days: row.get("sales_days_30_days")?,
+            })
+        },
+    )?;
+    records
+        .pop()
+        .ok_or_else(|| "Medicine was not found for the order suggestion.".to_owned())
+}
+
+fn query_medicine_order_usage(
+    connection: &Connection,
+    medicine_id: i64,
+) -> Result<MedicineOrderUsageRecord, String> {
+    let today = connection
+        .query_row("SELECT date('now', 'localtime')", [], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not read the local date for order usage: {error}"))?;
+    query_medicine_order_usage_for_date(connection, medicine_id, &today)
+}
+
 #[cfg(debug_assertions)]
 fn query_development_database_counts(
     connection: &Connection,
@@ -1480,6 +1594,14 @@ pub(crate) fn get_top_selling_medicines(
     query_top_selling_medicines(&open_pharmacy_connection(&app)?)
 }
 
+#[tauri::command]
+pub(crate) fn get_medicine_order_usage(
+    app: AppHandle,
+    medicine_id: i64,
+) -> Result<MedicineOrderUsageRecord, String> {
+    query_medicine_order_usage(&open_pharmacy_connection(&app)?, medicine_id)
+}
+
 #[cfg(debug_assertions)]
 #[tauri::command]
 pub(crate) fn check_development_database_empty(
@@ -1612,6 +1734,33 @@ mod tests {
     }
 
     #[test]
+    fn medicine_master_barcode_finds_its_record_and_keeps_fefo_batch_selection() {
+        let connection = migrated_connection();
+        insert_medicine(&connection, 1, "Scannable medicine", 1);
+        connection
+            .execute(
+                "UPDATE medicines SET barcode = 'MED-100' WHERE id = 1",
+                [],
+            )
+            .expect("set medicine master barcode");
+        let dates: (String, String) = connection
+            .query_row(
+                "SELECT date('now', 'localtime', '-1 day'), date('now', 'localtime', '+10 days')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("compute barcode fixture expiry dates");
+        insert_batch(&connection, 1, 1, "expired", &dates.0, 3, 2.0, None);
+        insert_batch(&connection, 2, 1, "sellable", &dates.1, 4, 3.0, Some("OTHER"));
+
+        let result = query_medicine_search(&connection, "MED-100", 10)
+            .expect("search the medicine master barcode");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].medicine_barcode.as_deref(), Some("MED-100"));
+        assert_eq!(result[0].batch_id, Some(2));
+    }
+
+    #[test]
     fn supplier_settings_purchase_and_sales_reads_preserve_nulls_and_order() {
         let connection = migrated_connection();
         insert_medicine(&connection, 1, "Medicine", 10);
@@ -1679,6 +1828,58 @@ mod tests {
         assert!(query_sale_details(&connection, "missing")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn medicine_order_usage_counts_recent_real_sales_and_ignores_old_and_demo_invoices() {
+        let connection = migrated_connection();
+        insert_medicine(&connection, 1, "Usage medicine", 5);
+        insert_batch(&connection, 1, 1, "expired", "2000-01-01", 50, 2.0, None);
+        insert_batch(&connection, 2, 1, "current", "2099-01-01", 3, 2.0, None);
+        let dates: (String, String, String, String) = connection
+            .query_row(
+                "SELECT date('now', 'localtime'), date('now', 'localtime', '-10 days'), date('now', 'localtime', '-29 days'), date('now', 'localtime', '-30 days')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("compute order-usage dates");
+        let sales = [
+            (1, "RECENT-TODAY", dates.0.as_str(), 3, 2),
+            (2, "RECENT-OLDER", dates.1.as_str(), 4, 1),
+            (3, "RECENT-BOUNDARY", dates.2.as_str(), 2, 2),
+            (4, "OUTSIDE-30-DAYS", dates.3.as_str(), 9, 2),
+            (5, "DEV-DEMO-SALE-1", dates.0.as_str(), 20, 2),
+        ];
+        for (id, invoice_no, date, quantity, batch_id) in sales {
+            connection
+                .execute(
+                    r#"INSERT INTO sales
+                       (id, invoice_no, subtotal, flat_discount, grand_total, payment_mode, created_at)
+                       VALUES (?1, ?2, 1, 0, 1, 'CASH', datetime(?3 || ' 12:00:00'))"#,
+                    params![id, invoice_no, date],
+                )
+                .expect("insert order-usage sale");
+            connection
+                .execute(
+                    r#"INSERT INTO sale_items
+                       (sale_id, batch_id, quantity, unit_price, item_discount, total_price, purchase_rate_at_sale)
+                       VALUES (?1, ?2, ?3, 1, 0, ?3, 1)"#,
+                    params![id, batch_id, quantity],
+                )
+                .expect("insert order-usage sale line");
+        }
+
+        let quick_check: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("quick-check the isolated QA database");
+        assert_eq!(quick_check, "ok");
+        let usage =
+            query_medicine_order_usage_for_date(&connection, 1, &dates.0).unwrap();
+        assert_eq!(usage.medicine_id, 1);
+        assert_eq!(usage.sold_units_30_days, 9);
+        assert_eq!(usage.sales_days_30_days, 3);
+        assert!(query_medicine_order_usage_for_date(&connection, 99, &dates.0).is_err());
+        assert!(query_medicine_order_usage_for_date(&connection, 0, &dates.0).is_err());
     }
 
     #[test]

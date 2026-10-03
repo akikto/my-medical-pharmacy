@@ -356,17 +356,21 @@ export function POSBilling({
 
   const addScannedBarcode = useCallback(
     async (barcode: string) => {
-      const code = barcode.trim();
+      const code = barcode.trim().toUpperCase();
       if (!code) {
         return;
       }
       try {
         const matches = await searchMedicines(code, 15);
-        const exact = matches.find(
-          (result) => result.fefo_batch?.barcode === code,
+        const exactBatch = matches.find(
+          (result) => result.fefo_batch?.barcode?.trim().toUpperCase() === code,
         );
+        const exactMedicine = matches.find(
+          (result) => result.medicine.barcode?.trim().toUpperCase() === code,
+        );
+        const exact = exactBatch ?? exactMedicine;
         if (!exact?.fefo_batch) {
-          throw new Error(`No available medicine batch matches barcode ${code}.`);
+          throw new Error(`No available stock matches barcode ${code}.`);
         }
         await addMedicine(exact, exact.fefo_batch.id);
       } catch (error) {

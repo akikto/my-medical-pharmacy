@@ -2552,7 +2552,7 @@ kbd {
     background: #fff !important;
   }
 
-  .app-shell,
+  body:not([data-inventory-print]) .app-shell,
   .receipt-actions {
     display: none !important;
   }

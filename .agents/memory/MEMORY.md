@@ -7,3 +7,4 @@
 - [Nested Rust package installer](nested-rust-package-installer.md) — The Rust installer can initialize a root Cargo project instead of targeting the nested Tauri crate.
 - [GitHub workflow pushes](github-workflow-push.md) — Repo write access may not include workflow-file permission, and uploading Git objects does not update the branch ref.
 - [GST calculation parity](gst-calculation-parity.md) — Keep live GST preview and Rust invoice totals consistent using paise arithmetic and matching precedence.
+- [Order suggestion policy](order-suggestion-policy.md) — Use deterministic restock targets, subtract sellable stock and pending orders, and flag sparse sales history.

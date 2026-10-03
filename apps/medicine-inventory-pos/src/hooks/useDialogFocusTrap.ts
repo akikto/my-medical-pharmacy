@@ -15,8 +15,11 @@ const FOCUSABLE_SELECTOR = [
 
 export function useDialogFocusTrap<T extends HTMLElement>(
   dialogRef: DialogRef<T>,
+  onEscape?: () => void,
+  isEnabled = true,
 ) {
   useEffect(() => {
+    if (!isEnabled) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
 
@@ -42,6 +45,11 @@ export function useDialogFocusTrap<T extends HTMLElement>(
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onEscape) {
+        event.preventDefault();
+        onEscape();
+        return;
+      }
       const isBackwardTab = event.shiftKey || event.key === "ISO_Left_Tab";
       const isTabKey =
         event.key === "Tab" || event.key === "ISO_Left_Tab" || event.code === "Tab";
@@ -81,5 +89,5 @@ export function useDialogFocusTrap<T extends HTMLElement>(
       document.removeEventListener("keydown", handleKeyDown, true);
       document.removeEventListener("focusin", handleFocusIn, true);
     };
-  }, [dialogRef]);
+  }, [dialogRef, isEnabled, onEscape]);
 }

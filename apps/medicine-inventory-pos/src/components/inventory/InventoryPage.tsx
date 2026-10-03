@@ -1,33 +1,48 @@
 import {
   AlertTriangle,
   Boxes,
+  ClipboardList,
   ChevronRight,
   CircleAlert,
+  Download,
   PackagePlus,
   Pencil,
   Plus,
+  Printer,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  adjustBatchStockBulk,
   adjustBatchStock,
   createMedicine,
   deleteMedicine,
   getInventoryMedicines,
+  importMedicines,
   updateBatchDetails,
+  updateBulkReorderThresholds,
   updateMedicine,
 } from "../../services/inventoryService";
+import type { BulkStockAdjustmentInput } from "../../services/inventoryService";
 import type {
   InventoryFilter,
   MedicineBatch,
   MedicineFormValues,
   MedicineInventoryRow,
+  ImportedMedicineRecord,
 } from "../../types";
 import { formatMoney } from "../../utils/money";
 import { BatchManagementDialog } from "./BatchManagementDialog";
 import { BatchPricingDialog } from "./BatchPricingDialog";
+import { BulkStockAdjustmentDialog } from "./BulkStockAdjustmentDialog";
+import { BulkReorderThresholdDialog } from "./BulkReorderThresholdDialog";
+import { MedicineImportDialog } from "./MedicineImportDialog";
+import { StockExportDialog } from "./StockExportDialog";
+import { BarcodeLabelDialog } from "./BarcodeLabelDialog";
+import { InventoryOrderDialog } from "./InventoryOrderDialog";
 import { MedicineFormDialog } from "./MedicineFormDialog";
 import { StockAdjustmentDialog } from "./StockAdjustmentDialog";
 import "./inventory.css";
@@ -55,9 +70,18 @@ export function InventoryPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [medicineDialog, setMedicineDialog] = useState<MedicineInventoryRow | null | undefined>(undefined);
   const [selectedMedicineId, setSelectedMedicineId] = useState<number | null>(null);
+  const [orderMedicine, setOrderMedicine] = useState<MedicineInventoryRow | null>(null);
   const [batchAction, setBatchAction] = useState<BatchAction>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [selectedMedicineIds, setSelectedMedicineIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [isBulkStockDialogOpen, setIsBulkStockDialogOpen] = useState(false);
+  const [isBulkThresholdDialogOpen, setIsBulkThresholdDialogOpen] = useState(false);
+  const [isMedicineImportDialogOpen, setIsMedicineImportDialogOpen] = useState(false);
+  const [isStockExportDialogOpen, setIsStockExportDialogOpen] = useState(false);
+  const [isBarcodeLabelDialogOpen, setIsBarcodeLabelDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +127,13 @@ export function InventoryPage() {
 
   const selectedMedicine =
     medicines.find((medicine) => medicine.id === selectedMedicineId) ?? null;
+  const selectedMedicines = useMemo(
+    () => medicines.filter((medicine) => selectedMedicineIds.has(medicine.id)),
+    [medicines, selectedMedicineIds],
+  );
+  const allVisibleSelected =
+    visibleMedicines.length > 0 &&
+    visibleMedicines.every((medicine) => selectedMedicineIds.has(medicine.id));
 
   async function saveMedicine(values: MedicineFormValues) {
     setIsSaving(true);
@@ -132,6 +163,11 @@ export function InventoryPage() {
     setNotice(null);
     try {
       await deleteMedicine(medicine.id);
+      setSelectedMedicineIds((current) => {
+        const next = new Set(current);
+        next.delete(medicine.id);
+        return next;
+      });
       setNotice({ kind: "success", message: `${medicine.name} was deleted.` });
       setRefreshKey((current) => current + 1);
     } catch (error) {
@@ -188,6 +224,101 @@ export function InventoryPage() {
     }
   }
 
+  function toggleMedicineSelection(medicineId: number, selected: boolean) {
+    if (selected && !selectedMedicineIds.has(medicineId) && selectedMedicineIds.size >= 100) {
+      setNotice({ kind: "error", message: "Bulk stock adjustment is limited to 100 medicines at a time." });
+      return;
+    }
+    setSelectedMedicineIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(medicineId);
+      else next.delete(medicineId);
+      return next;
+    });
+  }
+
+  function toggleVisibleSelection() {
+    if (allVisibleSelected) {
+      const visibleIds = new Set(visibleMedicines.map((medicine) => medicine.id));
+      setSelectedMedicineIds((current) => new Set([...current].filter((id) => !visibleIds.has(id))));
+      return;
+    }
+    const toAdd = visibleMedicines.filter((medicine) => !selectedMedicineIds.has(medicine.id));
+    if (selectedMedicineIds.size + toAdd.length > 100) {
+      setNotice({ kind: "error", message: "Select no more than 100 medicines for one bulk stock adjustment." });
+      return;
+    }
+    setSelectedMedicineIds((current) => {
+      const next = new Set(current);
+      for (const medicine of visibleMedicines) next.add(medicine.id);
+      return next;
+    });
+  }
+
+  async function saveBulkStock(adjustments: BulkStockAdjustmentInput[], reason: string) {
+    setIsSaving(true);
+    setDialogError(null);
+    try {
+      await adjustBatchStockBulk({ adjustments, reason });
+      setIsBulkStockDialogOpen(false);
+      setSelectedMedicineIds(new Set());
+      setNotice({
+        kind: "success",
+        message: `${adjustments.length} batch stock adjustment${adjustments.length === 1 ? "" : "s"} saved together.`,
+      });
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      setDialogError(getErrorMessage(error));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveBulkReorderThreshold(minStockAlert: number) {
+    setIsSaving(true);
+    setDialogError(null);
+    try {
+      await updateBulkReorderThresholds({
+        medicineIds: selectedMedicines.map((medicine) => medicine.id),
+        minStockAlert,
+      });
+      setIsBulkThresholdDialogOpen(false);
+      setSelectedMedicineIds(new Set());
+      setNotice({
+        kind: "success",
+        message: `Reorder level updated for ${selectedMedicines.length} medicines.`,
+      });
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      setDialogError(getErrorMessage(error));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveImportedMedicines(
+    records: ImportedMedicineRecord[],
+    createdCount: number,
+    updatedCount: number,
+  ) {
+    setIsSaving(true);
+    setDialogError(null);
+    try {
+      await importMedicines(records);
+      setIsMedicineImportDialogOpen(false);
+      setSelectedMedicineIds(new Set());
+      setNotice({
+        kind: "success",
+        message: `Import complete: ${createdCount} new medicines and ${updatedCount} updates.`,
+      });
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      setDialogError(getErrorMessage(error));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   return (
     <section className="workspace-page inventory-page" data-testid="page-inventory">
       <header className="workspace-page-header">
@@ -196,17 +327,30 @@ export function InventoryPage() {
           <h1>Medicine &amp; batch inventory</h1>
           <p>Maintain medicine records, expiry visibility, and on-hand stock.</p>
         </div>
-        <button
-          className="button button-primary"
-          data-testid="button-add-medicine"
-          onClick={() => {
-            setDialogError(null);
-            setMedicineDialog(null);
-          }}
-          type="button"
-        >
-          <Plus size={16} /> Add medicine
-        </button>
+        <div className="inventory-header-actions">
+          <button
+            className="button button-secondary"
+            data-testid="button-import-medicines"
+            onClick={() => {
+              setDialogError(null);
+              setIsMedicineImportDialogOpen(true);
+            }}
+            type="button"
+          >
+            <Upload size={15} /> Import Excel
+          </button>
+          <button
+            className="button button-primary"
+            data-testid="button-add-medicine"
+            onClick={() => {
+              setDialogError(null);
+              setMedicineDialog(null);
+            }}
+            type="button"
+          >
+            <Plus size={16} /> Add medicine
+          </button>
+        </div>
       </header>
 
       {notice && (
@@ -253,7 +397,10 @@ export function InventoryPage() {
             <input
               aria-label="Search medicines"
               data-testid="input-inventory-search"
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => {
+                setSelectedMedicineIds(new Set());
+                setSearchQuery(event.target.value);
+              }}
               placeholder="Search medicine, generic, company, or rack…"
               value={searchQuery}
             />
@@ -270,7 +417,10 @@ export function InventoryPage() {
                 className={activeFilter === filter.value ? "is-active" : ""}
                 data-testid={`filter-inventory-${filter.value}`}
                 key={filter.value}
-                onClick={() => setActiveFilter(filter.value)}
+                onClick={() => {
+                  setSelectedMedicineIds(new Set());
+                  setActiveFilter(filter.value);
+                }}
                 type="button"
               >
                 {filter.label}
@@ -285,6 +435,74 @@ export function InventoryPage() {
                 )}
               </button>
             ))}
+          </div>
+          <button
+            className="button button-secondary"
+            data-testid="button-export-stock"
+            disabled={isLoading}
+            onClick={() => setIsStockExportDialogOpen(true)}
+            type="button"
+          >
+            <Download size={15} /> Export stock
+          </button>
+          <button
+            className="button button-secondary"
+            data-testid="button-barcode-labels"
+            disabled={isLoading}
+            onClick={() => setIsBarcodeLabelDialogOpen(true)}
+            type="button"
+          >
+            <Printer size={15} /> Barcode labels
+          </button>
+          <div aria-label="Bulk stock selection" className="inventory-selection-actions" role="group">
+            <button
+              aria-pressed={allVisibleSelected}
+              className="button button-quiet"
+              data-testid="button-toggle-visible-medicines"
+              disabled={visibleMedicines.length === 0}
+              onClick={toggleVisibleSelection}
+              type="button"
+            >
+              {allVisibleSelected ? "Clear visible selection" : "Select visible"}
+            </button>
+            {selectedMedicineIds.size > 0 && (
+              <>
+                <span className="inventory-selection-count" aria-live="polite">
+                  {selectedMedicineIds.size} selected · maximum 100
+                </span>
+                <button
+                  className="button button-secondary"
+                  data-testid="button-bulk-stock-adjustment"
+                  disabled={selectedMedicines.length !== selectedMedicineIds.size}
+                  onClick={() => {
+                    setDialogError(null);
+                    setIsBulkStockDialogOpen(true);
+                  }}
+                  type="button"
+                >
+                  Adjust stock
+                </button>
+                <button
+                  className="button button-secondary"
+                  data-testid="button-bulk-reorder-level"
+                  disabled={selectedMedicines.length !== selectedMedicineIds.size}
+                  onClick={() => {
+                    setDialogError(null);
+                    setIsBulkThresholdDialogOpen(true);
+                  }}
+                  type="button"
+                >
+                  Set reorder level
+                </button>
+                <button
+                  className="button button-quiet"
+                  onClick={() => setSelectedMedicineIds(new Set())}
+                  type="button"
+                >
+                  Clear selection
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -311,6 +529,7 @@ export function InventoryPage() {
             <table className="workspace-table inventory-table">
               <thead>
                 <tr>
+                  <th scope="col"><span className="sr-only">Select</span></th>
                   <th scope="col">Medicine</th>
                   <th scope="col">Rack</th>
                   <th scope="col">Sellable stock</th>
@@ -324,6 +543,22 @@ export function InventoryPage() {
                   const lowStock = medicine.available_stock <= medicine.min_stock_alert;
                   return (
                     <tr key={medicine.id} data-testid={`row-medicine-${medicine.id}`}>
+                      <td>
+                        <input
+                          aria-label={`Select ${medicine.name} for bulk stock adjustment`}
+                          checked={selectedMedicineIds.has(medicine.id)}
+                          className="inventory-row-select"
+                          data-testid={`checkbox-select-medicine-${medicine.id}`}
+                          disabled={
+                            !selectedMedicineIds.has(medicine.id) &&
+                            selectedMedicineIds.size >= 100
+                          }
+                          onChange={(event) =>
+                            toggleMedicineSelection(medicine.id, event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                      </td>
                       <td>
                         <div className="inventory-medicine-name">
                           <strong>{medicine.name}</strong>
@@ -356,6 +591,16 @@ export function InventoryPage() {
                       </td>
                       <td>
                         <div className="workspace-row-actions inventory-main-actions">
+                          {lowStock && (
+                            <button
+                              className="button button-quiet inventory-order-row-button"
+                              data-testid={`button-order-medicine-${medicine.id}`}
+                              onClick={() => setOrderMedicine(medicine)}
+                              type="button"
+                            >
+                              <ClipboardList size={14} /> Order
+                            </button>
+                          )}
                           <button
                             className="button button-quiet"
                             data-testid={`button-manage-batches-${medicine.id}`}
@@ -407,6 +652,79 @@ export function InventoryPage() {
         />
       )}
 
+      {isMedicineImportDialogOpen && (
+        <MedicineImportDialog
+          error={dialogError}
+          isSaving={isSaving}
+          onClose={() => {
+            setIsMedicineImportDialogOpen(false);
+            setDialogError(null);
+          }}
+          onImport={(records, createdCount, updatedCount) =>
+            void saveImportedMedicines(records, createdCount, updatedCount)
+          }
+        />
+      )}
+
+      {isStockExportDialogOpen && (
+        <StockExportDialog
+          activeFilter={activeFilter}
+          filterLabel={filters.find((filter) => filter.value === activeFilter)?.label ?? "All medicines"}
+          medicines={visibleMedicines}
+          onClose={() => setIsStockExportDialogOpen(false)}
+          searchQuery={searchQuery}
+        />
+      )}
+
+      {isBarcodeLabelDialogOpen && (
+        <BarcodeLabelDialog
+          filterLabel={filters.find((filter) => filter.value === activeFilter)?.label ?? "All medicines"}
+          medicines={visibleMedicines}
+          onClose={() => setIsBarcodeLabelDialogOpen(false)}
+        />
+      )}
+
+      {orderMedicine && (
+        <InventoryOrderDialog
+          medicine={orderMedicine}
+          onClose={() => setOrderMedicine(null)}
+          onSaved={() => {
+            const medicineName = orderMedicine.name;
+            setOrderMedicine(null);
+            setNotice({
+              kind: "success",
+              message: `${medicineName} was added to today’s order list. No purchase invoice was created.`,
+            });
+          }}
+        />
+      )}
+
+      {isBulkStockDialogOpen && selectedMedicines.length > 0 && (
+        <BulkStockAdjustmentDialog
+          error={dialogError}
+          isSaving={isSaving}
+          medicines={selectedMedicines}
+          onClose={() => {
+            setIsBulkStockDialogOpen(false);
+            setDialogError(null);
+          }}
+          onSave={(adjustments, reason) => void saveBulkStock(adjustments, reason)}
+        />
+      )}
+
+      {isBulkThresholdDialogOpen && selectedMedicines.length > 0 && (
+        <BulkReorderThresholdDialog
+          error={dialogError}
+          isSaving={isSaving}
+          medicines={selectedMedicines}
+          onClose={() => {
+            setIsBulkThresholdDialogOpen(false);
+            setDialogError(null);
+          }}
+          onSave={(minStockAlert) => void saveBulkReorderThreshold(minStockAlert)}
+        />
+      )}
+
       {selectedMedicine && (
         <BatchManagementDialog
           medicine={selectedMedicine}
@@ -423,6 +741,7 @@ export function InventoryPage() {
             setBatchAction({ kind: "edit", batch });
           }}
           refreshKey={refreshKey}
+          suspendFocusTrap={batchAction !== null}
         />
       )}
 
