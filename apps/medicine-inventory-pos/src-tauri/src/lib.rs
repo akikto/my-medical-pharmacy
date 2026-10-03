@@ -22,6 +22,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod backup_package;
+mod financial_reports;
 mod purchase_management;
 mod reads;
 pub(crate) use purchase_management::PurchaseRequest;
@@ -5822,6 +5823,8 @@ pub fn run() {
             get_sale_details,
             get_sales_report_summary,
             get_sales_report_rows,
+            financial_reports::get_report_date_range,
+            financial_reports::get_financial_report,
             get_weekly_sales,
             get_order_list,
             get_dashboard_inventory_summary,
@@ -5873,6 +5876,8 @@ pub fn run() {
         get_sale_details,
         get_sales_report_summary,
         get_sales_report_rows,
+        financial_reports::get_report_date_range,
+        financial_reports::get_financial_report,
         get_weekly_sales,
         get_order_list,
         get_dashboard_inventory_summary,

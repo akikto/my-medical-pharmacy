@@ -10,7 +10,7 @@ import {
   Search,
   UsersRound,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collectCustomerPayment,
   getCustomerLedger,
@@ -48,7 +48,15 @@ function formatDateTime(value: string): string {
       });
 }
 
-export function CustomersPage() {
+interface CustomersPageProps {
+  initialCustomerId?: number | null;
+  onInitialCustomerConsumed?: () => void;
+}
+
+export function CustomersPage({
+  initialCustomerId,
+  onInitialCustomerConsumed,
+}: CustomersPageProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
@@ -72,9 +80,19 @@ export function CustomersPage() {
   const [isSavingPayment, setIsSavingPayment] = useState(false);
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const pendingInitialCustomerId = useRef<number | null>(null);
   const selectedCustomer = customers.find(
     (customer) => customer.id === selectedCustomerId,
   ) ?? null;
+
+  useEffect(() => {
+    if (initialCustomerId == null) return;
+    pendingInitialCustomerId.current = initialCustomerId;
+    setSearchTerm("");
+    setIncludeInactive(true);
+    setSelectedCustomerId(initialCustomerId);
+    onInitialCustomerConsumed?.();
+  }, [initialCustomerId, onInitialCustomerConsumed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +103,17 @@ export function CustomersPage() {
         .then((result) => {
           if (cancelled) return;
           setCustomers(result);
+          const requestedCustomerId = pendingInitialCustomerId.current;
+          if (requestedCustomerId !== null) {
+            pendingInitialCustomerId.current = null;
+            if (result.some((customer) => customer.id === requestedCustomerId)) {
+              setSelectedCustomerId(requestedCustomerId);
+            } else {
+              setSelectedCustomerId(null);
+              setLoadError("The selected customer is no longer available. Refresh the customer list and try again.");
+            }
+            return;
+          }
           setSelectedCustomerId((current) =>
             result.some((customer) => customer.id === current)
               ? current
