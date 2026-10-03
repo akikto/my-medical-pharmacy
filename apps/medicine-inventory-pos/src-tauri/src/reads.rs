@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, Params, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::{open_pharmacy_connection, validate_iso_date};
@@ -261,6 +261,90 @@ pub(crate) struct SaleRecord {
     sgst_amount: f64,
     igst_amount: f64,
     total_gst: f64,
+    status: String,
+    payment_reference: Option<String>,
+    notes: Option<String>,
+    cancelled_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SalesHistoryFilter {
+    search_invoice: Option<String>,
+    from_date: Option<String>,
+    to_date: Option<String>,
+    customer_id: Option<i64>,
+    payment_mode: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SalesHistoryRecord {
+    id: i64,
+    invoice_no: String,
+    customer_id: Option<i64>,
+    customer_name: Option<String>,
+    customer_phone: Option<String>,
+    subtotal: f64,
+    discount: f64,
+    flat_discount: f64,
+    grand_total: f64,
+    payment_mode: String,
+    payment_reference: Option<String>,
+    status: String,
+    returned_total: f64,
+    cash_tendered: f64,
+    change_due: f64,
+    created_at: String,
+    item_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SaleReturnItemRecord {
+    sale_item_id: i64,
+    medicine_name: String,
+    batch_no: String,
+    quantity: i64,
+    refund: f64,
+    total_gst: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SaleReturnRecord {
+    id: i64,
+    return_no: String,
+    total: f64,
+    customer_due_credit: f64,
+    refund_mode: String,
+    payment_reference: Option<String>,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
+    created_at: String,
+    items: Vec<SaleReturnItemRecord>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SaleCorrectionRecord {
+    id: i64,
+    before_json: String,
+    after_json: String,
+    adjustment_debit: f64,
+    adjustment_credit: f64,
+    adjustment_mode: Option<String>,
+    adjustment_reference: Option<String>,
+    note: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SaleVoidRecord {
+    refund: f64,
+    refund_mode: String,
+    payment_reference: Option<String>,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
     created_at: String,
 }
 
@@ -287,6 +371,7 @@ pub(crate) struct SaleItemDetailRecord {
     sale_id: i64,
     batch_id: i64,
     quantity: i64,
+    returned_quantity: i64,
     unit_price: f64,
     item_discount: f64,
     total_price: f64,
@@ -323,9 +408,11 @@ pub(crate) struct CustomerLedgerEntryRecord {
     customer_id: i64,
     entry_type: String,
     invoice_no: Option<String>,
+    reference: Option<String>,
     debit: f64,
     credit: f64,
     payment_mode: Option<String>,
+    payment_reference: Option<String>,
     upi_transaction_id: Option<String>,
     note: Option<String>,
     created_at: String,
@@ -336,20 +423,32 @@ pub(crate) struct CustomerLedgerEntryRecord {
 pub(crate) struct SaleDetailsRecord {
     sale: SaleRecord,
     items: Vec<SaleItemDetailRecord>,
+    returns: Vec<SaleReturnRecord>,
+    corrections: Vec<SaleCorrectionRecord>,
+    void: Option<SaleVoidRecord>,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SalesReportSummaryRecord {
     total_revenue: f64,
+    gross_sales: f64,
+    returned_total: f64,
+    voided_total: f64,
+    net_revenue: f64,
     gross_profit: f64,
+    net_gross_profit: f64,
     total_invoices: i64,
     cash_revenue: f64,
+    net_cash_revenue: f64,
     cash_invoices: i64,
     card_upi_revenue: f64,
+    net_card_upi_revenue: f64,
     card_upi_invoices: i64,
     other_revenue: f64,
+    net_other_revenue: f64,
     other_invoices: i64,
     profit_unavailable_invoices: i64,
+    net_profit_unavailable_invoices: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +458,9 @@ pub(crate) struct SalesReportRowRecord {
     customer_name: Option<String>,
     payment_mode: String,
     grand_total: f64,
+    status: String,
+    returned_total: f64,
+    voided_total: f64,
     created_at: String,
 }
 
@@ -832,12 +934,19 @@ fn query_customers(
              c.notes,
              c.state_code,
              c.active,
-             COALESCE(SUM(l.debit_cents), 0) / 100.0 AS credit_total,
-             COALESCE(SUM(l.credit_cents), 0) / 100.0 AS amount_paid,
+              COALESCE(SUM(l.debit_cents), 0) / 100.0 AS credit_total,
+              COALESCE(SUM(CASE WHEN l.entry_type = 'COLLECTION'
+                                THEN l.credit_cents ELSE 0 END), 0) / 100.0 AS amount_paid,
              COALESCE(SUM(l.debit_cents - l.credit_cents), 0) / 100.0 AS balance_due,
              c.created_at
            FROM customers AS c
-           LEFT JOIN customer_ledger AS l ON l.customer_id = c.id
+            LEFT JOIN (
+              SELECT customer_id, entry_type, debit_cents, credit_cents
+              FROM customer_ledger
+              UNION ALL
+              SELECT customer_id, entry_type, debit_cents, credit_cents
+              FROM customer_ledger_events
+            ) AS l ON l.customer_id = c.id
            WHERE (?2 = 1 OR c.active = 1)
              AND (
                ?1 IS NULL
@@ -877,9 +986,22 @@ fn query_customer_ledger(
     }
     let rows = query_rows(
         connection,
-        r#"SELECT id, customer_id, entry_type, invoice_no, debit_cents, credit_cents,
-                  payment_mode, upi_transaction_id, note, created_at
-           FROM customer_ledger
+        r#"SELECT id, customer_id, entry_type, invoice_no, reference,
+                  debit_cents, credit_cents, payment_mode, payment_reference,
+                  upi_transaction_id, note, created_at
+           FROM (
+             SELECT id, customer_id, entry_type, invoice_no,
+                    invoice_no AS reference, debit_cents, credit_cents,
+                    payment_mode, payment_reference, upi_transaction_id,
+                    note, created_at
+             FROM customer_ledger
+             UNION ALL
+             SELECT -id AS id, customer_id, entry_type, invoice_no,
+                    COALESCE(reference, invoice_no) AS reference,
+                    debit_cents, credit_cents, payment_mode, payment_reference,
+                    upi_transaction_id, note, created_at
+             FROM customer_ledger_events
+           )
            WHERE customer_id = ?1
            ORDER BY created_at ASC, id ASC"#,
         [customer_id],
@@ -889,9 +1011,11 @@ fn query_customer_ledger(
                 row.get::<_, i64>("customer_id")?,
                 row.get::<_, String>("entry_type")?,
                 row.get::<_, Option<String>>("invoice_no")?,
+                row.get::<_, Option<String>>("reference")?,
                 row.get::<_, i64>("debit_cents")?,
                 row.get::<_, i64>("credit_cents")?,
                 row.get::<_, Option<String>>("payment_mode")?,
+                row.get::<_, Option<String>>("payment_reference")?,
                 row.get::<_, Option<String>>("upi_transaction_id")?,
                 row.get::<_, Option<String>>("note")?,
                 row.get::<_, String>("created_at")?,
@@ -907,9 +1031,11 @@ fn query_customer_ledger(
                 customer_id,
                 entry_type,
                 invoice_no,
+                reference,
                 debit_cents,
                 credit_cents,
                 payment_mode,
+                payment_reference,
                 upi_transaction_id,
                 note,
                 created_at,
@@ -920,9 +1046,11 @@ fn query_customer_ledger(
                     customer_id,
                     entry_type,
                     invoice_no,
+                    reference,
                     debit: debit_cents as f64 / 100.0,
                     credit: credit_cents as f64 / 100.0,
                     payment_mode,
+                    payment_reference,
                     upi_transaction_id,
                     note,
                     created_at,
@@ -1315,6 +1443,10 @@ fn map_sale(row: &Row<'_>) -> rusqlite::Result<SaleRecord> {
         sgst_amount: row.get("sgst_amount")?,
         igst_amount: row.get("igst_amount")?,
         total_gst: row.get("total_gst")?,
+        status: row.get("status")?,
+        payment_reference: row.get("payment_reference")?,
+        notes: row.get("notes")?,
+        cancelled_at: row.get("cancelled_at")?,
         created_at: row.get("created_at")?,
     })
 }
@@ -1365,6 +1497,123 @@ fn query_recent_sales(
     )
 }
 
+fn query_sales_history(
+    connection: &Connection,
+    filter: SalesHistoryFilter,
+) -> Result<Vec<SalesHistoryRecord>, String> {
+    if filter.customer_id.is_some_and(|id| id <= 0) {
+        return Err("Customer id must be a positive whole number.".to_owned());
+    }
+    let search = filter
+        .search_invoice
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.len() > 100 {
+                Err("Invoice search must be 100 characters or fewer.".to_owned())
+            } else {
+                Ok(format!("%{}%", value.replace('%', "\\%").replace('_', "\\_")))
+            }
+        })
+        .transpose()?;
+    if let Some(from_date) = filter.from_date.as_deref() {
+        validate_iso_date(connection, from_date, "Start date")?;
+    }
+    if let Some(to_date) = filter.to_date.as_deref() {
+        validate_iso_date(connection, to_date, "End date")?;
+    }
+    if matches!(
+        (filter.from_date.as_deref(), filter.to_date.as_deref()),
+        (Some(from_date), Some(to_date)) if from_date > to_date
+    ) {
+        return Err("Start date must not be after end date.".to_owned());
+    }
+    let payment_mode = filter
+        .payment_mode
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_uppercase)
+        .filter(|value| !value.is_empty() && value != "ALL");
+    if payment_mode.as_deref().is_some_and(|mode| {
+        !matches!(mode, "CASH" | "CARD" | "UPI" | "CREDIT" | "OTHER")
+    }) {
+        return Err("Choose a valid sales-history payment filter.".to_owned());
+    }
+    let status = filter
+        .status
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_uppercase)
+        .filter(|value| !value.is_empty() && value != "ALL");
+    if status.as_deref().is_some_and(|value| {
+        !matches!(
+            value,
+            "ACTIVE" | "PARTIALLY_RETURNED" | "RETURNED" | "CANCELLED"
+        )
+    }) {
+        return Err("Choose a valid sales-history status filter.".to_owned());
+    }
+    let limit = filter.limit.unwrap_or(500);
+    if !(1..=1000).contains(&limit) {
+        return Err("Sales-history limit must be between 1 and 1,000.".to_owned());
+    }
+    query_rows(
+        connection,
+        r#"SELECT s.id, s.invoice_no, s.customer_id, s.customer_name,
+                  s.customer_phone, s.subtotal, s.discount, s.flat_discount,
+                  s.grand_total, s.payment_mode, s.payment_reference, s.status,
+                  COALESCE(returns.total_cents, 0) / 100.0 AS returned_total,
+                  s.cash_tendered, s.change_due, s.created_at,
+                  COUNT(DISTINCT si.id) AS item_count
+           FROM sales AS s
+           LEFT JOIN sale_items AS si ON si.sale_id = s.id
+           LEFT JOIN (
+             SELECT sale_id, SUM(total_cents) AS total_cents
+             FROM sale_returns GROUP BY sale_id
+           ) AS returns ON returns.sale_id = s.id
+           WHERE (?1 IS NULL OR s.invoice_no LIKE ?1 ESCAPE '\')
+             AND (?2 IS NULL OR date(s.created_at, 'localtime') >= ?2)
+             AND (?3 IS NULL OR date(s.created_at, 'localtime') <= ?3)
+             AND (?4 IS NULL OR s.customer_id = ?4)
+             AND (?5 IS NULL OR s.payment_mode = ?5)
+             AND (?6 IS NULL OR s.status = ?6)
+           GROUP BY s.id
+           ORDER BY s.created_at DESC, s.id DESC
+           LIMIT ?7"#,
+        params![
+            search,
+            filter.from_date,
+            filter.to_date,
+            filter.customer_id,
+            payment_mode,
+            status,
+            limit
+        ],
+        |row| {
+            Ok(SalesHistoryRecord {
+                id: row.get("id")?,
+                invoice_no: row.get("invoice_no")?,
+                customer_id: row.get("customer_id")?,
+                customer_name: row.get("customer_name")?,
+                customer_phone: row.get("customer_phone")?,
+                subtotal: row.get("subtotal")?,
+                discount: row.get("discount")?,
+                flat_discount: row.get("flat_discount")?,
+                grand_total: row.get("grand_total")?,
+                payment_mode: row.get("payment_mode")?,
+                payment_reference: row.get("payment_reference")?,
+                status: row.get("status")?,
+                returned_total: row.get("returned_total")?,
+                cash_tendered: row.get("cash_tendered")?,
+                change_due: row.get("change_due")?,
+                created_at: row.get("created_at")?,
+                item_count: row.get("item_count")?,
+            })
+        },
+    )
+}
+
 fn query_sale_details(
     connection: &Connection,
     invoice_no: &str,
@@ -1376,6 +1625,7 @@ fn query_sale_details(
                   flat_discount, grand_total, payment_mode, cash_tendered, change_due,
                   upi_transaction_id, upi_payment_verified, gst_enabled, gst_pricing_mode, tax_type,
                   taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst,
+                  status, payment_reference, notes, cancelled_at,
                   created_at
            FROM sales
            WHERE invoice_no = ?1
@@ -1394,6 +1644,11 @@ fn query_sale_details(
              si.sale_id,
              si.batch_id,
              si.quantity,
+             COALESCE((
+               SELECT SUM(ri.quantity)
+               FROM sale_return_items AS ri
+               WHERE ri.sale_item_id = si.id
+             ), 0) AS returned_quantity,
              si.unit_price,
              si.item_discount,
              si.total_price,
@@ -1419,6 +1674,7 @@ fn query_sale_details(
                 sale_id: row.get("sale_id")?,
                 batch_id: row.get("batch_id")?,
                 quantity: row.get("quantity")?,
+                returned_quantity: row.get("returned_quantity")?,
                 unit_price: row.get("unit_price")?,
                 item_discount: row.get("item_discount")?,
                 total_price: row.get("total_price")?,
@@ -1435,7 +1691,101 @@ fn query_sale_details(
             })
         },
     )?;
-    Ok(Some(SaleDetailsRecord { sale, items }))
+    let returns = query_rows(
+        connection,
+        r#"SELECT id, return_no, total_cents, customer_due_credit_cents,
+                  refund_mode, payment_reference, upi_transaction_id, note, created_at
+           FROM sale_returns WHERE sale_id = ?1 ORDER BY id ASC"#,
+        [sale.id],
+        |row| {
+            let return_id: i64 = row.get("id")?;
+            let items = query_rows(
+                connection,
+                r#"SELECT ri.sale_item_id, m.name AS medicine_name, b.batch_no,
+                          ri.quantity, ri.refund_cents, ri.total_gst_cents
+                   FROM sale_return_items AS ri
+                   INNER JOIN sale_items AS si ON si.id = ri.sale_item_id
+                   INNER JOIN medicine_batches AS b ON b.id = ri.batch_id
+                   INNER JOIN medicines AS m ON m.id = b.medicine_id
+                   WHERE ri.return_id = ?1 ORDER BY ri.id ASC"#,
+                [return_id],
+                |item| {
+                    Ok(SaleReturnItemRecord {
+                        sale_item_id: item.get("sale_item_id")?,
+                        medicine_name: item.get("medicine_name")?,
+                        batch_no: item.get("batch_no")?,
+                        quantity: item.get("quantity")?,
+                        refund: item.get::<_, i64>("refund_cents")? as f64 / 100.0,
+                        total_gst: item.get::<_, i64>("total_gst_cents")? as f64 / 100.0,
+                    })
+                },
+            )
+            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                Box::new(std::io::Error::other(error)),
+            ))?;
+            Ok(SaleReturnRecord {
+                id: return_id,
+                return_no: row.get("return_no")?,
+                total: row.get::<_, i64>("total_cents")? as f64 / 100.0,
+                customer_due_credit: row.get::<_, i64>("customer_due_credit_cents")? as f64 / 100.0,
+                refund_mode: row.get("refund_mode")?,
+                payment_reference: row.get("payment_reference")?,
+                upi_transaction_id: row.get("upi_transaction_id")?,
+                note: row.get("note")?,
+                created_at: row.get("created_at")?,
+                items,
+            })
+        },
+    )?;
+    let corrections = query_rows(
+        connection,
+        r#"SELECT id, before_json, after_json, adjustment_debit_cents,
+                  adjustment_credit_cents, adjustment_mode, adjustment_reference,
+                  note, created_at
+           FROM sale_corrections WHERE sale_id = ?1 ORDER BY id ASC"#,
+        [sale.id],
+        |row| {
+            Ok(SaleCorrectionRecord {
+                id: row.get("id")?,
+                before_json: row.get("before_json")?,
+                after_json: row.get("after_json")?,
+                adjustment_debit: row.get::<_, i64>("adjustment_debit_cents")? as f64 / 100.0,
+                adjustment_credit: row.get::<_, i64>("adjustment_credit_cents")? as f64 / 100.0,
+                adjustment_mode: row.get("adjustment_mode")?,
+                adjustment_reference: row.get("adjustment_reference")?,
+                note: row.get("note")?,
+                created_at: row.get("created_at")?,
+            })
+        },
+    )?;
+    let void = connection
+        .query_row(
+            r#"SELECT refund_cents, refund_mode, payment_reference,
+                      upi_transaction_id, note, created_at
+               FROM sale_voids WHERE sale_id = ?1"#,
+            [sale.id],
+            |row| {
+                Ok(SaleVoidRecord {
+                    refund: row.get::<_, i64>("refund_cents")? as f64 / 100.0,
+                    refund_mode: row.get("refund_mode")?,
+                    payment_reference: row.get("payment_reference")?,
+                    upi_transaction_id: row.get("upi_transaction_id")?,
+                    note: row.get("note")?,
+                    created_at: row.get("created_at")?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not read invoice cancellation details: {error}"))?;
+    Ok(Some(SaleDetailsRecord {
+        sale,
+        items,
+        returns,
+        corrections,
+        void,
+    }))
 }
 
 fn query_sales_report_summary(
@@ -1446,63 +1796,150 @@ fn query_sales_report_summary(
     let mut rows = query_rows(
         connection,
         r#"WITH in_range AS (
-             SELECT id, grand_total, flat_discount, payment_mode
-             FROM sales
-             WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+             SELECT id, CAST(ROUND(grand_total * 100) AS INTEGER) AS total_cents,
+                    payment_mode
+             FROM sales WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+           ),
+           returns_by_sale AS (
+             SELECT sale_id, SUM(total_cents) AS returned_cents
+             FROM sale_returns WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+             GROUP BY sale_id
+           ),
+           voids_by_sale AS (
+             SELECT sale_id, SUM(refund_cents) AS voided_cents
+             FROM sale_voids WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+             GROUP BY sale_id
            ),
            profit_by_sale AS (
-             SELECT
-               ranged.id,
-               ranged.flat_discount,
-               COUNT(item.id) AS line_count,
-               COUNT(item.purchase_rate_at_sale) AS costed_line_count,
-               COALESCE(SUM(item.total_price), 0) AS line_revenue,
-               COALESCE(SUM(item.purchase_rate_at_sale * item.quantity), 0) AS purchase_cost
-             FROM in_range AS ranged
-             LEFT JOIN sale_items AS item ON item.sale_id = ranged.id
-             GROUP BY ranged.id
+             SELECT s.id,
+                    COUNT(si.id) AS line_count,
+                    COUNT(si.purchase_rate_at_sale) AS costed_line_count,
+                    COALESCE(SUM(CAST(ROUND(si.total_price * 100) AS INTEGER)), 0)
+                      - CAST(ROUND(s.flat_discount * 100) AS INTEGER)
+                      - COALESCE(SUM(CAST(ROUND(si.purchase_rate_at_sale * 100) AS INTEGER)
+                                     * si.quantity), 0) AS profit_cents
+             FROM sales AS s
+             LEFT JOIN sale_items AS si ON si.sale_id = s.id
+             GROUP BY s.id
+           ),
+           return_profit_by_date AS (
+             SELECT COALESCE(SUM(
+               ri.refund_cents - ri.total_gst_cents
+                 - CAST(ROUND(si.purchase_rate_at_sale * 100) AS INTEGER) * ri.quantity
+             ), 0) AS profit_cents
+             FROM sale_return_items AS ri
+             INNER JOIN sale_returns AS r ON r.id = ri.return_id
+             INNER JOIN sale_items AS si ON si.id = ri.sale_item_id
+             WHERE date(r.created_at, 'localtime') BETWEEN ?1 AND ?2
+               AND si.purchase_rate_at_sale IS NOT NULL
+           ),
+           return_unavailable_by_date AS (
+             SELECT COUNT(DISTINCT r.id) AS unavailable_count
+             FROM sale_return_items AS ri
+             INNER JOIN sale_returns AS r ON r.id = ri.return_id
+             INNER JOIN sale_items AS si ON si.id = ri.sale_item_id
+             WHERE date(r.created_at, 'localtime') BETWEEN ?1 AND ?2
+               AND si.purchase_rate_at_sale IS NULL
+           ),
+           void_profit_by_date AS (
+             SELECT COALESCE(SUM(p.profit_cents), 0) AS profit_cents
+             FROM sale_voids AS v
+             INNER JOIN profit_by_sale AS p ON p.id = v.sale_id
+             WHERE date(v.created_at, 'localtime') BETWEEN ?1 AND ?2
+               AND p.line_count > 0 AND p.line_count = p.costed_line_count
            )
            SELECT
-             COALESCE(SUM(ranged.grand_total), 0) AS total_revenue,
-             COALESCE(SUM(
-               CASE
-                 WHEN profit.line_count > 0
-                   AND profit.line_count = profit.costed_line_count
-                 THEN profit.line_revenue - profit.flat_discount - profit.purchase_cost
-                 ELSE 0
-               END
-             ), 0) AS gross_profit,
+             COALESCE(SUM(ranged.total_cents), 0) / 100.0 AS total_revenue,
+             COALESCE(SUM(ranged.total_cents), 0) / 100.0 AS gross_sales,
+             COALESCE((SELECT SUM(returned_cents) FROM returns_by_sale), 0) / 100.0
+               AS returned_total,
+             COALESCE((SELECT SUM(voided_cents) FROM voids_by_sale), 0) / 100.0
+               AS voided_total,
+             COALESCE(SUM(ranged.total_cents), 0) / 100.0
+               - COALESCE((SELECT SUM(returned_cents) FROM returns_by_sale), 0) / 100.0
+               - COALESCE((SELECT SUM(voided_cents) FROM voids_by_sale), 0) / 100.0
+               AS net_revenue,
+             COALESCE(SUM(CASE
+               WHEN profit.line_count > 0
+                 AND profit.line_count = profit.costed_line_count
+               THEN profit.profit_cents ELSE 0
+             END), 0) / 100.0 AS gross_profit,
+             COALESCE(SUM(CASE
+               WHEN profit.line_count > 0
+                 AND profit.line_count = profit.costed_line_count
+               THEN profit.profit_cents ELSE 0
+             END), 0) / 100.0
+               - COALESCE((SELECT profit_cents FROM return_profit_by_date), 0) / 100.0
+               - COALESCE((SELECT profit_cents FROM void_profit_by_date), 0) / 100.0
+               AS net_gross_profit,
              COUNT(ranged.id) AS total_invoices,
              COALESCE(SUM(CASE WHEN ranged.payment_mode = 'CASH'
-               THEN ranged.grand_total ELSE 0 END), 0) AS cash_revenue,
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0 AS cash_revenue,
+             COALESCE(SUM(CASE WHEN ranged.payment_mode = 'CASH'
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0
+               - COALESCE((SELECT SUM(r.returned_cents) FROM returns_by_sale AS r
+                           INNER JOIN sales AS s ON s.id = r.sale_id
+                           WHERE s.payment_mode = 'CASH'), 0) / 100.0
+               - COALESCE((SELECT SUM(v.voided_cents) FROM voids_by_sale AS v
+                           INNER JOIN sales AS s ON s.id = v.sale_id
+                           WHERE s.payment_mode = 'CASH'), 0) / 100.0 AS net_cash_revenue,
              COALESCE(SUM(CASE WHEN ranged.payment_mode = 'CASH' THEN 1 ELSE 0 END), 0)
                AS cash_invoices,
              COALESCE(SUM(CASE WHEN ranged.payment_mode IN ('UPI', 'CARD')
-               THEN ranged.grand_total ELSE 0 END), 0) AS card_upi_revenue,
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0 AS card_upi_revenue,
+             COALESCE(SUM(CASE WHEN ranged.payment_mode IN ('UPI', 'CARD')
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0
+               - COALESCE((SELECT SUM(r.returned_cents) FROM returns_by_sale AS r
+                           INNER JOIN sales AS s ON s.id = r.sale_id
+                           WHERE s.payment_mode IN ('UPI', 'CARD')), 0) / 100.0
+               - COALESCE((SELECT SUM(v.voided_cents) FROM voids_by_sale AS v
+                           INNER JOIN sales AS s ON s.id = v.sale_id
+                           WHERE s.payment_mode IN ('UPI', 'CARD')), 0) / 100.0 AS net_card_upi_revenue,
              COALESCE(SUM(CASE WHEN ranged.payment_mode IN ('UPI', 'CARD') THEN 1 ELSE 0 END), 0)
                AS card_upi_invoices,
-             COALESCE(SUM(CASE WHEN ranged.payment_mode IN ('CREDIT', 'OTHER')
-               THEN ranged.grand_total ELSE 0 END), 0) AS other_revenue,
-             COALESCE(SUM(CASE WHEN ranged.payment_mode IN ('CREDIT', 'OTHER') THEN 1 ELSE 0 END), 0)
+             COALESCE(SUM(CASE WHEN ranged.payment_mode NOT IN ('CASH', 'UPI', 'CARD')
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0 AS other_revenue,
+             COALESCE(SUM(CASE WHEN ranged.payment_mode NOT IN ('CASH', 'UPI', 'CARD')
+               THEN ranged.total_cents ELSE 0 END), 0) / 100.0
+               - COALESCE((SELECT SUM(r.returned_cents) FROM returns_by_sale AS r
+                           INNER JOIN sales AS s ON s.id = r.sale_id
+                           WHERE s.payment_mode NOT IN ('CASH', 'UPI', 'CARD')), 0) / 100.0
+               - COALESCE((SELECT SUM(v.voided_cents) FROM voids_by_sale AS v
+                           INNER JOIN sales AS s ON s.id = v.sale_id
+                           WHERE s.payment_mode NOT IN ('CASH', 'UPI', 'CARD')), 0) / 100.0 AS net_other_revenue,
+             COALESCE(SUM(CASE WHEN ranged.payment_mode NOT IN ('CASH', 'UPI', 'CARD') THEN 1 ELSE 0 END), 0)
                AS other_invoices,
              COALESCE(SUM(CASE
                WHEN profit.line_count > profit.costed_line_count THEN 1 ELSE 0
-             END), 0) AS profit_unavailable_invoices
+             END), 0) AS profit_unavailable_invoices,
+             COALESCE(SUM(CASE
+               WHEN profit.line_count > profit.costed_line_count THEN 1 ELSE 0
+             END), 0) + COALESCE((SELECT unavailable_count FROM return_unavailable_by_date), 0)
+               AS net_profit_unavailable_invoices
            FROM in_range AS ranged
            LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id"#,
         params![start_date, end_date],
         |row| {
             Ok(SalesReportSummaryRecord {
                 total_revenue: row.get("total_revenue")?,
+                gross_sales: row.get("gross_sales")?,
+                returned_total: row.get("returned_total")?,
+                voided_total: row.get("voided_total")?,
+                net_revenue: row.get("net_revenue")?,
                 gross_profit: row.get("gross_profit")?,
+                net_gross_profit: row.get("net_gross_profit")?,
                 total_invoices: row.get("total_invoices")?,
                 cash_revenue: row.get("cash_revenue")?,
+                net_cash_revenue: row.get("net_cash_revenue")?,
                 cash_invoices: row.get("cash_invoices")?,
                 card_upi_revenue: row.get("card_upi_revenue")?,
+                net_card_upi_revenue: row.get("net_card_upi_revenue")?,
                 card_upi_invoices: row.get("card_upi_invoices")?,
                 other_revenue: row.get("other_revenue")?,
+                net_other_revenue: row.get("net_other_revenue")?,
                 other_invoices: row.get("other_invoices")?,
                 profit_unavailable_invoices: row.get("profit_unavailable_invoices")?,
+                net_profit_unavailable_invoices: row.get("net_profit_unavailable_invoices")?,
             })
         },
     )?;
@@ -1517,10 +1954,19 @@ fn query_sales_report_rows(
 ) -> Result<Vec<SalesReportRowRecord>, String> {
     query_rows(
         connection,
-        r#"SELECT id, invoice_no, customer_name, payment_mode, grand_total, created_at
-           FROM sales
-           WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
-           ORDER BY created_at DESC, id DESC"#,
+        r#"SELECT s.id, s.invoice_no, s.customer_name, s.payment_mode,
+                  s.grand_total, s.status,
+                  COALESCE(returns.total_cents, 0) / 100.0 AS returned_total,
+                  COALESCE(voids.refund_cents, 0) / 100.0 AS voided_total,
+                  s.created_at
+           FROM sales AS s
+           LEFT JOIN (
+             SELECT sale_id, SUM(total_cents) AS total_cents
+             FROM sale_returns GROUP BY sale_id
+           ) AS returns ON returns.sale_id = s.id
+           LEFT JOIN sale_voids AS voids ON voids.sale_id = s.id
+           WHERE date(s.created_at, 'localtime') BETWEEN ?1 AND ?2
+           ORDER BY s.created_at DESC, s.id DESC"#,
         params![start_date, end_date],
         |row| {
             Ok(SalesReportRowRecord {
@@ -1529,6 +1975,9 @@ fn query_sales_report_rows(
                 customer_name: row.get("customer_name")?,
                 payment_mode: row.get("payment_mode")?,
                 grand_total: row.get("grand_total")?,
+                status: row.get("status")?,
+                returned_total: row.get("returned_total")?,
+                voided_total: row.get("voided_total")?,
                 created_at: row.get("created_at")?,
             })
         },
@@ -1959,6 +2408,14 @@ pub(crate) fn get_recent_sales(
     limit: i64,
 ) -> Result<Vec<RecentSaleRecord>, String> {
     query_recent_sales(&open_pharmacy_connection(&app)?, limit)
+}
+
+#[tauri::command]
+pub(crate) fn get_sales_history(
+    app: AppHandle,
+    filter: SalesHistoryFilter,
+) -> Result<Vec<SalesHistoryRecord>, String> {
+    query_sales_history(&open_pharmacy_connection(&app)?, filter)
 }
 
 #[tauri::command]
@@ -2443,6 +2900,38 @@ mod tests {
             )
             .expect("insert sale line");
         connection
+            .execute_batch(
+                r#"
+                INSERT INTO sale_returns (
+                  sale_id, return_no, total_cents, refund_mode
+                )
+                VALUES (1, 'REPORT-RETURN-1', 2000, 'CASH');
+                INSERT INTO sale_return_items (
+                  return_id, sale_item_id, batch_id, quantity, refund_cents,
+                  taxable_cents, cgst_cents, sgst_cents, igst_cents, total_gst_cents
+                )
+                VALUES (1, 1, 1, 1, 2000, 2000, 0, 0, 0, 0);
+                UPDATE sales SET status = 'PARTIALLY_RETURNED' WHERE id = 1;
+
+                INSERT INTO sales (
+                  invoice_no, subtotal, flat_discount, grand_total, payment_mode,
+                  status, created_at
+                )
+                VALUES ('VOID-TODAY', 50, 0, 50, 'CASH', 'CANCELLED',
+                        datetime(date('now', 'localtime') || ' 12:00:00'));
+                INSERT INTO sale_items (
+                  sale_id, batch_id, quantity, unit_price, item_discount,
+                  total_price, purchase_rate_at_sale
+                )
+                SELECT id, 1, 1, 50, 0, 50, 10
+                FROM sales WHERE invoice_no = 'VOID-TODAY';
+                INSERT INTO sale_voids (sale_id, refund_cents, refund_mode)
+                SELECT id, 5000, 'CASH'
+                FROM sales WHERE invoice_no = 'VOID-TODAY';
+                "#,
+            )
+            .expect("insert returned and cancelled report fixtures");
+        connection
             .execute(
                 "INSERT INTO purchases (invoice_no, supplier_id, total_amount, purchase_date) VALUES ('P-1', 1, 30, ?1)",
                 [&today],
@@ -2450,12 +2939,30 @@ mod tests {
             .expect("insert today's purchase");
 
         let summary = query_sales_report_summary(&connection, &today, &today).unwrap();
-        assert_eq!(summary.total_revenue, 100.0);
-        assert_eq!(summary.gross_profit, 94.0);
-        assert_eq!(summary.cash_invoices, 1);
+        assert_eq!(summary.total_revenue, 150.0);
+        assert_eq!(summary.gross_sales, 150.0);
+        assert_eq!(summary.returned_total, 20.0);
+        assert_eq!(summary.voided_total, 50.0);
+        assert_eq!(summary.net_revenue, 80.0);
+        assert_eq!(summary.gross_profit, 134.0);
+        assert_eq!(summary.net_gross_profit, 77.0);
+        assert_eq!(summary.cash_revenue, 150.0);
+        assert_eq!(summary.net_cash_revenue, 80.0);
+        assert_eq!(summary.cash_invoices, 2);
         let rows = query_sales_report_rows(&connection, &today, &today).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].invoice_no, "TODAY");
+        assert_eq!(rows.len(), 2);
+        let original_sale = rows
+            .iter()
+            .find(|sale| sale.invoice_no == "TODAY")
+            .expect("find partially returned invoice row");
+        assert_eq!(original_sale.returned_total, 20.0);
+        assert_eq!(original_sale.status, "PARTIALLY_RETURNED");
+        let cancelled_sale = rows
+            .iter()
+            .find(|sale| sale.invoice_no == "VOID-TODAY")
+            .expect("find cancelled invoice row");
+        assert_eq!(cancelled_sale.voided_total, 50.0);
+        assert_eq!(cancelled_sale.status, "CANCELLED");
         let inventory = query_dashboard_inventory_summary(&connection).unwrap();
         assert_eq!(inventory.total_medicines, 1);
         assert_eq!(inventory.stock_value_at_cost, 20.0);
@@ -2465,7 +2972,7 @@ mod tests {
         assert_eq!(purchases.invoice_count, 1);
         let top = query_top_selling_medicines(&connection).unwrap();
         assert_eq!(top[0].name, "Top");
-        assert_eq!(top[0].quantity_sold, 2);
+        assert_eq!(top[0].quantity_sold, 3);
 
         let empty = migrated_connection();
         let empty_summary = query_sales_report_summary(&empty, &today, &today).unwrap();
@@ -2481,6 +2988,75 @@ mod tests {
         assert!(query_sales_report_rows(&empty, &today, &today)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn sales_history_filters_are_combinable_and_invoice_search_escapes_wildcards() {
+        let connection = migrated_connection();
+        let today: String = connection
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
+            .expect("read local test date");
+        connection
+            .execute(
+                r#"INSERT INTO sales (
+                     id, invoice_no, subtotal, flat_discount, grand_total,
+                     payment_mode, status, payment_reference, created_at
+                   ) VALUES
+                     (1, 'RET_ABC', 20, 0, 20, 'CASH', 'PARTIALLY_RETURNED',
+                      'CASH-REF', datetime(?1 || ' 10:00:00')),
+                     (2, 'RETXABC', 20, 0, 20, 'CASH', 'ACTIVE',
+                      NULL, datetime(?1 || ' 11:00:00')),
+                     (3, 'RET_CANCEL', 30, 0, 30, 'CARD', 'CANCELLED',
+                      'CARD-REF', datetime(?1 || ' 12:00:00'))"#,
+                [&today],
+            )
+            .expect("insert sales history fixtures");
+        connection
+            .execute(
+                "INSERT INTO sale_returns (sale_id, return_no, total_cents, refund_mode)
+                 VALUES (1, 'HISTORY-RETURN-1', 1234, 'CASH')",
+                [],
+            )
+            .expect("insert sales-history return total");
+
+        let literal_underscore = query_sales_history(
+            &connection,
+            SalesHistoryFilter {
+                search_invoice: Some("RET_".to_owned()),
+                from_date: None,
+                to_date: None,
+                customer_id: None,
+                payment_mode: None,
+                status: None,
+                limit: Some(10),
+            },
+        )
+        .expect("filter by a literal underscore in invoice number");
+        assert_eq!(
+            literal_underscore
+                .iter()
+                .map(|sale| sale.invoice_no.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RET_CANCEL", "RET_ABC"]
+        );
+
+        let combined = query_sales_history(
+            &connection,
+            SalesHistoryFilter {
+                search_invoice: Some("RET_".to_owned()),
+                from_date: Some(today.clone()),
+                to_date: Some(today),
+                customer_id: None,
+                payment_mode: Some("cash".to_owned()),
+                status: Some("partially_returned".to_owned()),
+                limit: Some(10),
+            },
+        )
+        .expect("combine date, payment, status, and invoice filters");
+        assert_eq!(combined.len(), 1);
+        assert_eq!(combined[0].invoice_no, "RET_ABC");
+        assert_eq!(combined[0].returned_total, 12.34);
+        assert_eq!(combined[0].payment_reference.as_deref(), Some("CASH-REF"));
     }
 
     #[test]

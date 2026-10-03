@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   ArrowDownToLine,
+  Ban,
   CalendarDays,
   CheckCircle2,
   FileSpreadsheet,
@@ -8,6 +9,7 @@ import {
   Printer,
   ReceiptText,
   RefreshCw,
+  RotateCcw,
   TrendingUp,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -158,28 +160,34 @@ export function ReportsPage() {
   function exportSales() {
     if (!report) return;
     const rows = [
-      ["Report start", "Report end", "Revenue", "Gross profit", "Invoice count", "Cash revenue", "Cash invoices", "Card & UPI revenue", "Card & UPI invoices", "Other revenue", "Other invoices", "Profit unavailable invoices"],
+      ["Report start", "Report end", "Gross sales", "Returns", "Cancelled invoices", "Net revenue", "Net gross profit", "Invoice count", "Cash revenue", "Cash invoices", "Card & UPI revenue", "Card & UPI invoices", "Other revenue", "Other invoices", "Profit unavailable invoices"],
       [
         startDate,
         endDate,
-        report.summary.total_revenue,
-        report.summary.gross_profit,
+        report.summary.gross_sales,
+        report.summary.returned_total,
+        report.summary.voided_total,
+        report.summary.net_revenue,
+        report.summary.net_gross_profit,
         report.summary.total_invoices,
-        report.summary.cash_revenue,
+        report.summary.net_cash_revenue,
         report.summary.cash_invoices,
-        report.summary.card_upi_revenue,
+        report.summary.net_card_upi_revenue,
         report.summary.card_upi_invoices,
-        report.summary.other_revenue,
+        report.summary.net_other_revenue,
         report.summary.other_invoices,
-        report.summary.profit_unavailable_invoices,
+        report.summary.net_profit_unavailable_invoices,
       ],
       [],
-      ["Invoice", "Customer", "Payment mode", "Amount", "Created at"],
+      ["Invoice", "Customer", "Payment mode", "Status", "Gross amount", "Returned", "Cancelled/refunded", "Created at"],
       ...report.sales.map((sale) => [
         sale.invoice_no,
         sale.customer_name || "Walk-in customer",
         paymentLabel[sale.payment_mode] ?? sale.payment_mode,
+        sale.status,
         sale.grand_total,
+        sale.returned_total,
+        sale.voided_total,
         sale.created_at,
       ]),
     ];
@@ -231,7 +239,7 @@ export function ReportsPage() {
       <section className="workspace-card report-controls" aria-label="Sales report date range">
         <div className="report-control-heading">
           <span className="report-heading-icon"><CalendarDays size={17} /></span>
-          <div><h2>Sales report</h2><p>Choose the invoice dates to include.</p></div>
+          <div><h2>Sales report</h2><p>Invoices use invoice dates; returns and cancellations use their recorded dates.</p></div>
         </div>
         <div className="report-range-controls">
           <div className="report-preset-list" role="group" aria-label="Date range preset">
@@ -322,15 +330,33 @@ export function ReportsPage() {
             <div className="report-metrics-grid" data-testid="report-summary">
               <article className="report-metric report-metric--primary">
                 <span className="report-metric-icon"><TrendingUp size={17} /></span>
-                <span className="report-metric-label">Revenue</span>
-                <strong data-testid="value-report-revenue">{formatMoney(summary.total_revenue)}</strong>
-                <small>Sales recorded in this period</small>
+                <span className="report-metric-label">Net revenue</span>
+                <strong data-testid="value-report-revenue">{formatMoney(summary.net_revenue)}</strong>
+                <small>Gross sales less returns and cancellations</small>
+              </article>
+              <article className="report-metric">
+                <span className="report-metric-icon"><ReceiptText size={16} /></span>
+                <span className="report-metric-label">Gross sales</span>
+                <strong data-testid="value-report-gross-sales">{formatMoney(summary.gross_sales)}</strong>
+                <small>Invoice totals recorded in this period</small>
+              </article>
+              <article className="report-metric">
+                <span className="report-metric-icon"><RotateCcw size={16} /></span>
+                <span className="report-metric-label">Sales returns</span>
+                <strong data-testid="value-report-returns">{formatMoney(summary.returned_total)}</strong>
+                <small>Recorded return refunds</small>
+              </article>
+              <article className="report-metric">
+                <span className="report-metric-icon"><Ban size={16} /></span>
+                <span className="report-metric-label">Cancelled invoices</span>
+                <strong data-testid="value-report-voids">{formatMoney(summary.voided_total)}</strong>
+                <small>Recorded cancellation refunds</small>
               </article>
               <article className="report-metric">
                 <span className="report-metric-icon report-metric-icon--profit"><FileSpreadsheet size={16} /></span>
                 <span className="report-metric-label">Gross profit</span>
-                <strong data-testid="value-report-gross-profit">{formatMoney(summary.gross_profit)}</strong>
-                <small>{summary.profit_unavailable_invoices} invoice{summary.profit_unavailable_invoices === 1 ? "" : "s"} without cost data</small>
+                <strong data-testid="value-report-gross-profit">{formatMoney(summary.net_gross_profit)}</strong>
+                <small>{summary.net_profit_unavailable_invoices} invoice{summary.net_profit_unavailable_invoices === 1 ? "" : "s"} without cost data</small>
               </article>
               <article className="report-metric">
                 <span className="report-metric-icon"><ReceiptText size={16} /></span>
@@ -340,14 +366,14 @@ export function ReportsPage() {
               </article>
               <article className="report-metric report-metric--payments">
                 <span className="report-metric-label">Payment breakdown</span>
-                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--cash" /> Cash</span><strong>{formatMoney(summary.cash_revenue)}</strong><small>{summary.cash_invoices} invoices</small></div>
-                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--card" /> Card &amp; UPI</span><strong>{formatMoney(summary.card_upi_revenue)}</strong><small>{summary.card_upi_invoices} invoices</small></div>
-                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--other" /> Other</span><strong>{formatMoney(summary.other_revenue)}</strong><small>{summary.other_invoices} invoices</small></div>
+                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--cash" /> Cash</span><strong>{formatMoney(summary.net_cash_revenue)}</strong><small>{summary.cash_invoices} invoices</small></div>
+                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--card" /> Card &amp; UPI</span><strong>{formatMoney(summary.net_card_upi_revenue)}</strong><small>{summary.card_upi_invoices} invoices</small></div>
+                <div className="payment-breakdown-line"><span><i className="payment-dot payment-dot--other" /> Other</span><strong>{formatMoney(summary.net_other_revenue)}</strong><small>{summary.other_invoices} invoices</small></div>
               </article>
             </div>
-            {summary.profit_unavailable_invoices > 0 && (
+            {summary.net_profit_unavailable_invoices > 0 && (
               <p className="report-profit-note" data-testid="text-profit-unavailable">
-                Gross profit excludes {summary.profit_unavailable_invoices} invoice{summary.profit_unavailable_invoices === 1 ? "" : "s"} where purchase cost was unavailable.
+                Gross profit excludes {summary.net_profit_unavailable_invoices} invoice{summary.net_profit_unavailable_invoices === 1 ? "" : "s"} where purchase cost was unavailable.
               </p>
             )}
           </>
@@ -368,15 +394,18 @@ export function ReportsPage() {
             ) : (
               <div className="workspace-table-scroll">
                 <table className="workspace-table report-sales-table">
-                  <thead><tr><th scope="col">Invoice</th><th scope="col">Customer</th><th scope="col">Payment</th><th scope="col">Date &amp; time</th><th scope="col" className="report-align-right">Total</th></tr></thead>
+                  <thead><tr><th scope="col">Invoice</th><th scope="col">Customer</th><th scope="col">Payment</th><th scope="col">Status</th><th scope="col">Date &amp; time</th><th scope="col" className="report-align-right">Gross total</th><th scope="col" className="report-align-right">Returned</th><th scope="col" className="report-align-right">Voided</th></tr></thead>
                   <tbody>
                     {report.sales.map((sale) => (
                       <tr key={sale.id} data-testid={`row-report-sale-${sale.id}`}>
                         <td><strong>{sale.invoice_no}</strong></td>
                         <td>{sale.customer_name || <span className="workspace-muted">Walk-in customer</span>}</td>
                         <td><span className="report-payment-tag">{paymentLabel[sale.payment_mode] ?? sale.payment_mode}</span></td>
+                        <td><span className={`sales-status-pill sales-status-pill--${sale.status.toLowerCase().replaceAll("_", "-")}`}>{sale.status.toLowerCase().replaceAll("_", " ")}</span></td>
                         <td>{formatDateTime(sale.created_at)}</td>
                         <td className="report-align-right"><strong>{formatMoney(sale.grand_total)}</strong></td>
+                        <td className="report-align-right">{formatMoney(sale.returned_total)}</td>
+                        <td className="report-align-right">{formatMoney(sale.voided_total)}</td>
                       </tr>
                     ))}
                   </tbody>

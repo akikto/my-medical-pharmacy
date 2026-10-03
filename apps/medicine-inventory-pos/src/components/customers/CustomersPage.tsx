@@ -23,6 +23,7 @@ import type {
   Customer,
   CustomerFormValues,
   CustomerLedgerEntry,
+  CustomerPaymentInput,
   StoreSettings,
 } from "../../types";
 import { formatMoney } from "../../utils/money";
@@ -57,6 +58,10 @@ export function CustomersPage() {
   const [ledger, setLedger] = useState<CustomerLedgerEntry[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [ledgerSearch, setLedgerSearch] = useState("");
+  const [ledgerFromDate, setLedgerFromDate] = useState("");
+  const [ledgerToDate, setLedgerToDate] = useState("");
+  const [ledgerType, setLedgerType] = useState<CustomerLedgerEntry["entry_type"] | "ALL">("ALL");
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [formCustomer, setFormCustomer] = useState<Customer | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -142,7 +147,25 @@ export function CustomersPage() {
     };
   }, []);
 
-  const visibleLedger = useMemo(() => [...ledger].reverse(), [ledger]);
+  const visibleLedger = useMemo(() => {
+    const query = ledgerSearch.trim().toLocaleLowerCase();
+    return [...ledger].reverse().filter((entry) => {
+      const entryDate = entry.created_at.slice(0, 10);
+      if (ledgerFromDate && entryDate < ledgerFromDate) return false;
+      if (ledgerToDate && entryDate > ledgerToDate) return false;
+      if (ledgerType !== "ALL" && entry.entry_type !== ledgerType) return false;
+      if (!query) return true;
+      return [
+        entry.invoice_no ?? "",
+        entry.reference ?? "",
+        entry.payment_reference ?? "",
+        entry.payment_mode ?? "",
+        entry.upi_transaction_id ?? "",
+        entry.note ?? "",
+        entry.entry_type,
+      ].join(" ").toLocaleLowerCase().includes(query);
+    });
+  }, [ledger, ledgerFromDate, ledgerSearch, ledgerToDate, ledgerType]);
 
   async function refreshCustomerList() {
     const result = await getCustomers(searchTerm, includeInactive);
@@ -197,12 +220,7 @@ export function CustomersPage() {
   }
 
   async function handlePayment(
-    input: {
-      amount: number;
-      payment_mode: "CASH" | "CARD" | "UPI" | "OTHER";
-      upi_transaction_id: string | null;
-      note: string;
-    },
+    input: Omit<CustomerPaymentInput, "customer_id">,
   ) {
     if (!selectedCustomer) return;
     setIsSavingPayment(true);
@@ -426,13 +444,81 @@ export function CustomersPage() {
                 </button>
               </div>
 
+              <div className="customer-ledger-filters" aria-label="Filter customer ledger">
+                <input
+                  aria-label="Search ledger reference"
+                  className="workspace-input"
+                  data-testid="input-customer-ledger-search"
+                  onChange={(event) => setLedgerSearch(event.target.value)}
+                  placeholder="Invoice, payment reference, or note"
+                  value={ledgerSearch}
+                />
+                <label>
+                  From
+                  <input
+                    aria-label="Ledger start date"
+                    className="workspace-input"
+                    data-testid="input-customer-ledger-from-date"
+                    onChange={(event) => setLedgerFromDate(event.target.value)}
+                    type="date"
+                    value={ledgerFromDate}
+                  />
+                </label>
+                <label>
+                  Through
+                  <input
+                    aria-label="Ledger end date"
+                    className="workspace-input"
+                    data-testid="input-customer-ledger-to-date"
+                    onChange={(event) => setLedgerToDate(event.target.value)}
+                    type="date"
+                    value={ledgerToDate}
+                  />
+                </label>
+                <select
+                  aria-label="Ledger activity type"
+                  className="workspace-input"
+                  data-testid="select-customer-ledger-type"
+                  onChange={(event) => setLedgerType(event.target.value as typeof ledgerType)}
+                  value={ledgerType}
+                >
+                  <option value="ALL">All activity</option>
+                  <option value="CREDIT_SALE">Credit sales</option>
+                  <option value="COLLECTION">Collections</option>
+                  <option value="SALE_RETURN">Sales returns</option>
+                  <option value="SALE_VOID">Invoice cancellations</option>
+                  <option value="SALE_CORRECTION">Invoice corrections</option>
+                </select>
+                {(ledgerSearch || ledgerFromDate || ledgerToDate || ledgerType !== "ALL") && (
+                  <button
+                    className="button button-secondary"
+                    data-testid="button-clear-customer-ledger-filters"
+                    onClick={() => {
+                      setLedgerSearch("");
+                      setLedgerFromDate("");
+                      setLedgerToDate("");
+                      setLedgerType("ALL");
+                    }}
+                    type="button"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {ledgerFromDate && ledgerToDate && ledgerFromDate > ledgerToDate && (
+                <p className="workspace-error" role="alert">Start date must be on or before the end date.</p>
+              )}
               {ledgerError && <p className="workspace-error" role="alert">{ledgerError}</p>}
               {ledgerLoading ? (
                 <div className="customer-state"><LoaderCircle className="settings-button-spin" size={18} /> Loading ledger…</div>
               ) : visibleLedger.length === 0 ? (
                 <div className="customer-empty customer-empty--compact">
-                  <strong>No credit activity yet</strong>
-                  <span>Credit invoices and collections for this customer will appear here.</span>
+                  <strong>{ledger.length === 0 ? "No credit activity yet" : "No activity matches these filters"}</strong>
+                  <span>
+                    {ledger.length === 0
+                      ? "Credit invoices and collections for this customer will appear here."
+                      : "Adjust or clear the ledger filters to see more entries."}
+                  </span>
                 </div>
               ) : (
                 <div className="customer-ledger-table-wrap">
@@ -500,24 +586,31 @@ export function CustomersPage() {
 }
 
 function LedgerRow({ entry }: { entry: CustomerLedgerEntry }) {
-  const isCreditSale = entry.entry_type === "CREDIT_SALE";
-  const title = isCreditSale ? "Credit sale" : "Collection";
+  const isDebit = entry.debit > 0;
+  const title: Record<CustomerLedgerEntry["entry_type"], string> = {
+    CREDIT_SALE: "Credit sale",
+    COLLECTION: "Collection",
+    SALE_RETURN: "Sales return",
+    SALE_VOID: "Invoice cancellation",
+    SALE_CORRECTION: "Invoice correction",
+  };
   return (
     <tr>
       <td>
-        <span className={`customer-ledger-kind ${isCreditSale ? "is-debit" : "is-credit"}`}>
-          {isCreditSale ? <ArrowUpRight size={14} /> : <ArrowDownLeft size={14} />}
-          {title}
+        <span className={`customer-ledger-kind ${isDebit ? "is-debit" : "is-credit"}`}>
+          {isDebit ? <ArrowUpRight size={14} /> : <ArrowDownLeft size={14} />}
+          {title[entry.entry_type]}
         </span>
       </td>
       <td>
-        <span>{entry.invoice_no || entry.payment_mode || "—"}</span>
+        <span>{entry.reference || entry.invoice_no || entry.payment_mode || "—"}</span>
+        {entry.payment_reference && <small className="customer-ledger-reference">{entry.payment_reference}</small>}
         {entry.upi_transaction_id && <small className="customer-ledger-reference">{entry.upi_transaction_id}</small>}
         {entry.note && <small className="customer-ledger-reference">{entry.note}</small>}
       </td>
       <td>{formatDateTime(entry.created_at)}</td>
-      <td className={isCreditSale ? "customer-ledger-amount--debit" : "customer-ledger-amount--credit"}>
-        {isCreditSale ? "+" : "−"}{formatMoney(isCreditSale ? entry.debit : entry.credit)}
+      <td className={isDebit ? "customer-ledger-amount--debit" : "customer-ledger-amount--credit"}>
+        {isDebit ? "+" : "−"}{formatMoney(isDebit ? entry.debit : entry.credit)}
       </td>
       <td><strong>{formatMoney(entry.running_balance)}</strong></td>
     </tr>

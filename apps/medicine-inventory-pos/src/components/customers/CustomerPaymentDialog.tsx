@@ -29,6 +29,7 @@ export function CustomerPaymentDialog({
   const [amount, setAmount] = useState(customer.balance_due.toFixed(2));
   const [paymentMode, setPaymentMode] =
     useState<CustomerPaymentInput["payment_mode"]>("CASH");
+  const [paymentReference, setPaymentReference] = useState("");
   const [upiTransactionId, setUpiTransactionId] = useState("");
   const [note, setNote] = useState("");
   const [upiOpenError, setUpiOpenError] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export function CustomerPaymentDialog({
     onSave({
       amount: amountNumber,
       payment_mode: paymentMode,
+      payment_reference: paymentReference,
       upi_transaction_id: upiTransactionId,
       note,
     });
@@ -141,7 +143,7 @@ export function CustomerPaymentDialog({
           <fieldset className="payment-fieldset">
             <legend>Payment method</legend>
             <div className="payment-mode-options">
-              {(["CASH", "UPI", "CARD", "OTHER"] as const).map((mode) => (
+              {(["CASH", "UPI", "CARD", "BANK", "OTHER"] as const).map((mode) => (
                 <button
                   aria-pressed={paymentMode === mode}
                   className={`payment-mode-option ${paymentMode === mode ? "is-selected" : ""}`}
@@ -150,7 +152,7 @@ export function CustomerPaymentDialog({
                   type="button"
                 >
                   {mode === "CASH" ? <span className="cash-symbol">₹</span> : <CreditCard size={16} />}
-                  {mode === "OTHER" ? "Other" : mode}
+                  {mode === "OTHER" ? "Other" : mode === "BANK" ? "Bank" : mode}
                 </button>
               ))}
             </div>
@@ -187,6 +189,16 @@ export function CustomerPaymentDialog({
               </p>
             </div>
           )}
+          <label className="field-label">
+            Payment reference <span className="field-optional">Optional</span>
+            <input
+              className="workspace-input"
+              data-testid="input-collection-payment-reference"
+              maxLength={120}
+              onChange={(event) => setPaymentReference(event.target.value)}
+              value={paymentReference}
+            />
+          </label>
           <label className="field-label">
             Note <span className="field-optional">Optional</span>
             <input

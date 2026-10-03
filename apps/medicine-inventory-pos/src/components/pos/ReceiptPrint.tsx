@@ -293,6 +293,12 @@ export function ReceiptPrint({
               </div>
             </>
           )}
+          {invoice.payment_reference && (
+            <div>
+              <span>Payment reference</span>
+              <span>{invoice.payment_reference}</span>
+            </div>
+          )}
           {invoice.payment_mode === "CREDIT" && (
             <div>
               <span>Credit balance due</span>
@@ -308,6 +314,52 @@ export function ReceiptPrint({
           </footer>
         )}
       </article>
+      {!autoPrint && (sale.returns.length > 0 || sale.corrections.length > 0 || sale.void) && (
+        <section className="sale-receipt-activity" aria-labelledby="sale-receipt-activity-title">
+          <h3 id="sale-receipt-activity-title">Invoice activity</h3>
+          {sale.void && (
+            <article className="sale-receipt-activity-item" data-testid="receipt-invoice-void">
+              <strong>Cancelled · {formatMoney(sale.void.refund)}</strong>
+              <span>{sale.void.refund_mode} · {formatDateTime(sale.void.created_at)}</span>
+              {sale.void.payment_reference && <span>Reference: {sale.void.payment_reference}</span>}
+              {sale.void.upi_transaction_id && <span>UPI ID: {sale.void.upi_transaction_id}</span>}
+              {sale.void.note && <span>{sale.void.note}</span>}
+            </article>
+          )}
+          {sale.returns.map((record) => (
+            <article className="sale-receipt-activity-item" key={record.id} data-testid={`receipt-return-${record.id}`}>
+              <strong>{record.return_no} · {formatMoney(record.total)}</strong>
+              <span>{record.refund_mode} · {formatDateTime(record.created_at)}</span>
+              {record.payment_reference && <span>Reference: {record.payment_reference}</span>}
+              {record.upi_transaction_id && <span>UPI ID: {record.upi_transaction_id}</span>}
+              {record.note && <span>{record.note}</span>}
+              <ul>
+                {record.items.map((item) => (
+                  <li key={item.sale_item_id}>
+                    {item.medicine_name} · batch {item.batch_no} · {item.quantity} returned · {formatMoney(item.refund)}
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+          {sale.corrections.map((record) => (
+            <article className="sale-receipt-activity-item" key={record.id} data-testid={`receipt-correction-${record.id}`}>
+              <strong>Invoice correction · {formatDateTime(record.created_at)}</strong>
+              {(record.adjustment_debit > 0 || record.adjustment_credit > 0) && (
+                <span>
+                  Account adjustment: {record.adjustment_debit > 0
+                    ? `+${formatMoney(record.adjustment_debit)}`
+                    : `−${formatMoney(record.adjustment_credit)}`}
+                </span>
+              )}
+              {record.adjustment_mode && <span>Settlement: {record.adjustment_mode}</span>}
+              {record.adjustment_reference && <span>Reference: {record.adjustment_reference}</span>}
+              {record.note && <span>{record.note}</span>}
+              <span>Original and corrected invoice snapshots are retained in the audit trail.</span>
+            </article>
+          ))}
+        </section>
+      )}
     </div>
   );
 }

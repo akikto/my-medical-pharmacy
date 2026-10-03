@@ -40,10 +40,11 @@ use reads::{
     get_purchase_details, get_purchase_history, get_supplier_ledger,
     get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
     get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
-    get_top_selling_medicines, get_weekly_sales, get_order_list, search_medicines,
+    get_top_selling_medicines, get_weekly_sales, get_order_list, get_sales_history,
+    search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 9;
+const LATEST_DATABASE_VERSION: i64 = 10;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -289,6 +290,7 @@ struct CustomerPaymentRequest {
     customer_id: i64,
     amount_cents: i64,
     payment_mode: String,
+    payment_reference: Option<String>,
     upi_transaction_id: Option<String>,
     note: Option<String>,
 }
@@ -298,6 +300,101 @@ struct CustomerPaymentRequest {
 struct CustomerPaymentResult {
     ledger_entry_id: i64,
     balance_due_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleReturnItemRequest {
+    sale_item_id: i64,
+    quantity: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleReturnRequest {
+    invoice_no: String,
+    items: Vec<SaleReturnItemRequest>,
+    refund_mode: String,
+    payment_reference: Option<String>,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleReturnResult {
+    return_id: i64,
+    return_no: String,
+    total_cents: i64,
+    customer_due_credit_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleVoidRequest {
+    invoice_no: String,
+    refund_mode: String,
+    payment_reference: Option<String>,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleVoidResult {
+    sale_id: i64,
+    refund_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleCorrectionItemRequest {
+    sale_item_id: i64,
+    quantity: i64,
+    unit_price_cents: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleCorrectionRequest {
+    invoice_no: String,
+    customer_id: Option<i64>,
+    customer_name: Option<String>,
+    customer_phone: Option<String>,
+    payment_mode: String,
+    cash_tendered_cents: Option<i64>,
+    payment_reference: Option<String>,
+    upi_transaction_id: Option<String>,
+    adjustment_mode: Option<String>,
+    adjustment_reference: Option<String>,
+    adjustment_upi_transaction_id: Option<String>,
+    notes: Option<String>,
+    reason: Option<String>,
+    items: Vec<SaleCorrectionItemRequest>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleCorrectionResult {
+    sale_id: i64,
+    invoice_no: String,
+    grand_total_cents: i64,
+}
+
+#[derive(Debug)]
+struct SaleAdjustmentLine {
+    id: i64,
+    batch_id: i64,
+    quantity: i64,
+    unit_price_cents: i64,
+    item_discount_cents: i64,
+    flat_discount_cents: i64,
+    gst_rate_basis_points: i64,
+    taxable_cents: i64,
+    cgst_cents: i64,
+    sgst_cents: i64,
+    igst_cents: i64,
+    total_gst_cents: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -749,6 +846,118 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
                  SELECT SUM(debit_cents - credit_cents) / 100.0
                  FROM supplier_ledger WHERE supplier_id = suppliers.id
                ), 0)"#,
+        ]),
+        10 => Ok(&[
+            "ALTER TABLE sales ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PARTIALLY_RETURNED', 'RETURNED', 'CANCELLED'))",
+            "ALTER TABLE sales ADD COLUMN payment_reference TEXT",
+            "ALTER TABLE sales ADD COLUMN notes TEXT",
+            "ALTER TABLE sales ADD COLUMN cancelled_at DATETIME",
+            "ALTER TABLE sale_items ADD COLUMN flat_discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (flat_discount_cents >= 0)",
+            "ALTER TABLE customer_ledger ADD COLUMN payment_reference TEXT",
+            r#"WITH ranked AS (
+                 SELECT
+                   item.id,
+                   item.sale_id,
+                   CAST(ROUND((item.unit_price * item.quantity - item.item_discount) * 100) AS INTEGER) AS weight_cents,
+                   CAST(ROUND(sale.flat_discount * 100) AS INTEGER) AS discount_cents,
+                   SUM(CAST(ROUND((item.unit_price * item.quantity - item.item_discount) * 100) AS INTEGER))
+                     OVER (PARTITION BY item.sale_id) AS total_weight_cents,
+                   ROW_NUMBER() OVER (PARTITION BY item.sale_id ORDER BY item.id) AS row_number,
+                   COUNT(*) OVER (PARTITION BY item.sale_id) AS row_count
+                 FROM sale_items AS item
+                 INNER JOIN sales AS sale ON sale.id = item.sale_id
+               ),
+               shares AS (
+                 SELECT
+                   current.id,
+                   CASE
+                     WHEN current.row_number = current.row_count THEN current.discount_cents - COALESCE((
+                       SELECT SUM(CAST(previous.discount_cents * previous.weight_cents
+                                       / previous.total_weight_cents AS INTEGER))
+                       FROM ranked AS previous
+                       WHERE previous.sale_id = current.sale_id
+                         AND previous.row_number < current.row_number
+                         AND previous.total_weight_cents > 0
+                     ), 0)
+                     WHEN current.total_weight_cents > 0
+                       THEN CAST(current.discount_cents * current.weight_cents
+                                 / current.total_weight_cents AS INTEGER)
+                     ELSE 0
+                   END AS share_cents
+                 FROM ranked AS current
+               )
+               UPDATE sale_items
+               SET flat_discount_cents = COALESCE((
+                 SELECT share_cents FROM shares WHERE shares.id = sale_items.id
+               ), 0)"#,
+            r#"CREATE TABLE customer_ledger_events (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+                 entry_type TEXT NOT NULL CHECK (entry_type IN ('SALE_RETURN', 'SALE_VOID', 'SALE_CORRECTION')),
+                 invoice_no TEXT,
+                 reference TEXT,
+                 debit_cents INTEGER NOT NULL DEFAULT 0 CHECK (debit_cents >= 0),
+                 credit_cents INTEGER NOT NULL DEFAULT 0 CHECK (credit_cents >= 0),
+                 payment_mode TEXT,
+                 payment_reference TEXT,
+                 upi_transaction_id TEXT,
+                 note TEXT,
+                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                 CHECK ((debit_cents > 0 AND credit_cents = 0)
+                     OR (debit_cents = 0 AND credit_cents > 0))
+               )"#,
+            "CREATE INDEX idx_customer_ledger_events_customer_date ON customer_ledger_events(customer_id, created_at, id)",
+            r#"CREATE TABLE sale_returns (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+                 return_no TEXT NOT NULL UNIQUE,
+                 total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+                 customer_due_credit_cents INTEGER NOT NULL DEFAULT 0 CHECK (customer_due_credit_cents >= 0),
+                 refund_mode TEXT NOT NULL CHECK (refund_mode IN ('CASH', 'UPI', 'BANK', 'OTHER')),
+                 payment_reference TEXT,
+                 upi_transaction_id TEXT,
+                 note TEXT,
+                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"#,
+            r#"CREATE TABLE sale_return_items (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 return_id INTEGER NOT NULL REFERENCES sale_returns(id) ON DELETE RESTRICT,
+                 sale_item_id INTEGER NOT NULL REFERENCES sale_items(id) ON DELETE RESTRICT,
+                 batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+                 quantity INTEGER NOT NULL CHECK (quantity > 0),
+                 refund_cents INTEGER NOT NULL CHECK (refund_cents >= 0),
+                 taxable_cents INTEGER NOT NULL CHECK (taxable_cents >= 0),
+                 cgst_cents INTEGER NOT NULL CHECK (cgst_cents >= 0),
+                 sgst_cents INTEGER NOT NULL CHECK (sgst_cents >= 0),
+                 igst_cents INTEGER NOT NULL CHECK (igst_cents >= 0),
+                 total_gst_cents INTEGER NOT NULL CHECK (total_gst_cents >= 0),
+                 UNIQUE (return_id, sale_item_id)
+               )"#,
+            "CREATE INDEX idx_sale_returns_sale ON sale_returns(sale_id, id)",
+            r#"CREATE TABLE sale_voids (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 sale_id INTEGER NOT NULL UNIQUE REFERENCES sales(id) ON DELETE RESTRICT,
+                 refund_cents INTEGER NOT NULL CHECK (refund_cents >= 0),
+                 refund_mode TEXT NOT NULL CHECK (refund_mode IN ('ACCOUNT', 'CASH', 'CARD', 'UPI', 'BANK', 'OTHER')),
+                 payment_reference TEXT,
+                 upi_transaction_id TEXT,
+                 note TEXT,
+                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"#,
+            r#"CREATE TABLE sale_corrections (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+                 before_json TEXT NOT NULL,
+                 after_json TEXT NOT NULL,
+                 adjustment_debit_cents INTEGER NOT NULL DEFAULT 0 CHECK (adjustment_debit_cents >= 0),
+                 adjustment_credit_cents INTEGER NOT NULL DEFAULT 0 CHECK (adjustment_credit_cents >= 0),
+                 adjustment_mode TEXT,
+                 adjustment_reference TEXT,
+                 adjustment_upi_transaction_id TEXT,
+                 note TEXT,
+                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"#,
+            "CREATE INDEX idx_sale_corrections_sale ON sale_corrections(sale_id, id)",
         ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
@@ -3467,6 +3676,11 @@ fn apply_business_reset(
     let mut counts = DataResetCounts::default();
     match scope {
         DataResetScope::SalesHistory => {
+            reset_count(transaction, "DELETE FROM sale_return_items")?;
+            reset_count(transaction, "DELETE FROM sale_returns")?;
+            reset_count(transaction, "DELETE FROM sale_voids")?;
+            reset_count(transaction, "DELETE FROM sale_corrections")?;
+            reset_count(transaction, "DELETE FROM customer_ledger_events")?;
             counts.sale_items_deleted =
                 reset_count(transaction, "DELETE FROM sale_items")?;
             counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
@@ -3490,6 +3704,11 @@ fn apply_business_reset(
                 .map_err(|error| format!("Could not reset supplier balances: {error}"))?;
         }
         DataResetScope::AllBusinessHistory => {
+            reset_count(transaction, "DELETE FROM sale_return_items")?;
+            reset_count(transaction, "DELETE FROM sale_returns")?;
+            reset_count(transaction, "DELETE FROM sale_voids")?;
+            reset_count(transaction, "DELETE FROM sale_corrections")?;
+            reset_count(transaction, "DELETE FROM customer_ledger_events")?;
             counts.sale_items_deleted =
                 reset_count(transaction, "DELETE FROM sale_items")?;
             counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
@@ -4120,6 +4339,8 @@ fn complete_sale_in_connection(
         let sgst_shares = allocate_cents_proportionally(tax.sgst_cents, &quantities)?;
         let igst_shares = allocate_cents_proportionally(tax.igst_cents, &quantities)?;
         let gst_shares = allocate_cents_proportionally(tax.total_gst_cents, &quantities)?;
+        let flat_discount_shares =
+            allocate_cents_proportionally(bill_discount_allocations[item_index], &quantities)?;
         for (allocation_index, allocation) in item_allocations.into_iter().enumerate() {
             let rows_affected = transaction
                 .execute(
@@ -4158,9 +4379,9 @@ fn complete_sale_in_connection(
                 .execute(
                     r#"INSERT INTO sale_items (
                          sale_id, batch_id, quantity, unit_price, item_discount, total_price,
-                         purchase_rate_at_sale, gst_rate_basis_points, taxable_amount,
+                         flat_discount_cents, purchase_rate_at_sale, gst_rate_basis_points, taxable_amount,
                          cgst_amount, sgst_amount, igst_amount, total_gst
-                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
                     params![
                         sale_id,
                         allocation.batch_id,
@@ -4168,6 +4389,7 @@ fn complete_sale_in_connection(
                         item.unit_price_cents as f64 / 100.0,
                         allocation.item_discount_cents as f64 / 100.0,
                         line_total_cents as f64 / 100.0,
+                        flat_discount_shares[allocation_index],
                         purchase_rate_cents as f64 / 100.0,
                         gst_rates[item_index],
                         taxable_shares[allocation_index] as f64 / 100.0,
@@ -4216,10 +4438,15 @@ fn collect_customer_payment_in_connection(
     }
     if !matches!(
         payment.payment_mode.as_str(),
-        "CASH" | "CARD" | "UPI" | "OTHER"
+        "CASH" | "CARD" | "UPI" | "BANK" | "OTHER"
     ) {
         return Err("Choose a valid collection payment method.".to_owned());
     }
+    let payment_reference = normalized_optional_text(
+        payment.payment_reference,
+        120,
+        "Payment reference",
+    )?;
     let upi_transaction_id =
         normalized_optional_text(payment.upi_transaction_id, 120, "UPI transaction ID")?;
     if payment.payment_mode != "UPI" && upi_transaction_id.is_some() {
@@ -4234,8 +4461,11 @@ fn collect_customer_payment_in_connection(
         .query_row(
             r#"SELECT COALESCE((
                  SELECT SUM(debit_cents - credit_cents)
-                 FROM customer_ledger
-                 WHERE customer_id = ?1
+                 FROM (
+                   SELECT debit_cents, credit_cents FROM customer_ledger WHERE customer_id = ?1
+                   UNION ALL
+                   SELECT debit_cents, credit_cents FROM customer_ledger_events WHERE customer_id = ?1
+                 )
                ), 0)
                FROM customers
                WHERE id = ?1"#,
@@ -4255,12 +4485,13 @@ fn collect_customer_payment_in_connection(
         .execute(
             r#"INSERT INTO customer_ledger (
                  customer_id, entry_type, credit_cents, payment_mode,
-                 upi_transaction_id, note
-               ) VALUES (?1, 'COLLECTION', ?2, ?3, ?4, ?5)"#,
+                 payment_reference, upi_transaction_id, note
+               ) VALUES (?1, 'COLLECTION', ?2, ?3, ?4, ?5, ?6)"#,
             params![
                 payment.customer_id,
                 payment.amount_cents,
                 payment.payment_mode,
+                payment_reference,
                 upi_transaction_id,
                 note
             ],
@@ -4284,6 +4515,1066 @@ fn collect_customer_payment(
 ) -> Result<CustomerPaymentResult, String> {
     let mut connection = open_pharmacy_connection(&app)?;
     collect_customer_payment_in_connection(&mut connection, payment)
+}
+
+fn load_sale_adjustment_lines(
+    connection: &Connection,
+    sale_id: i64,
+) -> Result<Vec<SaleAdjustmentLine>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"SELECT id, batch_id, quantity,
+                      CAST(ROUND(unit_price * 100) AS INTEGER),
+                CAST(ROUND(item_discount * 100) AS INTEGER),
+                      flat_discount_cents,
+                      gst_rate_basis_points,
+                      CAST(ROUND(taxable_amount * 100) AS INTEGER),
+                      CAST(ROUND(cgst_amount * 100) AS INTEGER),
+                      CAST(ROUND(sgst_amount * 100) AS INTEGER),
+                      CAST(ROUND(igst_amount * 100) AS INTEGER),
+                      CAST(ROUND(total_gst * 100) AS INTEGER)
+               FROM sale_items WHERE sale_id = ?1 ORDER BY id ASC"#,
+        )
+        .map_err(|error| format!("Could not load the invoice items: {error}"))?;
+    let rows = statement
+        .query_map([sale_id], |row| {
+            Ok(SaleAdjustmentLine {
+                id: row.get(0)?,
+                batch_id: row.get(1)?,
+                quantity: row.get(2)?,
+                unit_price_cents: row.get(3)?,
+                item_discount_cents: row.get(4)?,
+                flat_discount_cents: row.get(5)?,
+                gst_rate_basis_points: row.get(6)?,
+                taxable_cents: row.get(7)?,
+                cgst_cents: row.get(8)?,
+                sgst_cents: row.get(9)?,
+                igst_cents: row.get(10)?,
+                total_gst_cents: row.get(11)?,
+            })
+        })
+        .map_err(|error| format!("Could not read the invoice items: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the invoice items: {error}"))
+}
+
+fn sale_customer_balance_cents(
+    connection: &Connection,
+    customer_id: i64,
+) -> Result<i64, String> {
+    connection
+        .query_row(
+            r#"SELECT COALESCE(SUM(debit_cents - credit_cents), 0)
+               FROM (
+                 SELECT debit_cents, credit_cents FROM customer_ledger WHERE customer_id = ?1
+                 UNION ALL
+                 SELECT debit_cents, credit_cents FROM customer_ledger_events WHERE customer_id = ?1
+               )"#,
+            [customer_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not read the customer balance: {error}"))
+}
+
+fn insert_customer_ledger_adjustment(
+    transaction: &Transaction<'_>,
+    customer_id: i64,
+    entry_type: &str,
+    invoice_no: &str,
+    debit_cents: i64,
+    credit_cents: i64,
+    payment_mode: Option<&str>,
+    payment_reference: Option<&str>,
+    upi_transaction_id: Option<&str>,
+    note: Option<&str>,
+) -> Result<(), String> {
+    if debit_cents < 0 || credit_cents < 0 || (debit_cents == 0) == (credit_cents == 0) {
+        return Err("A customer-ledger adjustment must be a positive debit or credit.".to_owned());
+    }
+    transaction
+        .execute(
+            r#"INSERT INTO customer_ledger_events (
+                 customer_id, entry_type, invoice_no, reference,
+                 debit_cents, credit_cents, payment_mode, payment_reference,
+                 upi_transaction_id, note
+               ) VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+            params![
+                customer_id,
+                entry_type,
+                invoice_no,
+                debit_cents,
+                credit_cents,
+                payment_mode,
+                payment_reference,
+                upi_transaction_id,
+                note
+            ],
+        )
+        .map_err(|error| format!("Could not record the customer-ledger adjustment: {error}"))?;
+    Ok(())
+}
+
+fn update_sale_return_status(
+    transaction: &Transaction<'_>,
+    sale_id: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"UPDATE sales
+               SET status = CASE
+                 WHEN NOT EXISTS (
+                   SELECT 1 FROM sale_items AS original
+                   WHERE original.sale_id = ?1
+                     AND original.quantity > COALESCE((
+                       SELECT SUM(returned.quantity)
+                       FROM sale_return_items AS returned
+                       WHERE returned.sale_item_id = original.id
+                     ), 0)
+                 )
+                   THEN 'RETURNED'
+                 ELSE 'PARTIALLY_RETURNED'
+               END
+               WHERE id = ?1 AND status <> 'CANCELLED'"#,
+            [sale_id],
+        )
+        .map_err(|error| format!("Could not update the invoice return status: {error}"))?;
+    Ok(())
+}
+
+fn create_sale_return_in_connection(
+    connection: &mut Connection,
+    request: SaleReturnRequest,
+) -> Result<SaleReturnResult, String> {
+    if request.invoice_no.trim().is_empty() || request.items.is_empty() {
+        return Err("Choose an invoice and at least one item to return.".to_owned());
+    }
+    if !matches!(request.refund_mode.as_str(), "CASH" | "UPI" | "BANK" | "OTHER") {
+        return Err("Choose a valid refund method.".to_owned());
+    }
+    let payment_reference =
+        normalized_optional_text(request.payment_reference, 120, "Payment reference")?;
+    let upi_transaction_id =
+        normalized_optional_text(request.upi_transaction_id, 120, "UPI transaction ID")?;
+    if request.refund_mode != "UPI" && upi_transaction_id.is_some() {
+        return Err("A UPI transaction ID can only be saved for a UPI refund.".to_owned());
+    }
+    let note = normalized_optional_text(request.note, 500, "Return note")?;
+    let mut quantities_by_item = HashMap::new();
+    for item in request.items {
+        if item.sale_item_id <= 0 || item.quantity <= 0 {
+            return Err("Return items need a valid invoice line and positive quantity.".to_owned());
+        }
+        if quantities_by_item.insert(item.sale_item_id, item.quantity).is_some() {
+            return Err("Choose each invoice line only once per return.".to_owned());
+        }
+    }
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the sales return: {error}"))?;
+    let sale: Option<(i64, String, Option<i64>, String, i64)> = transaction
+        .query_row(
+            r#"SELECT id, status, customer_id, payment_mode,
+                      CAST(ROUND(grand_total * 100) AS INTEGER)
+               FROM sales WHERE invoice_no = ?1"#,
+            [request.invoice_no.trim()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Could not find the sale invoice: {error}"))?;
+    let (sale_id, status, customer_id, payment_mode, _) =
+        sale.ok_or_else(|| "The selected invoice no longer exists.".to_owned())?;
+    if status == "CANCELLED" {
+        return Err("A cancelled invoice cannot be returned.".to_owned());
+    }
+    if !matches!(status.as_str(), "ACTIVE" | "PARTIALLY_RETURNED") {
+        return Err("This invoice has already been fully returned.".to_owned());
+    }
+
+    let lines = load_sale_adjustment_lines(&transaction, sale_id)?;
+    let mut total_cents = 0_i64;
+    let mut return_line_values = Vec::new();
+    for (sale_item_id, quantity) in quantities_by_item {
+        let line = lines
+            .iter()
+            .find(|line| line.id == sale_item_id)
+            .ok_or_else(|| "A selected return item does not belong to this invoice.".to_owned())?;
+        let returned: (i64, i64, i64, i64, i64, i64, i64) = transaction
+            .query_row(
+                r#"SELECT COALESCE(SUM(quantity), 0), COALESCE(SUM(refund_cents), 0),
+                          COALESCE(SUM(taxable_cents), 0), COALESCE(SUM(cgst_cents), 0),
+                          COALESCE(SUM(sgst_cents), 0), COALESCE(SUM(igst_cents), 0),
+                          COALESCE(SUM(total_gst_cents), 0)
+                   FROM sale_return_items WHERE sale_item_id = ?1"#,
+                [sale_item_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            )
+            .map_err(|error| format!("Could not check earlier returns for this item: {error}"))?;
+        let returned_quantity = returned.0;
+        let remaining_quantity = line.quantity - returned_quantity;
+        if quantity > remaining_quantity {
+            return Err(format!(
+                "Return quantity for invoice item {sale_item_id} exceeds the remaining quantity ({remaining_quantity})."
+            ));
+        }
+        if remaining_quantity <= 0 {
+            return Err("This invoice item has already been fully returned.".to_owned());
+        }
+        let line_total_cents = (line.unit_price_cents * line.quantity)
+            .checked_sub(line.item_discount_cents)
+            .and_then(|amount| amount.checked_sub(line.flat_discount_cents))
+            .and_then(|amount| {
+                if amount < 0 {
+                    None
+                } else if payment_mode != "CREDIT" {
+                    Some(amount)
+                } else {
+                    Some(amount)
+                }
+            })
+            .ok_or_else(|| "The original invoice line total is invalid.".to_owned())?;
+        let gst_inclusive = transaction
+            .query_row(
+                "SELECT gst_enabled, gst_pricing_mode FROM sales WHERE id = ?1",
+                [sale_id],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|error| format!("Could not read the invoice tax settings: {error}"))?;
+        let full_refund_cents = if gst_inclusive.0 && gst_inclusive.1 == "EXCLUSIVE" {
+            line_total_cents
+                .checked_add(line.total_gst_cents)
+                .ok_or_else(|| "The original invoice line total is invalid.".to_owned())?
+        } else {
+            line_total_cents
+        };
+        let remaining_refund_cents = full_refund_cents - returned.1;
+        if remaining_refund_cents < 0 {
+            return Err("Earlier returns exceed the original invoice line value.".to_owned());
+        }
+        let refund_cents = if quantity == remaining_quantity {
+            remaining_refund_cents
+        } else {
+            (remaining_refund_cents as i128 * quantity as i128 / remaining_quantity as i128) as i64
+        };
+        let proportional = |remaining: i64| -> i64 {
+            if quantity == remaining_quantity {
+                remaining
+            } else {
+                (remaining as i128 * quantity as i128 / remaining_quantity as i128) as i64
+            }
+        };
+        let taxable_cents = proportional(line.taxable_cents - returned.2);
+        let cgst_cents = proportional(line.cgst_cents - returned.3);
+        let sgst_cents = proportional(line.sgst_cents - returned.4);
+        let igst_cents = proportional(line.igst_cents - returned.5);
+        let total_gst_cents = proportional(line.total_gst_cents - returned.6);
+
+        let batch_rows = transaction
+            .execute(
+                r#"UPDATE medicine_batches
+                   SET current_stock = current_stock + ?1
+                   WHERE id = ?2 AND expiry_date >= date('now', 'localtime')
+                     AND current_stock <= 1000000000 - ?1"#,
+                params![quantity, line.batch_id],
+            )
+            .map_err(|error| format!("Could not restore the original batch stock: {error}"))?;
+        if batch_rows != 1 {
+            return Err(format!(
+                "Original batch {} has expired or cannot safely accept returned stock.",
+                line.batch_id
+            ));
+        }
+        total_cents = total_cents
+            .checked_add(refund_cents)
+            .ok_or_else(|| "The return total exceeds the supported amount.".to_owned())?;
+        return_line_values.push((
+            sale_item_id,
+            line.batch_id,
+            quantity,
+            refund_cents,
+            taxable_cents,
+            cgst_cents,
+            sgst_cents,
+            igst_cents,
+            total_gst_cents,
+        ));
+    }
+    if total_cents < 0 {
+        return Err("The selected return has an invalid value.".to_owned());
+    }
+    let returned_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sale_returns WHERE sale_id = ?1",
+            [sale_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not number this return: {error}"))?;
+    let return_no = format!("R{sale_id}-{:03}", returned_count + 1);
+    transaction
+        .execute(
+            r#"INSERT INTO sale_returns (
+                 sale_id, return_no, total_cents, refund_mode, payment_reference,
+                 upi_transaction_id, note
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+            params![
+                sale_id,
+                return_no,
+                total_cents,
+                request.refund_mode,
+                payment_reference,
+                upi_transaction_id,
+                note
+            ],
+        )
+        .map_err(|error| format!("Could not save the sales return: {error}"))?;
+    let return_id = transaction.last_insert_rowid();
+    for (sale_item_id, batch_id, quantity, refund, taxable, cgst, sgst, igst, gst) in
+        return_line_values
+    {
+        transaction
+            .execute(
+                r#"INSERT INTO sale_return_items (
+                     return_id, sale_item_id, batch_id, quantity, refund_cents,
+                     taxable_cents, cgst_cents, sgst_cents, igst_cents, total_gst_cents
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+                params![return_id, sale_item_id, batch_id, quantity, refund, taxable, cgst, sgst, igst, gst],
+            )
+            .map_err(|error| format!("Could not save a returned invoice item: {error}"))?;
+    }
+    let customer_due_credit_cents = if payment_mode == "CREDIT" {
+        if let Some(customer_id) = customer_id {
+            let balance_cents = sale_customer_balance_cents(&transaction, customer_id)?;
+            let credit_cents = total_cents.max(0).min(balance_cents.max(0));
+            if credit_cents > 0 {
+                insert_customer_ledger_adjustment(
+                    &transaction,
+                    customer_id,
+                    "SALE_RETURN",
+                    request.invoice_no.trim(),
+                    0,
+                    credit_cents,
+                    Some(&request.refund_mode),
+                    payment_reference.as_deref(),
+                    upi_transaction_id.as_deref(),
+                    note.as_deref(),
+                )?;
+            }
+            credit_cents
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    transaction
+        .execute(
+            "UPDATE sale_returns SET customer_due_credit_cents = ?1 WHERE id = ?2",
+            params![customer_due_credit_cents, return_id],
+        )
+        .map_err(|error| format!("Could not save the customer due adjustment: {error}"))?;
+    update_sale_return_status(&transaction, sale_id)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the sales return: {error}"))?;
+    Ok(SaleReturnResult {
+        return_id,
+        return_no,
+        total_cents,
+        customer_due_credit_cents,
+    })
+}
+
+#[tauri::command]
+fn create_sale_return(
+    app: AppHandle,
+    request: SaleReturnRequest,
+) -> Result<SaleReturnResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    create_sale_return_in_connection(&mut connection, request)
+}
+
+fn cancel_sale_in_connection(
+    connection: &mut Connection,
+    request: SaleVoidRequest,
+) -> Result<SaleVoidResult, String> {
+    let invoice_no = request.invoice_no.trim();
+    if invoice_no.is_empty() {
+        return Err("Choose an invoice to cancel.".to_owned());
+    }
+    let note = normalized_optional_text(request.note, 500, "Cancellation note")?;
+    if note.is_none() {
+        return Err("Enter a reason for cancelling this invoice.".to_owned());
+    }
+    let payment_reference =
+        normalized_optional_text(request.payment_reference, 120, "Payment reference")?;
+    let upi_transaction_id =
+        normalized_optional_text(request.upi_transaction_id, 120, "UPI transaction ID")?;
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin invoice cancellation: {error}"))?;
+    let sale: Option<(i64, String, Option<i64>, String, i64)> = transaction
+        .query_row(
+            r#"SELECT id, status, customer_id, payment_mode,
+                      CAST(ROUND(grand_total * 100) AS INTEGER)
+               FROM sales WHERE invoice_no = ?1"#,
+            [invoice_no],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|error| format!("Could not load the invoice to cancel: {error}"))?;
+    let (sale_id, status, customer_id, payment_mode, grand_total_cents) =
+        sale.ok_or_else(|| "The selected invoice no longer exists.".to_owned())?;
+    if status != "ACTIVE" {
+        return Err("Only an invoice with no returns can be cancelled.".to_owned());
+    }
+    if payment_mode == "CREDIT" {
+        if request.refund_mode != "ACCOUNT" {
+            return Err("A credit invoice must be cancelled back to the customer account.".to_owned());
+        }
+    } else if !matches!(
+        request.refund_mode.as_str(),
+        "CASH" | "CARD" | "UPI" | "BANK" | "OTHER"
+    ) {
+        return Err("Choose a valid refund method for this invoice.".to_owned());
+    }
+    if request.refund_mode != "UPI" && upi_transaction_id.is_some() {
+        return Err("A UPI transaction ID can only be saved for a UPI refund.".to_owned());
+    }
+    let lines = load_sale_adjustment_lines(&transaction, sale_id)?;
+    if lines.is_empty() {
+        return Err("The invoice has no items to reverse.".to_owned());
+    }
+    for line in &lines {
+        let changed = transaction
+            .execute(
+                r#"UPDATE medicine_batches
+                   SET current_stock = current_stock + ?1
+                   WHERE id = ?2 AND expiry_date >= date('now', 'localtime')
+                     AND current_stock <= 1000000000 - ?1"#,
+                params![line.quantity, line.batch_id],
+            )
+            .map_err(|error| format!("Could not restore stock from the cancelled invoice: {error}"))?;
+        if changed != 1 {
+            return Err(format!(
+                "Original batch {} has expired or cannot safely accept the cancelled stock.",
+                line.batch_id
+            ));
+        }
+    }
+    if payment_mode == "CREDIT" {
+        let customer_id = customer_id
+            .ok_or_else(|| "The credit invoice has no saved customer account.".to_owned())?;
+        let balance_cents = sale_customer_balance_cents(&transaction, customer_id)?;
+        if balance_cents < grand_total_cents {
+            return Err(
+                "This credit invoice cannot be cancelled because part of its balance has already been collected or adjusted."
+                    .to_owned(),
+            );
+        }
+        insert_customer_ledger_adjustment(
+            &transaction,
+            customer_id,
+            "SALE_VOID",
+            invoice_no,
+            0,
+            grand_total_cents,
+            Some("ACCOUNT"),
+            payment_reference.as_deref(),
+            upi_transaction_id.as_deref(),
+            note.as_deref(),
+        )?;
+    }
+    transaction
+        .execute(
+            r#"INSERT INTO sale_voids (
+                 sale_id, refund_cents, refund_mode, payment_reference,
+                 upi_transaction_id, note
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+            params![
+                sale_id,
+                grand_total_cents,
+                request.refund_mode,
+                payment_reference,
+                upi_transaction_id,
+                note
+            ],
+        )
+        .map_err(|error| format!("Could not record the invoice cancellation: {error}"))?;
+    let changed = transaction
+        .execute(
+            r#"UPDATE sales SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP
+               WHERE id = ?1 AND status = 'ACTIVE'"#,
+            [sale_id],
+        )
+        .map_err(|error| format!("Could not mark the invoice as cancelled: {error}"))?;
+    require_one_changed_row(changed, "Invoice")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit invoice cancellation: {error}"))?;
+    Ok(SaleVoidResult {
+        sale_id,
+        refund_cents: grand_total_cents,
+    })
+}
+
+#[tauri::command]
+fn cancel_sale(app: AppHandle, request: SaleVoidRequest) -> Result<SaleVoidResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    cancel_sale_in_connection(&mut connection, request)
+}
+
+fn correct_sale_in_connection(
+    connection: &mut Connection,
+    request: SaleCorrectionRequest,
+) -> Result<SaleCorrectionResult, String> {
+    let invoice_no = request.invoice_no.trim();
+    if invoice_no.is_empty() || request.items.is_empty() {
+        return Err("Choose an invoice and keep at least one invoice item.".to_owned());
+    }
+    if !matches!(
+        request.payment_mode.as_str(),
+        "CASH" | "CARD" | "UPI" | "CREDIT" | "OTHER"
+    ) {
+        return Err("Choose a valid payment method.".to_owned());
+    }
+    if request.customer_id.is_some_and(|customer_id| customer_id <= 0) {
+        return Err("Customer id must be a positive whole number.".to_owned());
+    }
+    let reason = normalized_optional_text(request.reason, 500, "Correction reason")?
+        .ok_or_else(|| "Enter a reason for correcting this invoice.".to_owned())?;
+    let notes = normalized_optional_text(request.notes, 500, "Invoice notes")?;
+    let payment_reference =
+        normalized_optional_text(request.payment_reference, 120, "Payment reference")?;
+    let upi_transaction_id =
+        normalized_optional_text(request.upi_transaction_id, 120, "UPI transaction ID")?;
+    if request.payment_mode != "UPI" && upi_transaction_id.is_some() {
+        return Err("A UPI transaction ID can only be saved for a UPI payment.".to_owned());
+    }
+    let mut requested_items = HashMap::new();
+    for item in request.items {
+        if item.sale_item_id <= 0 || item.quantity <= 0 || item.unit_price_cents < 0 {
+            return Err("Corrected invoice items need valid ids, positive quantities, and non-negative prices.".to_owned());
+        }
+        if requested_items.insert(item.sale_item_id, item).is_some() {
+            return Err("Choose each invoice item only once.".to_owned());
+        }
+    }
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin invoice correction: {error}"))?;
+    let sale: Option<(
+        i64,
+        String,
+        Option<i64>,
+        String,
+        i64,
+        i64,
+        i64,
+        i64,
+        bool,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = transaction
+        .query_row(
+            r#"SELECT id, status, customer_id, payment_mode,
+                      CAST(ROUND(grand_total * 100) AS INTEGER),
+                      CAST(ROUND(subtotal * 100) AS INTEGER),
+                      CAST(ROUND(flat_discount * 100) AS INTEGER),
+                      CAST(ROUND(cash_tendered * 100) AS INTEGER),
+                      gst_enabled, gst_pricing_mode, tax_type,
+                      customer_state_code, place_of_supply_state_code,
+                      customer_name, customer_phone
+               FROM sales WHERE invoice_no = ?1"#,
+            [invoice_no],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not load the invoice to correct: {error}"))?;
+    let (
+        sale_id,
+        status,
+        old_customer_id,
+        old_payment_mode,
+        old_total_cents,
+        _old_subtotal_cents,
+        flat_discount_cents,
+        old_cash_tendered_cents,
+        gst_enabled,
+        pricing_mode,
+        old_tax_type,
+        old_customer_state_code,
+        _old_place_of_supply_state_code,
+        old_customer_name,
+        old_customer_phone,
+    ) = sale.ok_or_else(|| "The selected invoice no longer exists.".to_owned())?;
+    if status != "ACTIVE" {
+        return Err("Only invoices without returns or cancellation can be corrected.".to_owned());
+    }
+    let prior_return_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sale_returns WHERE sale_id = ?1",
+            [sale_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not check earlier invoice returns: {error}"))?;
+    if prior_return_count != 0 {
+        return Err("An invoice with a recorded return cannot be edited; use the return trail instead.".to_owned());
+    }
+    let mut lines = load_sale_adjustment_lines(&transaction, sale_id)?;
+    if lines.is_empty() || requested_items.len() != lines.len() {
+        return Err("Invoice correction cannot add or remove historical batch lines.".to_owned());
+    }
+
+    let mut target_customer_state_code = old_customer_state_code.clone();
+    let (customer_name, customer_phone) = if let Some(customer_id) = request.customer_id {
+        let customer: Option<(String, Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT name, phone, state_code FROM customers WHERE id = ?1 AND active = 1",
+                [customer_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Could not load the corrected customer: {error}"))?;
+        let (name, phone, state_code) =
+            customer.ok_or_else(|| "The corrected customer is unavailable.".to_owned())?;
+        target_customer_state_code = state_code;
+        (Some(name), phone)
+    } else {
+        (
+            normalized_optional_text(request.customer_name, 120, "Customer name")?
+                .or(old_customer_name),
+            normalized_optional_text(request.customer_phone, 40, "Customer phone")?
+                .or(old_customer_phone),
+        )
+    };
+    if request.payment_mode == "CREDIT" && request.customer_id.is_none() {
+        return Err("Select a saved customer before changing an invoice to credit.".to_owned());
+    }
+    let target_customer_state_code = normalized_state_code(target_customer_state_code)?;
+    let pharmacy_state_code = normalized_state_code(
+        transaction
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'gst_pharmacy_state_code'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not read the pharmacy state setting: {error}"))?,
+    )?;
+    let place_of_supply_state_code = target_customer_state_code
+        .clone()
+        .or_else(|| pharmacy_state_code.clone());
+    let interstate = if gst_enabled {
+        match (&target_customer_state_code, &pharmacy_state_code) {
+            (Some(customer_state), Some(pharmacy_state)) => customer_state != pharmacy_state,
+            _ => old_tax_type == "IGST",
+        }
+    } else {
+        false
+    };
+
+    let mut new_quantities = Vec::with_capacity(lines.len());
+    let mut new_prices = Vec::with_capacity(lines.len());
+    let mut line_nets = Vec::with_capacity(lines.len());
+    let mut subtotal_cents = 0_i64;
+    let mut item_discount_cents = 0_i64;
+    let mut before_items = Vec::new();
+    for line in &lines {
+        let item = requested_items
+            .remove(&line.id)
+            .ok_or_else(|| "Invoice correction must include every original batch line.".to_owned())?;
+        let line_gross = item
+            .unit_price_cents
+            .checked_mul(item.quantity)
+            .ok_or_else(|| "Corrected invoice line exceeds the supported amount.".to_owned())?;
+        if line_gross < line.item_discount_cents {
+            return Err("The corrected line price cannot be less than its existing item discount.".to_owned());
+        }
+        let net = line_gross - line.item_discount_cents;
+        subtotal_cents = subtotal_cents
+            .checked_add(line_gross)
+            .ok_or_else(|| "Corrected invoice subtotal exceeds the supported amount.".to_owned())?;
+        item_discount_cents = item_discount_cents
+            .checked_add(line.item_discount_cents)
+            .ok_or_else(|| "Corrected invoice discount exceeds the supported amount.".to_owned())?;
+        line_nets.push(net);
+        new_quantities.push(item.quantity);
+        new_prices.push(item.unit_price_cents);
+        before_items.push(serde_json::json!({
+            "saleItemId": line.id,
+            "batchId": line.batch_id,
+            "quantity": line.quantity,
+            "unitPriceCents": line.unit_price_cents,
+            "itemDiscountCents": line.item_discount_cents,
+            "flatDiscountCents": line.flat_discount_cents,
+            "gstRateBasisPoints": line.gst_rate_basis_points,
+        }));
+    }
+    if !requested_items.is_empty() {
+        return Err("One or more corrected items do not belong to this invoice.".to_owned());
+    }
+    if flat_discount_cents > line_nets.iter().sum::<i64>() {
+        return Err("The invoice discount cannot exceed the corrected item totals.".to_owned());
+    }
+    let flat_shares = allocate_cents_proportionally(flat_discount_cents, &line_nets)?;
+    let mut tax_values = Vec::with_capacity(lines.len());
+    let mut grand_total_cents = 0_i64;
+    let mut taxable_total_cents = 0_i64;
+    let mut cgst_total_cents = 0_i64;
+    let mut sgst_total_cents = 0_i64;
+    let mut igst_total_cents = 0_i64;
+    let mut total_gst_cents = 0_i64;
+    for index in 0..lines.len() {
+        let after_discount = line_nets[index] - flat_shares[index];
+        let tax = calculate_gst_amounts(
+            after_discount,
+            lines[index].gst_rate_basis_points,
+            &pricing_mode,
+            interstate,
+            gst_enabled,
+        )?;
+        let line_total = if gst_enabled && pricing_mode == "EXCLUSIVE" {
+            after_discount
+                .checked_add(tax.total_gst_cents)
+                .ok_or_else(|| "Corrected invoice total exceeds the supported amount.".to_owned())?
+        } else {
+            after_discount
+        };
+        grand_total_cents = grand_total_cents
+            .checked_add(line_total)
+            .ok_or_else(|| "Corrected invoice total exceeds the supported amount.".to_owned())?;
+        taxable_total_cents += tax.taxable_cents;
+        cgst_total_cents += tax.cgst_cents;
+        sgst_total_cents += tax.sgst_cents;
+        igst_total_cents += tax.igst_cents;
+        total_gst_cents += tax.total_gst_cents;
+        tax_values.push(tax);
+    }
+    let total_discount_cents = item_discount_cents
+        .checked_add(flat_discount_cents)
+        .ok_or_else(|| "Corrected invoice discount exceeds the supported amount.".to_owned())?;
+    let cash_tendered_cents = if request.payment_mode == "CASH" {
+        request
+            .cash_tendered_cents
+            .unwrap_or_else(|| old_cash_tendered_cents.max(grand_total_cents))
+    } else {
+        0
+    };
+    if cash_tendered_cents < 0 || (request.payment_mode == "CASH" && cash_tendered_cents < grand_total_cents) {
+        return Err("Cash tendered must cover the corrected invoice total.".to_owned());
+    }
+    if request.cash_tendered_cents.is_some_and(|amount| amount < 0) {
+        return Err("Cash tendered cannot be negative.".to_owned());
+    }
+
+    for (index, line) in lines.iter_mut().enumerate() {
+        let delta = new_quantities[index] - line.quantity;
+        if delta > 0 {
+            let changed = transaction
+                .execute(
+                    r#"UPDATE medicine_batches SET current_stock = current_stock - ?1
+                       WHERE id = ?2 AND current_stock >= ?1
+                         AND expiry_date >= date('now', 'localtime')"#,
+                    params![delta, line.batch_id],
+                )
+                .map_err(|error| format!("Could not deduct corrected invoice stock: {error}"))?;
+            if changed != 1 {
+                return Err(format!(
+                    "Original batch {} is expired or has insufficient stock for this correction.",
+                    line.batch_id
+                ));
+            }
+        } else if delta < 0 {
+            let quantity = -delta;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE medicine_batches SET current_stock = current_stock + ?1
+                       WHERE id = ?2 AND expiry_date >= date('now', 'localtime')
+                         AND current_stock <= 1000000000 - ?1"#,
+                    params![quantity, line.batch_id],
+                )
+                .map_err(|error| format!("Could not restore corrected invoice stock: {error}"))?;
+            if changed != 1 {
+                return Err(format!(
+                    "Original batch {} has expired or cannot safely accept stock from this correction.",
+                    line.batch_id
+                ));
+            }
+        }
+        let quantity = new_quantities[index];
+        let unit_price = new_prices[index];
+        let line_gross = unit_price * quantity;
+        let line_net = line_gross - line.item_discount_cents;
+        let tax = tax_values[index];
+        transaction
+            .execute(
+                r#"UPDATE sale_items
+                   SET quantity = ?1, unit_price = ?2, total_price = ?3,
+                       flat_discount_cents = ?4, taxable_amount = ?5,
+                       cgst_amount = ?6, sgst_amount = ?7, igst_amount = ?8,
+                       total_gst = ?9
+                   WHERE id = ?10 AND sale_id = ?11"#,
+                params![
+                    quantity,
+                    unit_price as f64 / 100.0,
+                    line_net as f64 / 100.0,
+                    flat_shares[index],
+                    tax.taxable_cents as f64 / 100.0,
+                    tax.cgst_cents as f64 / 100.0,
+                    tax.sgst_cents as f64 / 100.0,
+                    tax.igst_cents as f64 / 100.0,
+                    tax.total_gst_cents as f64 / 100.0,
+                    line.id,
+                    sale_id
+                ],
+            )
+            .map_err(|error| format!("Could not update a corrected invoice item: {error}"))?;
+        line.quantity = quantity;
+        line.unit_price_cents = unit_price;
+        line.flat_discount_cents = flat_shares[index];
+        line.taxable_cents = tax.taxable_cents;
+        line.cgst_cents = tax.cgst_cents;
+        line.sgst_cents = tax.sgst_cents;
+        line.igst_cents = tax.igst_cents;
+        line.total_gst_cents = tax.total_gst_cents;
+    }
+
+    let adjustment_delta = grand_total_cents - old_total_cents;
+    let mut adjustment_debit_cents = 0_i64;
+    let mut adjustment_credit_cents = 0_i64;
+    let old_is_credit = old_payment_mode == "CREDIT";
+    let new_is_credit = request.payment_mode == "CREDIT";
+    let mut adjustment_mode = None;
+    let adjustment_reference = normalized_optional_text(
+        request.adjustment_reference,
+        120,
+        "Correction settlement reference",
+    )?;
+    let adjustment_upi_transaction_id = normalized_optional_text(
+        request.adjustment_upi_transaction_id,
+        120,
+        "Correction UPI transaction ID",
+    )?;
+    let external_adjustment = if old_is_credit != new_is_credit {
+        if old_is_credit {
+            (grand_total_cents, 0)
+        } else {
+            (0, old_total_cents)
+        }
+    } else if old_is_credit {
+        (adjustment_delta.max(0), (-adjustment_delta).max(0))
+    } else {
+        (adjustment_delta.max(0), (-adjustment_delta).max(0))
+    };
+    let has_external_adjustment = !old_is_credit || !new_is_credit;
+    if external_adjustment.0 > 0 || external_adjustment.1 > 0 {
+        if has_external_adjustment {
+            let mode = request
+                .adjustment_mode
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_uppercase();
+            if !matches!(mode.as_str(), "CASH" | "CARD" | "UPI" | "BANK" | "OTHER") {
+                return Err("Choose how the correction's payment or refund was handled.".to_owned());
+            }
+            if mode != "UPI" && adjustment_upi_transaction_id.is_some() {
+                return Err("A correction UPI reference can only be saved for a UPI settlement.".to_owned());
+            }
+            adjustment_mode = Some(mode);
+        } else {
+            adjustment_mode = Some("ACCOUNT".to_owned());
+        }
+        adjustment_debit_cents = external_adjustment.0;
+        adjustment_credit_cents = external_adjustment.1;
+    }
+    if old_is_credit {
+        let old_customer = old_customer_id
+            .ok_or_else(|| "The original credit invoice has no saved customer.".to_owned())?;
+        let old_balance = sale_customer_balance_cents(&transaction, old_customer)?;
+        let credit_old_invoice = if new_is_credit && request.customer_id == Some(old_customer) {
+            (-adjustment_delta).max(0)
+        } else {
+            old_total_cents
+        };
+        if old_balance < credit_old_invoice {
+            return Err("The original customer balance is too low to safely correct this credit invoice.".to_owned());
+        }
+        if credit_old_invoice > 0 {
+            insert_customer_ledger_adjustment(
+                &transaction,
+                old_customer,
+                "SALE_CORRECTION",
+                invoice_no,
+                0,
+                credit_old_invoice,
+                adjustment_mode.as_deref(),
+                adjustment_reference.as_deref(),
+                adjustment_upi_transaction_id.as_deref(),
+                Some(&reason),
+            )?;
+        }
+    }
+    if new_is_credit {
+        let new_customer = request
+            .customer_id
+            .ok_or_else(|| "Select a saved customer before changing an invoice to credit.".to_owned())?;
+        let debit_new_invoice = if old_is_credit && old_customer_id == Some(new_customer) {
+            adjustment_delta.max(0)
+        } else {
+            grand_total_cents
+        };
+        if debit_new_invoice > 0 {
+            insert_customer_ledger_adjustment(
+                &transaction,
+                new_customer,
+                "SALE_CORRECTION",
+                invoice_no,
+                debit_new_invoice,
+                0,
+                Some("ACCOUNT"),
+                payment_reference.as_deref(),
+                upi_transaction_id.as_deref(),
+                Some(&reason),
+            )?;
+        }
+    }
+
+    let before_json = serde_json::json!({
+        "invoiceNo": invoice_no,
+        "customerId": old_customer_id,
+        "paymentMode": old_payment_mode,
+        "grandTotalCents": old_total_cents,
+        "items": before_items,
+    });
+    let after_json = serde_json::json!({
+        "invoiceNo": invoice_no,
+        "customerId": request.customer_id,
+        "paymentMode": request.payment_mode,
+        "grandTotalCents": grand_total_cents,
+        "items": lines.iter().map(|line| serde_json::json!({
+            "saleItemId": line.id,
+            "batchId": line.batch_id,
+            "quantity": line.quantity,
+            "unitPriceCents": line.unit_price_cents,
+            "flatDiscountCents": line.flat_discount_cents,
+            "gstRateBasisPoints": line.gst_rate_basis_points,
+        })).collect::<Vec<_>>(),
+    });
+    let before_json = serde_json::to_string(&before_json)
+        .map_err(|error| format!("Could not preserve the original invoice snapshot: {error}"))?;
+    let after_json = serde_json::to_string(&after_json)
+        .map_err(|error| format!("Could not preserve the corrected invoice snapshot: {error}"))?;
+    let change_due_cents = if request.payment_mode == "CASH" {
+        cash_tendered_cents - grand_total_cents
+    } else {
+        0
+    };
+    let tax_type = if !gst_enabled {
+        "NONE"
+    } else if interstate {
+        "IGST"
+    } else {
+        "CGST_SGST"
+    };
+    transaction
+        .execute(
+            r#"UPDATE sales SET
+                 customer_id = ?1, customer_name = ?2, customer_phone = ?3,
+                 customer_state_code = ?4, place_of_supply_state_code = ?5,
+                 subtotal = ?6, discount = ?7, grand_total = ?8,
+                 payment_mode = ?9, cash_tendered = ?10, change_due = ?11,
+                 payment_reference = ?12, upi_transaction_id = ?13,
+                 upi_payment_verified = 0, tax_type = ?14, taxable_amount = ?15,
+                 cgst_amount = ?16, sgst_amount = ?17, igst_amount = ?18,
+                 total_gst = ?19, notes = ?20
+               WHERE id = ?21 AND status = 'ACTIVE'"#,
+            params![
+                request.customer_id,
+                customer_name,
+                customer_phone,
+                target_customer_state_code,
+                place_of_supply_state_code,
+                subtotal_cents as f64 / 100.0,
+                total_discount_cents as f64 / 100.0,
+                grand_total_cents as f64 / 100.0,
+                request.payment_mode,
+                cash_tendered_cents as f64 / 100.0,
+                change_due_cents as f64 / 100.0,
+                payment_reference,
+                upi_transaction_id,
+                tax_type,
+                taxable_total_cents as f64 / 100.0,
+                cgst_total_cents as f64 / 100.0,
+                sgst_total_cents as f64 / 100.0,
+                igst_total_cents as f64 / 100.0,
+                total_gst_cents as f64 / 100.0,
+                notes,
+                sale_id
+            ],
+        )
+        .map_err(|error| format!("Could not update the corrected invoice: {error}"))?;
+    transaction
+        .execute(
+            r#"INSERT INTO sale_corrections (
+                 sale_id, before_json, after_json, adjustment_debit_cents,
+                 adjustment_credit_cents, adjustment_mode, adjustment_reference,
+                 adjustment_upi_transaction_id, note
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+            params![
+                sale_id,
+                before_json,
+                after_json,
+                adjustment_debit_cents,
+                adjustment_credit_cents,
+                adjustment_mode,
+                adjustment_reference,
+                adjustment_upi_transaction_id,
+                reason
+            ],
+        )
+        .map_err(|error| format!("Could not save the invoice correction history: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit invoice correction: {error}"))?;
+    Ok(SaleCorrectionResult {
+        sale_id,
+        invoice_no: invoice_no.to_owned(),
+        grand_total_cents,
+    })
+}
+
+#[tauri::command]
+fn correct_sale(
+    app: AppHandle,
+    request: SaleCorrectionRequest,
+) -> Result<SaleCorrectionResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    correct_sale_in_connection(&mut connection, request)
 }
 
 #[allow(dead_code)]
@@ -4527,6 +5818,7 @@ pub fn run() {
             get_purchase_details,
             get_supplier_ledger,
             get_recent_sales,
+            get_sales_history,
             get_sale_details,
             get_sales_report_summary,
             get_sales_report_rows,
@@ -4544,6 +5836,9 @@ pub fn run() {
             remove_medicine_photo,
             complete_sale,
             collect_customer_payment,
+            create_sale_return,
+            cancel_sale,
+            correct_sale,
             purchase_management::complete_purchase,
             purchase_management::edit_purchase,
             purchase_management::cancel_purchase,
@@ -4574,6 +5869,7 @@ pub fn run() {
         get_purchase_details,
         get_supplier_ledger,
         get_recent_sales,
+        get_sales_history,
         get_sale_details,
         get_sales_report_summary,
         get_sales_report_rows,
@@ -4590,6 +5886,9 @@ pub fn run() {
         remove_medicine_photo,
         complete_sale,
         collect_customer_payment,
+        create_sale_return,
+        cancel_sale,
+        correct_sale,
         purchase_management::complete_purchase,
         purchase_management::edit_purchase,
         purchase_management::cancel_purchase,
@@ -6812,6 +8111,115 @@ mod backup_tests {
     }
 
     #[test]
+    fn complete_backup_restore_preserves_returns_voids_corrections_and_customer_events() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let photo_directory = create_test_photo_directory(&directory, "phase4-photos");
+        let backup_path = directory.join("phase4-backup.zip");
+        let mut connection = create_restore_fixture_database(&active_database, 8);
+        migrate_connection(&mut connection).expect("upgrade backup fixture to the current schema");
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO sale_corrections (sale_id, before_json, after_json, note)
+                SELECT id, '{"grandTotal":100}', '{"grandTotal":90}', 'Backup audit'
+                FROM sales WHERE invoice_no = 'SALE-BACKUP-001';
+
+                INSERT INTO sale_returns (
+                  sale_id, return_no, total_cents, customer_due_credit_cents, refund_mode, note
+                )
+                SELECT id, 'RET-BACKUP-001', 100, 100, 'CASH', 'Backup return'
+                FROM sales WHERE invoice_no = 'SALE-BACKUP-001';
+
+                INSERT INTO sale_return_items (
+                  return_id, sale_item_id, batch_id, quantity, refund_cents, taxable_cents,
+                  cgst_cents, sgst_cents, igst_cents, total_gst_cents
+                )
+                SELECT r.id, si.id, si.batch_id, 1, 100, 100, 0, 0, 0, 0
+                FROM sale_returns AS r
+                INNER JOIN sales AS s ON s.id = r.sale_id
+                INNER JOIN sale_items AS si ON si.sale_id = s.id
+                WHERE r.return_no = 'RET-BACKUP-001'
+                ORDER BY si.id LIMIT 1;
+
+                INSERT INTO customer_ledger_events (
+                  customer_id, entry_type, invoice_no, reference, credit_cents,
+                  payment_mode, payment_reference, note
+                )
+                VALUES (1, 'SALE_RETURN', 'SALE-BACKUP-001', 'RET-BACKUP-001',
+                        100, 'CASH', 'RETURN-PAYMENT-1', 'Backup customer event');
+
+                INSERT INTO sales (
+                  invoice_no, subtotal, discount, flat_discount, grand_total,
+                  payment_mode, status
+                )
+                SELECT 'VOID-BACKUP-001', subtotal, discount, flat_discount,
+                       grand_total, 'CASH', 'CANCELLED'
+                FROM sales WHERE invoice_no = 'SALE-BACKUP-001';
+
+                INSERT INTO sale_voids (sale_id, refund_cents, refund_mode, note)
+                SELECT id, CAST(ROUND(grand_total * 100) AS INTEGER), 'CASH', 'Backup void'
+                FROM sales WHERE invoice_no = 'VOID-BACKUP-001';
+                "#,
+            )
+            .expect("add Phase 4 records to backup fixture");
+        drop(connection);
+
+        let destination = backup_destination_path(&active_database, &backup_path)
+            .expect("resolve Phase 4 backup destination");
+        create_complete_backup_at(&active_database, &photo_directory, &destination)
+            .expect("create backup containing Phase 4 records");
+
+        let active_connection =
+            Connection::open(&active_database).expect("open active database before restore");
+        active_connection
+            .execute_batch(
+                "DELETE FROM sale_return_items;
+                 DELETE FROM sale_returns;
+                 DELETE FROM sale_voids;
+                 DELETE FROM sale_corrections;
+                 DELETE FROM customer_ledger_events;",
+            )
+            .expect("remove Phase 4 records from active database");
+        drop(active_connection);
+
+        restore_database_backup_at(&active_database, &photo_directory, &backup_path)
+            .expect("restore backup containing Phase 4 records");
+        let restored = Connection::open(&active_database).expect("open restored database");
+        let counts: (i64, i64, i64, i64, i64) = restored
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM sale_returns),
+                     (SELECT COUNT(*) FROM sale_return_items),
+                     (SELECT COUNT(*) FROM sale_voids),
+                     (SELECT COUNT(*) FROM sale_corrections),
+                     (SELECT COUNT(*) FROM customer_ledger_events)"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read restored Phase 4 record counts");
+        assert_eq!(counts, (1, 1, 1, 1, 1));
+        let payment_reference: String = restored
+            .query_row(
+                "SELECT payment_reference FROM customer_ledger_events WHERE reference = 'RET-BACKUP-001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored customer payment reference");
+        assert_eq!(payment_reference, "RETURN-PAYMENT-1");
+        drop(restored);
+        fs::remove_dir_all(directory).expect("remove isolated Phase 4 backup database");
+    }
+
+    #[test]
     fn complete_backup_stores_multiple_photos_and_supported_long_references() {
         use std::io::Read;
 
@@ -7353,12 +8761,16 @@ mod backup_tests {
         let active_connection = create_restore_fixture_database(&active_database, 8);
         drop(active_connection);
 
-        let future_connection = create_restore_fixture_database(&future_backup, 9);
+        let future_connection =
+            create_restore_fixture_database(&future_backup, LATEST_DATABASE_VERSION);
         drop(future_connection);
         let future_connection =
             Connection::open(&future_backup).expect("open future-schema fixture");
         future_connection
-            .execute("INSERT INTO schema_migrations (version) VALUES (10)", [])
+            .execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [LATEST_DATABASE_VERSION + 1],
+            )
             .expect("mark fixture as a future schema");
         drop(future_connection);
 
@@ -7382,7 +8794,10 @@ mod backup_tests {
             restore_database_backup_without_photos(&active_database, &incomplete_backup)
                 .unwrap_err();
         assert!(!corrupt_error.is_empty());
-        assert!(future_error.contains("newer MY MEDICAL database version"));
+        assert!(
+            future_error.contains("newer MY MEDICAL database version"),
+            "unexpected future-schema restore error: {future_error}"
+        );
         assert!(incomplete_error.contains("stock_adjustments.previous_quantity"));
         assert!(!directory.join("backups").exists());
 
@@ -8224,7 +9639,8 @@ mod gst_checkout_tests {
             CustomerPaymentRequest {
                 customer_id,
                 amount_cents: 5_000,
-                payment_mode: "CASH".to_owned(),
+                payment_mode: "BANK".to_owned(),
+                payment_reference: Some("COLLECT-BANK-REF".to_owned()),
                 upi_transaction_id: None,
                 note: Some("Part payment".to_owned()),
             },
@@ -8242,5 +9658,284 @@ mod gst_checkout_tests {
             )
             .expect("read collected customer balance");
         assert_eq!(after_collection, (10_500, 5_000, 2));
+        let collection_payment: (String, Option<String>) = connection
+            .query_row(
+                "SELECT payment_mode, payment_reference FROM customer_ledger
+                 WHERE customer_id = ?1 ORDER BY id DESC LIMIT 1",
+                [customer_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read saved customer collection payment");
+        assert_eq!(
+            collection_payment,
+            ("BANK".to_owned(), Some("COLLECT-BANK-REF".to_owned()))
+        );
+    }
+
+    #[test]
+    fn sale_returns_restore_only_returned_units_and_reject_over_return_atomically() {
+        let mut connection = gst_connection(None, 500);
+        let customer_id = create_customer(&mut connection, "29");
+        add_batch(&connection, 401, 10.0);
+        let mut sale_request = sale_request(customer_id, 401, "CASH", "EXCLUSIVE", 1_000, None);
+        sale_request.items[0].quantity = 2;
+        sale_request.cash_tendered_cents = 4_000;
+        complete_sale_in_connection(&mut connection, sale_request)
+            .expect("complete sale for return test");
+        let (sale_id, invoice_no): (i64, String) = connection
+            .query_row(
+                "SELECT id, invoice_no FROM sales ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read return test invoice");
+        let sale_item_id: i64 = connection
+            .query_row(
+                "SELECT id FROM sale_items WHERE sale_id = ?1",
+                [sale_id],
+                |row| row.get(0),
+            )
+            .expect("read return test line");
+
+        let first_return = create_sale_return_in_connection(
+            &mut connection,
+            SaleReturnRequest {
+                invoice_no: invoice_no.clone(),
+                items: vec![SaleReturnItemRequest {
+                    sale_item_id,
+                    quantity: 1,
+                }],
+                refund_mode: "CASH".to_owned(),
+                payment_reference: None,
+                upi_transaction_id: None,
+                note: Some("One unit returned".to_owned()),
+            },
+        )
+        .expect("record first partial return");
+        assert!(first_return.total_cents > 0);
+        let (status, stock): (String, i64) = connection
+            .query_row(
+                r#"SELECT sales.status,
+                          (SELECT current_stock FROM medicine_batches WHERE id = 401)
+                   FROM sales WHERE sales.id = ?1"#,
+                [sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read partial-return state");
+        assert_eq!(status, "PARTIALLY_RETURNED");
+        assert_eq!(stock, 9);
+
+        let failed_over_return = create_sale_return_in_connection(
+            &mut connection,
+            SaleReturnRequest {
+                invoice_no: invoice_no.clone(),
+                items: vec![SaleReturnItemRequest {
+                    sale_item_id,
+                    quantity: 2,
+                }],
+                refund_mode: "CASH".to_owned(),
+                payment_reference: None,
+                upi_transaction_id: None,
+                note: None,
+            },
+        );
+        assert!(failed_over_return.is_err());
+        let stock_after_rejection: i64 = connection
+            .query_row(
+                "SELECT current_stock FROM medicine_batches WHERE id = 401",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read stock after rejected return");
+        assert_eq!(stock_after_rejection, 9);
+
+        create_sale_return_in_connection(
+            &mut connection,
+            SaleReturnRequest {
+                invoice_no,
+                items: vec![SaleReturnItemRequest {
+                    sale_item_id,
+                    quantity: 1,
+                }],
+                refund_mode: "CASH".to_owned(),
+                payment_reference: None,
+                upi_transaction_id: None,
+                note: None,
+            },
+        )
+        .expect("return final remaining unit");
+        let (final_status, final_stock): (String, i64) = connection
+            .query_row(
+                r#"SELECT sales.status,
+                          (SELECT current_stock FROM medicine_batches WHERE id = 401)
+                   FROM sales WHERE sales.id = ?1"#,
+                [sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read fully returned invoice");
+        assert_eq!(final_status, "RETURNED");
+        assert_eq!(final_stock, 10);
+    }
+
+    #[test]
+    fn invoice_correction_keeps_cost_snapshot_and_records_audit_before_correction() {
+        let mut connection = gst_connection(None, 500);
+        let customer_id = create_customer(&mut connection, "29");
+        add_batch(&connection, 402, 100.0);
+        let mut sale_request = sale_request(customer_id, 402, "CASH", "EXCLUSIVE", 10_000, None);
+        sale_request.cash_tendered_cents = 40_000;
+        complete_sale_in_connection(&mut connection, sale_request)
+            .expect("complete sale for correction test");
+        let (sale_id, invoice_no): (i64, String) = connection
+            .query_row(
+                "SELECT id, invoice_no FROM sales ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read correction test invoice");
+        let sale_item_id: i64 = connection
+            .query_row(
+                "SELECT id FROM sale_items WHERE sale_id = ?1",
+                [sale_id],
+                |row| row.get(0),
+            )
+            .expect("read correction test line");
+
+        let result = correct_sale_in_connection(
+            &mut connection,
+            SaleCorrectionRequest {
+                invoice_no,
+                customer_id: Some(customer_id),
+                customer_name: None,
+                customer_phone: None,
+                payment_mode: "CASH".to_owned(),
+                cash_tendered_cents: Some(40_000),
+                payment_reference: None,
+                upi_transaction_id: None,
+                adjustment_mode: Some("CASH".to_owned()),
+                adjustment_reference: Some("REFUND-402".to_owned()),
+                adjustment_upi_transaction_id: None,
+                notes: Some("Corrected unit price".to_owned()),
+                reason: Some("Price entered incorrectly".to_owned()),
+                items: vec![SaleCorrectionItemRequest {
+                    sale_item_id,
+                    quantity: 1,
+                    unit_price_cents: 9_500,
+                }],
+            },
+        )
+        .expect("correct invoice unit price");
+        assert_eq!(result.sale_id, sale_id);
+        let (
+            unit_price_cents,
+            cost_snapshot,
+            updated_total,
+            audit_count,
+            before_json,
+            after_json,
+            reference,
+            note,
+        ): (
+            i64,
+            f64,
+            i64,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                r#"SELECT CAST(ROUND(si.unit_price * 100) AS INTEGER), si.purchase_rate_at_sale,
+                          CAST(ROUND(s.grand_total * 100) AS INTEGER),
+                          (SELECT COUNT(*) FROM sale_corrections WHERE sale_id = s.id),
+                          (SELECT before_json FROM sale_corrections WHERE sale_id = s.id),
+                          (SELECT after_json FROM sale_corrections WHERE sale_id = s.id),
+                          (SELECT adjustment_reference FROM sale_corrections WHERE sale_id = s.id),
+                          (SELECT note FROM sale_corrections WHERE sale_id = s.id)
+                   FROM sales AS s
+                   INNER JOIN sale_items AS si ON si.sale_id = s.id
+                   WHERE s.id = ?1"#,
+                [sale_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("read corrected invoice and audit");
+        assert_eq!(unit_price_cents, 9_500);
+        assert_eq!(cost_snapshot, 50.0);
+        assert_eq!(result.grand_total_cents, updated_total);
+        assert_eq!(unit_price_cents, 9_500);
+        assert_eq!(audit_count, 1);
+        assert_ne!(before_json, after_json);
+        assert_eq!(reference.as_deref(), Some("REFUND-402"));
+        assert_eq!(note.as_deref(), Some("Price entered incorrectly"));
+    }
+
+    #[test]
+    fn cancelling_an_invoice_restores_stock_and_is_not_repeatable() {
+        let mut connection = gst_connection(None, 500);
+        let customer_id = create_customer(&mut connection, "29");
+        add_batch(&connection, 403, 100.0);
+        let mut sale_request = sale_request(customer_id, 403, "CASH", "EXCLUSIVE", 10_000, None);
+        sale_request.cash_tendered_cents = 40_000;
+        complete_sale_in_connection(&mut connection, sale_request)
+            .expect("complete sale for cancellation test");
+        let (sale_id, invoice_no, grand_total): (i64, String, i64) = connection
+            .query_row(
+                "SELECT id, invoice_no, CAST(ROUND(grand_total * 100) AS INTEGER)
+                 FROM sales ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read cancellation test invoice");
+        let result = cancel_sale_in_connection(
+            &mut connection,
+            SaleVoidRequest {
+                invoice_no: invoice_no.clone(),
+                refund_mode: "CASH".to_owned(),
+                payment_reference: Some("CANCEL-403".to_owned()),
+                upi_transaction_id: None,
+                note: Some("Duplicate invoice".to_owned()),
+            },
+        )
+        .expect("cancel invoice");
+        assert_eq!(result.sale_id, sale_id);
+        assert_eq!(result.refund_cents, grand_total);
+        let (status, stock, refund, reference): (String, i64, i64, Option<String>) = connection
+            .query_row(
+                r#"SELECT s.status,
+                          (SELECT current_stock FROM medicine_batches WHERE id = 403),
+                          v.refund_cents, v.payment_reference
+                   FROM sales AS s INNER JOIN sale_voids AS v ON v.sale_id = s.id
+                   WHERE s.id = ?1"#,
+                [sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read cancelled invoice and refund");
+        assert_eq!(status, "CANCELLED");
+        assert_eq!(stock, 10);
+        assert_eq!(refund, grand_total);
+        assert_eq!(reference.as_deref(), Some("CANCEL-403"));
+        assert!(cancel_sale_in_connection(
+            &mut connection,
+            SaleVoidRequest {
+                invoice_no,
+                refund_mode: "CASH".to_owned(),
+                payment_reference: None,
+                upi_transaction_id: None,
+                note: None,
+            },
+        )
+        .is_err());
     }
 }
