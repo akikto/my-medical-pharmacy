@@ -1,0 +1,614 @@
+Implement PHASE 4 for the MY MEDICAL pharmacy desktop app.
+
+PHASE 4:
+Sales Return + Invoice Void/Cancel + Safe Invoice Edit + Customer Due Collection + Sales History Filters
+
+IMPORTANT PROJECT RULES
+--------------------------------------------------
+
+- This is the existing native Tauri + SQLite offline pharmacy application.
+- Preserve all existing functionality.
+- DO NOT redesign or modify the Home dashboard.
+- Do not break completed Phase 1, Phase 2, or Phase 3 functionality.
+- Keep the existing green workspace design for non-Home pages.
+- Keep existing navigation, shared sidebar, breadcrumbs, typography and UI patterns.
+- Use INR (₹).
+- All stock, sales, return, GST and customer-ledger changes must be transactional.
+- Never leave partial financial/stock changes after a failed transaction.
+- Reuse the existing typed native Tauri data-access architecture.
+- DO NOT reintroduce arbitrary SQL execution from the renderer.
+- Reuse existing GST/customer/due/UPI systems.
+- Reuse the existing purchase/stock/batch architecture.
+- Reuse the existing backup/restore architecture.
+- Do not create a second backup system.
+- Do not reset, reseed, or delete existing production data.
+- Demo seed remains development-only.
+- Do not commit.
+- Do not push.
+- Do not publish.
+- Do not create a release.
+- Do not run broad cargo fmt.
+
+Work in the following sub-phases and test each sub-phase before continuing.
+
+==================================================
+4A — SALES RETURN / REFUND
+==================================================
+
+First inspect the existing sales invoice, sale-item, batch allocation,
+stock, customer ledger and payment architecture.
+
+Implement a proper sales-return workflow.
+
+ENTRY:
+- Start from an existing completed sales invoice.
+- Show invoice number/date/customer/payment mode.
+- Show every sold medicine/item.
+- Show original quantity.
+- Show already-returned quantity.
+- Show remaining returnable quantity.
+- Show sale price.
+- Show applicable GST/tax snapshot.
+- Allow partial or full return.
+
+VALIDATION:
+- Return quantity must be > 0.
+- Return quantity cannot exceed the remaining returnable quantity.
+- Cannot return from a cancelled/void invoice.
+- Cannot return an item that was never sold.
+- Invalid medicine/batch references must be rejected.
+- Prevent duplicate/double return.
+
+STOCK:
+- Return must be batch-aware.
+- Returned quantity must go back to the correct original batch where the
+  existing architecture permits.
+- Do not blindly create stock in a different batch.
+- Preserve batch/expiry information.
+- Stock changes must be transactional.
+
+IMPORTANT STOCK SAFETY:
+If the original sold batch can no longer safely accept the returned quantity
+because of current stock state or other business constraints, do not silently
+move the quantity to another batch.
+
+Use the existing stock rules and reject unsafe returns with a clear message.
+
+REFUND:
+Support:
+- Cash refund
+- UPI refund/reference where appropriate
+- Other existing payment modes where appropriate
+- Credit-sale return / due reduction
+
+Do not claim that a UPI refund is externally verified.
+
+For a credit sale:
+- Returned amount must correctly reduce the customer's outstanding due.
+- Do not create a negative customer balance.
+
+For a paid sale:
+- Record the refund transaction clearly.
+
+GST:
+- Use the original sale-time GST snapshot.
+- Do not recalculate an old invoice using today's GST settings.
+- Return tax amounts must be derived from the original transaction snapshot.
+
+RETURN RECORD:
+Create an auditable sales-return record containing:
+- return ID/reference
+- original invoice
+- date/time
+- customer
+- item/batch
+- quantity
+- amount
+- tax/refund information
+- payment/refund method
+- notes
+- status
+
+Tests:
+- partial return
+- full return
+- multiple partial returns
+- over-return rejection
+- duplicate return protection
+- cancelled invoice return rejection
+- stock restoration
+- GST snapshot correctness
+- credit-sale due adjustment
+- paid-sale refund
+- transaction rollback
+
+==================================================
+4B — INVOICE VOID / CANCEL
+==================================================
+
+Implement safe invoice cancellation/void.
+
+Requirements:
+
+1. Existing completed invoice can be cancelled according to business rules.
+
+2. Cancellation must:
+   - reverse its stock effect safely
+   - reverse the related customer due effect when applicable
+   - reverse/adjust the financial ledger correctly
+   - preserve the original invoice as historical/auditable data
+   - mark it clearly as Cancelled/Void
+
+3. Never physically destroy the historical invoice just to cancel it.
+
+4. Cannot cancel an already-cancelled invoice.
+
+5. Cannot accidentally cancel a different invoice.
+
+6. All changes must happen in one transaction.
+
+7. Historical GST snapshot must remain stored.
+
+8. If cancellation cannot safely reverse stock/ledger state:
+   - reject the cancellation
+   - make no partial changes
+   - explain the reason
+
+IMPORTANT:
+Do not simply delete sale rows.
+
+Tests:
+- normal invoice cancellation
+- stock reversal
+- customer due reversal
+- paid invoice cancellation
+- credit invoice cancellation
+- repeated cancellation protection
+- rollback on failure
+- historical invoice remains visible as Cancelled
+
+==================================================
+4C — SAFE INVOICE EDIT
+==================================================
+
+Implement safe editing of a completed invoice only where business rules permit.
+
+DO NOT create a dangerous "rewrite history" system.
+
+The preferred architecture is:
+
+Original invoice remains auditable.
+
+An edit creates a controlled revision/correction, or safely reverses the
+original transaction and applies the corrected transaction inside one
+transaction, while preserving the original information.
+
+Support appropriate editable fields such as:
+- customer
+- item quantity
+- item sale price
+- payment mode
+- payment/reference information
+- notes
+
+Do NOT allow unsafe changes to historical batch allocation.
+
+For quantity changes:
+- correctly adjust stock
+- validate available stock
+- preserve FEFO/batch rules where applicable
+
+For price changes:
+- store corrected sale-time price/tax snapshot
+- do not modify medicine master pricing
+
+For customer changes:
+- correctly reverse old customer's due impact
+- correctly apply new customer's due impact
+- prevent negative/incorrect balances
+
+For payment-mode changes:
+- correctly update payment/credit accounting
+- preserve audit trail
+
+GST:
+- Existing invoice's original GST snapshot must remain auditable.
+- Corrected transaction must use the appropriate saved/configured GST rule
+  without changing unrelated historical invoices.
+
+Tests:
+- edit customer
+- edit quantity
+- edit sale price
+- edit payment mode
+- edit credit sale
+- edit paid sale
+- insufficient stock rejection
+- customer due recalculation
+- GST recalculation/snapshot
+- rollback on failure
+
+==================================================
+4D — CUSTOMER DUE COLLECTION
+==================================================
+
+Implement proper customer due collection.
+
+Collection fields:
+- Customer
+- Date
+- Amount
+- Payment method
+- Reference/transaction ID
+- Notes
+
+Payment methods:
+- Cash
+- UPI
+- Bank
+- Other existing modes
+
+Requirements:
+
+1. Collection reduces outstanding customer due.
+
+2. Partial payment supported.
+
+3. Full payment supported.
+
+4. Overpayment must be rejected by default.
+
+5. Do not create negative customer balance.
+
+6. Payment must create an auditable customer-ledger transaction.
+
+7. Payment history must remain visible.
+
+8. UPI/reference is stored exactly as entered.
+
+9. Do not claim UPI verification unless actual verification exists.
+
+10. Collection must be transactional.
+
+Tests:
+- partial collection
+- full collection
+- overpayment rejection
+- invalid amount
+- payment history
+- balance before/after
+- rollback on failure
+
+==================================================
+4E — CUSTOMER LEDGER
+==================================================
+
+Ensure the customer ledger correctly represents actual transactions.
+
+Ledger types:
+
+- Credit Sale = customer debit / amount owed
+- Customer Payment = credit / amount paid
+- Sales Return = adjustment reducing amount owed
+- Invoice Void = reversal
+- Invoice Correction/Edit = appropriate adjustment/revision
+
+Each row should show:
+- date/time
+- transaction type
+- invoice/reference
+- debit
+- credit
+- running balance
+- notes
+
+Show current outstanding balance prominently.
+
+Add filters:
+- date range
+- transaction type
+- invoice/reference
+- search
+
+Do not invent ledger entries.
+
+Ledger must be based on actual persisted transactions.
+
+Tests:
+- credit sale
+- payment
+- return
+- invoice cancellation
+- multiple transactions
+- correct running balance
+- filtering does not modify data
+
+==================================================
+4F — SALES HISTORY FILTERS
+==================================================
+
+Enhance existing Sales History.
+
+Filters:
+- date from/to
+- customer
+- payment mode
+- invoice number/search
+- status
+
+Statuses:
+- Completed
+- Partially Returned
+- Returned
+- Cancelled/Void
+
+Show useful columns:
+- Invoice
+- Date
+- Customer
+- Items
+- Payment
+- Total
+- Returned amount where applicable
+- Status
+
+Preserve existing invoice-view functionality.
+
+Do not break the existing Sales History implementation.
+
+Tests:
+- date filter
+- customer filter
+- payment filter
+- status filter
+- invoice search
+- empty result
+- error state
+- refresh
+
+==================================================
+4G — SALES / RETURN UI
+==================================================
+
+Keep UI simple and pharmacy-counter friendly.
+
+Sales History should provide obvious actions:
+- View Invoice
+- Return
+- Cancel/Void
+- Edit where permitted
+
+Invoice detail should clearly show:
+- Original total
+- Returned amount
+- Net amount
+- GST
+- Customer
+- Payment mode
+- Status
+
+Return dialog should clearly show:
+- Original quantity
+- Returned quantity
+- Remaining quantity
+- Return quantity input
+- Refund amount
+
+Customer area should provide:
+- Current due
+- Collect Payment
+- Ledger
+- Recent credit sales
+- Recent payments
+
+Use existing design language.
+
+Responsive QA:
+- 1366×768
+- 1440×900
+- 1920×1080
+
+No horizontal page overflow.
+
+Do NOT modify Home.
+
+==================================================
+4H — REPORT / TOTAL INTEGRITY
+==================================================
+
+Update existing sales calculations so reports and summaries correctly
+distinguish:
+
+Gross sales
+Sales returns
+Cancelled/void sales
+Net sales
+
+Customer outstanding due must reflect:
+Credit sales
+- payments
+- sales returns
+- invoice cancellations/corrections
+
+Do not double-count returns or voids.
+
+Existing purchase reports must remain unchanged.
+
+Existing Home dashboard must remain visually and functionally unchanged.
+
+Only update underlying sales calculations if necessary for correctness.
+
+==================================================
+4I — BACKUP / RESTORE REGRESSION
+==================================================
+
+Do not create a new backup system.
+
+Ensure the existing ZIP backup/restore system continues to include:
+- SQLite database
+- medicine photos
+- purchase invoice attachments
+- manifests
+- checksums
+
+New sales-return, customer-ledger and invoice data must naturally be included
+because they are stored in the SQLite database.
+
+Test:
+- create sale
+- create credit sale
+- collect payment
+- create return
+- cancel/edit appropriate invoice
+- create backup
+- restore backup
+- verify balances, ledger and invoice status after restore
+
+Also verify:
+- medicine photos still restore
+- purchase attachments still restore
+- 30-newest backup retention still works
+- legacy .db backup compatibility remains intact
+
+==================================================
+DATA / MIGRATION SAFETY
+==================================================
+
+Before changing schema:
+
+1. Inspect current migrations.
+2. Reuse existing sales/customer/ledger tables where possible.
+3. Add the minimum necessary migration.
+4. Existing data must remain valid.
+5. Do not reset/reseed production data.
+6. Migration must be safe for an existing database.
+7. Existing Phase 1/2/3 records must remain readable.
+
+==================================================
+TRANSACTION SAFETY
+==================================================
+
+This phase directly changes money, stock and customer balances.
+
+Every operation below must be atomic:
+
+- Sales return
+- Invoice cancellation
+- Invoice edit/correction
+- Customer payment
+- Customer ledger update
+
+If any validation or database step fails:
+- rollback the complete transaction
+- no partial stock change
+- no partial balance change
+- no partial ledger entry
+
+Add regression tests specifically proving rollback behavior.
+
+==================================================
+TEST REQUIREMENTS
+==================================================
+
+Add focused frontend tests for:
+
+- sales history filters
+- invoice status
+- return dialog
+- return validation
+- cancel dialog
+- edit states
+- customer collection
+- customer ledger
+- loading/error/empty states
+
+Add Rust tests for:
+
+- sales return
+- stock restoration
+- batch safety
+- refund
+- GST snapshot
+- invoice cancellation
+- stock reversal
+- customer due reversal
+- invoice correction/edit
+- customer payment
+- overpayment rejection
+- customer ledger
+- running balance
+- rollback paths
+- backup/restore regression
+
+Then run:
+
+- frontend tests
+- Rust tests
+- TypeScript typecheck
+- Vite production build
+- Linux Tauri .deb build
+- git diff --check
+
+Do NOT run broad cargo fmt.
+
+==================================================
+FINAL REGRESSION
+==================================================
+
+Verify that:
+
+1. Home remains untouched.
+2. Phase 1 GST/customer/due/UPI functionality still works.
+3. Phase 2 inventory/barcode/autofill/bulk-stock functionality still works.
+4. Phase 3 purchase/supplier/payment/return functionality still works.
+5. Medicine photo backup/restore still works.
+6. Purchase attachment backup/restore still works.
+7. Sales data survives backup/restore.
+8. Customer balances survive backup/restore.
+9. 30-backup retention still works.
+10. Legacy .db backup compatibility remains intact.
+11. No arbitrary renderer SQL has been introduced.
+12. No production data was reset/reseeded.
+13. No unrelated UI redesign occurred.
+14. No horizontal overflow at the required resolutions.
+15. Native Tauri visual testing limitation should be explicitly reported if the
+    environment cannot launch the desktop window.
+
+==================================================
+FINAL REPORT
+==================================================
+
+Report:
+
+- 4A Sales Return result
+- 4B Invoice Void/Cancel result
+- 4C Invoice Edit result
+- 4D Customer Due Collection result
+- 4E Customer Ledger result
+- 4F Sales History Filters result
+- 4G UI result
+- 4H Sales/report integrity result
+- 4I Backup/restore regression result
+
+Also report:
+
+- frontend test count/result
+- Rust test count/result
+- TypeScript result
+- Vite result
+- Linux .deb result
+- exact .deb path
+- package size
+- migration number/details
+- git diff --check
+- git status
+- exact modified files
+- any remaining limitations
+- whether any production data was changed
+- whether any commit/push/publish occurred
+
+IMPORTANT:
+Do not commit.
+Do not push.
+Do not publish.
+Do not create a release.
