@@ -942,6 +942,7 @@ fn query_weekly_sales(
              COUNT(*) AS invoice_count
            FROM sales
            WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+             AND invoice_no NOT GLOB 'DEV-DEMO-SALE-*'
            GROUP BY date(created_at, 'localtime')
            ORDER BY sale_date ASC"#,
         params![start_date, end_date],
@@ -1557,6 +1558,29 @@ mod tests {
             .expect("read a week without sales")
             .is_empty());
         assert!(query_weekly_sales(&connection, "2026-03-02", "2026-03-09").is_err());
+    }
+
+    #[test]
+    fn weekly_sales_excludes_only_explicit_development_seed_invoices() {
+        let connection = migrated_connection();
+        connection
+            .execute(
+                r#"INSERT INTO sales (invoice_no, subtotal, grand_total, created_at) VALUES
+                   ('REAL-1', 10, 10, '2026-03-02 12:00:00'),
+                   ('DEV-DEMO-SALE-20260304-TODAY-01', 100, 100, '2026-03-04 12:00:00'),
+                   ('REAL-DEV-DEMO-SALE-2', 15, 15, '2026-03-06 12:00:00')"#,
+                [],
+            )
+            .expect("insert regular, development-seeded, and non-prefix invoices");
+
+        let days = query_weekly_sales(&connection, "2026-03-02", "2026-03-08")
+            .expect("read weekly sales excluding explicitly seeded demo invoices");
+        assert_eq!(
+            days.iter()
+                .map(|day| (day.sale_date.as_str(), day.total_sales, day.invoice_count))
+                .collect::<Vec<_>>(),
+            vec![("2026-03-02", 10.0, 1), ("2026-03-06", 15.0, 1)]
+        );
     }
 
     #[test]
