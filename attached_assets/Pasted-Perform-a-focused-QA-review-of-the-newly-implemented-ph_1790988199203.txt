@@ -1,0 +1,83 @@
+Perform a focused QA review of the newly implemented pharmacy additions.
+
+Do NOT add new features and do NOT redesign the Home page.
+
+Check the actual implementation against these requirements:
+
+1. Weekly Sales
+- Monday through Sunday are displayed.
+- Actual local invoice/sales data is used.
+- Zero-sales days show ₹0.
+- View Sales opens the existing Sales History page.
+- No fake/demo sales data.
+
+2. Today's Order List
+- Order list is date-specific.
+- Add/edit/remove items works.
+- Quantity is persisted.
+- Supplier assignment works.
+- Notes work.
+- Ordered status persists.
+- Clear Today's Order List requires confirmation.
+- App restart preserves today's order list.
+- WhatsApp share is user-initiated.
+- Copy-text fallback works.
+- Print dialog can be used for Save as PDF.
+- Verify the generated order content includes pharmacy name/date/items/quantity/supplier/notes where available.
+
+3. Wholesalers / Order Contacts
+- Existing Supplier records are reused.
+- Contact person, WhatsApp number and notes persist.
+- Search works.
+- Add/edit/delete does not break existing supplier functionality.
+- Call/WhatsApp actions use the OS/system opener only.
+- No internal calling/SMS system was added.
+
+4. Data Reset — HIGH PRIORITY
+Inspect the exact reset SQL/transaction logic.
+Confirm:
+- Backup is created and validated BEFORE destructive reset.
+- Backup failure aborts the reset.
+- Two confirmations are required.
+- Exact phrase "RESET MY DATA" is required.
+- Reset is atomic/transactional.
+- Medicine master data is preserved.
+- Current stock/master records are preserved.
+- App-required settings/configuration are preserved.
+- Reset does not delete backup files.
+- After reset, Home, Reports, Sales History, Purchases and balances refresh correctly.
+- No accidental deletion of unrelated data.
+- Customer dues are not falsely represented as a supported reset scope.
+
+5. Database migration
+- Review migration v5.
+- Confirm it is safe for existing databases.
+- Confirm it does not destroy existing data.
+- Confirm startup migration is idempotent/safe.
+
+6. Security/data access
+- Confirm the new features continue using the typed native database access model.
+- Do NOT reintroduce arbitrary renderer SQL.
+- No unnecessary permissions or security regressions.
+
+7. Regression
+Run:
+- renderer tests
+- Rust tests
+- typecheck
+- web build
+- git diff --check
+
+If practical, run an isolated temporary DB test covering:
+purchase → stock → sale → weekly sales → order list → reset.
+
+Do not modify production/dev user data.
+
+At the end report:
+- PASS/FAIL for each requirement
+- exact files checked
+- any defects found
+- whether any code change is actually necessary
+- confirmation that Home's existing content/layout was preserved
+
+Do not push or publish anything.
