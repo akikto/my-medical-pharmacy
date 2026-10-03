@@ -16,6 +16,7 @@ import { createDatabaseBackup, restoreDatabaseBackup, selectBackupDestination, s
 import { getStoreSettings, saveStoreSettings } from "../../services/settingsService";
 import type { StoreSettings } from "../../types";
 import { DataResetPanel } from "./DataResetPanel";
+import { gstStates } from "../../utils/gstStates";
 import "./settings.css";
 
 interface SettingsPageProps {
@@ -31,6 +32,12 @@ const emptySettings: StoreSettings = {
   contact_number: "",
   drug_license_number: "",
   receipt_footer_note: "",
+  upi_id: "",
+  upi_display_name: "",
+  gst_enabled: false,
+  gst_default_rate_basis_points: null,
+  gst_pricing_mode: "EXCLUSIVE",
+  gst_pharmacy_state_code: "",
 };
 
 function getError(error: unknown, fallback: string): string {
@@ -39,6 +46,7 @@ function getError(error: unknown, fallback: string): string {
 
 export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
   const [settings, setSettings] = useState<StoreSettings>(emptySettings);
+  const [gstDefaultRateInput, setGstDefaultRateInput] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [settingsRequestKey, setSettingsRequestKey] = useState(0);
@@ -57,6 +65,11 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
       .then((currentSettings: StoreSettings) => {
         if (cancelled) return;
         setSettings(currentSettings);
+        setGstDefaultRateInput(
+          currentSettings.gst_default_rate_basis_points === null
+            ? ""
+            : (currentSettings.gst_default_rate_basis_points / 100).toString(),
+        );
         setIsDirty(false);
       })
       .catch((error: unknown) => {
@@ -70,7 +83,10 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
     };
   }, [settingsRequestKey]);
 
-  function updateField(field: keyof StoreSettings, value: string) {
+  function updateField<K extends keyof StoreSettings>(
+    field: K,
+    value: StoreSettings[K],
+  ) {
     setSettings((current) => ({ ...current, [field]: value }));
     setIsDirty(true);
     setNotice(null);
@@ -229,6 +245,119 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
                 <textarea className="workspace-input workspace-textarea settings-footer-note" data-testid="input-receipt-footer-note" maxLength={300} onChange={(event) => updateField("receipt_footer_note", event.target.value)} placeholder="A short note printed at the bottom of each receipt" rows={3} value={settings.receipt_footer_note} />
                 <small>Up to 300 characters.</small>
               </label>
+              <section className="settings-subsection settings-field--wide" aria-labelledby="gst-settings-title">
+                <div className="settings-subsection-heading">
+                  <div>
+                    <h3 id="gst-settings-title">GST configuration</h3>
+                    <p>Rates and pricing mode are configurable. No rate is assumed.</p>
+                  </div>
+                  <label className="settings-toggle-field">
+                    <input
+                      checked={settings.gst_enabled}
+                      data-testid="checkbox-gst-enabled"
+                      onChange={(event) => updateField("gst_enabled", event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Enable GST</span>
+                  </label>
+                </div>
+                <div className="settings-form-grid">
+                  <label className="settings-field">
+                    <span>Default GST rate (%) <small>Optional</small></span>
+                    <input
+                      className="workspace-input"
+                      data-testid="input-gst-default-rate"
+                      inputMode="decimal"
+                      max="100"
+                      min="0"
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setGstDefaultRateInput(value);
+                        updateField(
+                          "gst_default_rate_basis_points",
+                          value.trim() === "" ? null : Math.round(Number(value) * 100),
+                        );
+                      }}
+                      placeholder="Set only if applicable"
+                      step="0.01"
+                      type="number"
+                      value={gstDefaultRateInput}
+                    />
+                    <small>Medicine-specific rates take precedence.</small>
+                  </label>
+                  <label className="settings-field">
+                    <span>Default pricing mode</span>
+                    <select
+                      className="workspace-input"
+                      data-testid="select-gst-pricing-mode"
+                      onChange={(event) =>
+                        updateField(
+                          "gst_pricing_mode",
+                          event.target.value as StoreSettings["gst_pricing_mode"],
+                        )
+                      }
+                      value={settings.gst_pricing_mode}
+                    >
+                      <option value="EXCLUSIVE">GST added to the listed price</option>
+                      <option value="INCLUSIVE">Listed price includes GST</option>
+                    </select>
+                  </label>
+                  <label className="settings-field settings-field--wide">
+                    <span>Pharmacy GST state</span>
+                    <select
+                      className="workspace-input"
+                      data-testid="select-pharmacy-gst-state"
+                      onChange={(event) =>
+                        updateField("gst_pharmacy_state_code", event.target.value)
+                      }
+                      value={settings.gst_pharmacy_state_code}
+                    >
+                      <option value="">Choose a state or union territory</option>
+                      {gstStates.map((state) => (
+                        <option key={state.code} value={state.code}>
+                          {state.code} · {state.name}
+                        </option>
+                      ))}
+                    </select>
+                    <small>Required to compare customer and pharmacy states for CGST/SGST or IGST.</small>
+                  </label>
+                </div>
+              </section>
+              <section className="settings-subsection settings-field--wide" aria-labelledby="upi-settings-title">
+                <div className="settings-subsection-heading">
+                  <div>
+                    <h3 id="upi-settings-title">UPI payment link</h3>
+                    <p>Used to create a payment-app link at checkout.</p>
+                  </div>
+                </div>
+                <div className="settings-form-grid">
+                  <label className="settings-field">
+                    <span>UPI ID</span>
+                    <input
+                      autoComplete="off"
+                      className="workspace-input"
+                      data-testid="input-pharmacy-upi-id"
+                      maxLength={100}
+                      onChange={(event) => updateField("upi_id", event.target.value)}
+                      placeholder="name@bank"
+                      value={settings.upi_id}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Payee name</span>
+                    <input
+                      className="workspace-input"
+                      data-testid="input-pharmacy-upi-name"
+                      maxLength={120}
+                      onChange={(event) => updateField("upi_display_name", event.target.value)}
+                      value={settings.upi_display_name}
+                    />
+                  </label>
+                  <p className="settings-upi-note settings-field--wide">
+                    The app can create a UPI link, but cannot verify payment status. UPI invoices are saved as unverified.
+                  </p>
+                </div>
+              </section>
               <footer className="settings-form-footer">
                 <span className="settings-save-state" data-testid="status-settings-dirty">
                   {isDirty ? "Unsaved changes" : "All changes saved"}

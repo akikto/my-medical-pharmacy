@@ -147,6 +147,12 @@ export function ReceiptPrint({
               <strong>{invoice.customer_name || invoice.customer_phone}</strong>
             </div>
           )}
+          {invoice.customer_state_code && (
+            <div>
+              <span>Customer state</span>
+              <strong>{invoice.customer_state_code}</strong>
+            </div>
+          )}
           {invoice.customer_name && invoice.customer_phone && (
             <div>
               <span>Mobile</span>
@@ -174,6 +180,13 @@ export function ReceiptPrint({
               <div className="receipt-item-batch">
                 Batch {item.batch_no} · Exp {item.expiry_date}
               </div>
+              {invoice.gst_enabled && item.gst_rate_basis_points !== undefined && (
+                <div className="receipt-item-tax">
+                  GST {(item.gst_rate_basis_points / 100).toFixed(2)}% · Taxable{" "}
+                  {formatMoney(item.taxable_amount ?? 0)} · Tax{" "}
+                  {formatMoney(item.total_gst ?? 0)}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -196,6 +209,45 @@ export function ReceiptPrint({
               <span>−{formatMoney(invoice.flat_discount)}</span>
             </div>
           )}
+          {invoice.gst_enabled && (
+            <>
+              <div>
+                <span>GST pricing</span>
+                <span>{invoice.gst_pricing_mode === "INCLUSIVE" ? "Inclusive" : "Exclusive"}</span>
+              </div>
+              {invoice.place_of_supply_state_code && (
+                <div>
+                  <span>Place of supply</span>
+                  <span>{invoice.place_of_supply_state_code}</span>
+                </div>
+              )}
+              <div>
+                <span>Taxable amount</span>
+                <span>{formatMoney(invoice.taxable_amount ?? 0)}</span>
+              </div>
+              {invoice.tax_type === "IGST" ? (
+                <div>
+                  <span>IGST</span>
+                  <span>{formatMoney(invoice.igst_amount ?? 0)}</span>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <span>CGST</span>
+                    <span>{formatMoney(invoice.cgst_amount ?? 0)}</span>
+                  </div>
+                  <div>
+                    <span>SGST</span>
+                    <span>{formatMoney(invoice.sgst_amount ?? 0)}</span>
+                  </div>
+                </>
+              )}
+              <div className="receipt-gst-total">
+                <strong>Total GST</strong>
+                <strong>{formatMoney(invoice.total_gst ?? 0)}</strong>
+              </div>
+            </>
+          )}
           <div className="receipt-grand-total">
             <strong>Grand total</strong>
             <strong>{formatMoney(invoice.grand_total)}</strong>
@@ -215,6 +267,24 @@ export function ReceiptPrint({
                 <span>{formatMoney(invoice.change_due)}</span>
               </div>
             </>
+          )}
+          {invoice.payment_mode === "UPI" && (
+            <>
+              <div>
+                <span>UPI transaction ID</span>
+                <span>{invoice.upi_transaction_id || "Not provided"}</span>
+              </div>
+              <div className="receipt-upi-warning">
+                <strong>UPI payment unverified</strong>
+                <span>This app does not confirm payment status.</span>
+              </div>
+            </>
+          )}
+          {invoice.payment_mode === "CREDIT" && (
+            <div>
+              <span>Credit balance due</span>
+              <strong>{formatMoney(invoice.grand_total)}</strong>
+            </div>
           )}
         </div>
 

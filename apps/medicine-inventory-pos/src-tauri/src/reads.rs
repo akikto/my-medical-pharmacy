@@ -12,6 +12,7 @@ pub(crate) struct MedicineInventoryRecord {
     company: Option<String>,
     rack_location: Option<String>,
     min_stock_alert: i64,
+    gst_rate_basis_points: Option<i64>,
     created_at: String,
     available_stock: f64,
     expired_stock: f64,
@@ -40,6 +41,7 @@ pub(crate) struct MedicineSearchRecord {
     company: Option<String>,
     rack_location: Option<String>,
     min_stock_alert: i64,
+    gst_rate_basis_points: Option<i64>,
     created_at: String,
     available_stock: f64,
     batch_id: Option<i64>,
@@ -136,8 +138,11 @@ pub(crate) struct RecentPurchaseRecord {
 pub(crate) struct SaleRecord {
     id: i64,
     invoice_no: String,
+    customer_id: Option<i64>,
     customer_name: Option<String>,
     customer_phone: Option<String>,
+    customer_state_code: Option<String>,
+    place_of_supply_state_code: Option<String>,
     subtotal: f64,
     discount: f64,
     flat_discount: f64,
@@ -145,6 +150,16 @@ pub(crate) struct SaleRecord {
     payment_mode: String,
     cash_tendered: f64,
     change_due: f64,
+    upi_transaction_id: Option<String>,
+    upi_payment_verified: bool,
+    gst_enabled: bool,
+    gst_pricing_mode: String,
+    tax_type: String,
+    taxable_amount: f64,
+    cgst_amount: f64,
+    sgst_amount: f64,
+    igst_amount: f64,
+    total_gst: f64,
     created_at: String,
 }
 
@@ -174,10 +189,46 @@ pub(crate) struct SaleItemDetailRecord {
     unit_price: f64,
     item_discount: f64,
     total_price: f64,
+    gst_rate_basis_points: i64,
+    taxable_amount: f64,
+    cgst_amount: f64,
+    sgst_amount: f64,
+    igst_amount: f64,
+    total_gst: f64,
     medicine_name: String,
     generic_name: Option<String>,
     batch_no: String,
     expiry_date: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CustomerRecord {
+    id: i64,
+    name: String,
+    phone: Option<String>,
+    address: Option<String>,
+    notes: Option<String>,
+    state_code: Option<String>,
+    active: bool,
+    credit_total: f64,
+    amount_paid: f64,
+    balance_due: f64,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CustomerLedgerEntryRecord {
+    id: i64,
+    customer_id: i64,
+    entry_type: String,
+    invoice_no: Option<String>,
+    debit: f64,
+    credit: f64,
+    payment_mode: Option<String>,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
+    created_at: String,
+    running_balance: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,6 +351,7 @@ fn query_inventory_medicines(
              m.company,
              m.rack_location,
              m.min_stock_alert,
+             m.gst_rate_basis_points,
              m.created_at,
              COALESCE(SUM(CASE
                WHEN b.expiry_date >= date('now', 'localtime')
@@ -330,6 +382,7 @@ fn query_inventory_medicines(
                 company: row.get("company")?,
                 rack_location: row.get("rack_location")?,
                 min_stock_alert: row.get("min_stock_alert")?,
+                gst_rate_basis_points: row.get("gst_rate_basis_points")?,
                 created_at: row.get("created_at")?,
                 available_stock: row.get("available_stock")?,
                 expired_stock: row.get("expired_stock")?,
@@ -385,6 +438,7 @@ fn query_medicine_search(
              m.company,
              m.rack_location,
              m.min_stock_alert,
+             m.gst_rate_basis_points,
              m.created_at,
              COALESCE((
                SELECT SUM(stock_batch.current_stock)
@@ -444,6 +498,7 @@ fn query_medicine_search(
                 company: row.get("company")?,
                 rack_location: row.get("rack_location")?,
                 min_stock_alert: row.get("min_stock_alert")?,
+                gst_rate_basis_points: row.get("gst_rate_basis_points")?,
                 created_at: row.get("created_at")?,
                 available_stock: row.get("available_stock")?,
                 batch_id: row.get("batch_id")?,
@@ -602,6 +657,128 @@ fn query_suppliers(
     )
 }
 
+fn query_customers(
+    connection: &Connection,
+    search_term: &str,
+    include_inactive: bool,
+) -> Result<Vec<CustomerRecord>, String> {
+    let pattern = contains_pattern(search_term);
+    let phone_digits = search_term
+        .chars()
+        .filter(|character| character.is_ascii_digit())
+        .collect::<String>();
+    let phone_pattern = (!phone_digits.is_empty()).then(|| format!("%{phone_digits}%"));
+    query_rows(
+        connection,
+        r#"SELECT
+             c.id,
+             c.name,
+             c.phone,
+             c.address,
+             c.notes,
+             c.state_code,
+             c.active,
+             COALESCE(SUM(l.debit_cents), 0) / 100.0 AS credit_total,
+             COALESCE(SUM(l.credit_cents), 0) / 100.0 AS amount_paid,
+             COALESCE(SUM(l.debit_cents - l.credit_cents), 0) / 100.0 AS balance_due,
+             c.created_at
+           FROM customers AS c
+           LEFT JOIN customer_ledger AS l ON l.customer_id = c.id
+           WHERE (?2 = 1 OR c.active = 1)
+             AND (
+               ?1 IS NULL
+               OR c.name LIKE ?1 ESCAPE '!'
+               OR COALESCE(c.phone, '') LIKE ?1 ESCAPE '!'
+               OR COALESCE(c.address, '') LIKE ?1 ESCAPE '!'
+               OR COALESCE(c.notes, '') LIKE ?1 ESCAPE '!'
+               OR (?3 IS NOT NULL AND c.phone_normalized LIKE ?3 ESCAPE '!')
+             )
+           GROUP BY c.id
+           ORDER BY c.active DESC, c.name COLLATE NOCASE ASC, c.id ASC"#,
+        params![pattern, include_inactive, phone_pattern],
+        |row| {
+            Ok(CustomerRecord {
+                id: row.get("id")?,
+                name: row.get("name")?,
+                phone: row.get("phone")?,
+                address: row.get("address")?,
+                notes: row.get("notes")?,
+                state_code: row.get("state_code")?,
+                active: row.get("active")?,
+                credit_total: row.get("credit_total")?,
+                amount_paid: row.get("amount_paid")?,
+                balance_due: row.get("balance_due")?,
+                created_at: row.get("created_at")?,
+            })
+        },
+    )
+}
+
+fn query_customer_ledger(
+    connection: &Connection,
+    customer_id: i64,
+) -> Result<Vec<CustomerLedgerEntryRecord>, String> {
+    if customer_id <= 0 {
+        return Err("Customer id must be a positive whole number.".to_owned());
+    }
+    let rows = query_rows(
+        connection,
+        r#"SELECT id, customer_id, entry_type, invoice_no, debit_cents, credit_cents,
+                  payment_mode, upi_transaction_id, note, created_at
+           FROM customer_ledger
+           WHERE customer_id = ?1
+           ORDER BY created_at ASC, id ASC"#,
+        [customer_id],
+        |row| {
+            Ok((
+                row.get::<_, i64>("id")?,
+                row.get::<_, i64>("customer_id")?,
+                row.get::<_, String>("entry_type")?,
+                row.get::<_, Option<String>>("invoice_no")?,
+                row.get::<_, i64>("debit_cents")?,
+                row.get::<_, i64>("credit_cents")?,
+                row.get::<_, Option<String>>("payment_mode")?,
+                row.get::<_, Option<String>>("upi_transaction_id")?,
+                row.get::<_, Option<String>>("note")?,
+                row.get::<_, String>("created_at")?,
+            ))
+        },
+    )?;
+    let mut balance_cents = 0_i64;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                customer_id,
+                entry_type,
+                invoice_no,
+                debit_cents,
+                credit_cents,
+                payment_mode,
+                upi_transaction_id,
+                note,
+                created_at,
+            )| {
+                balance_cents += debit_cents - credit_cents;
+                CustomerLedgerEntryRecord {
+                    id,
+                    customer_id,
+                    entry_type,
+                    invoice_no,
+                    debit: debit_cents as f64 / 100.0,
+                    credit: credit_cents as f64 / 100.0,
+                    payment_mode,
+                    upi_transaction_id,
+                    note,
+                    created_at,
+                    running_balance: balance_cents as f64 / 100.0,
+                }
+            },
+        )
+        .collect())
+}
+
 fn query_order_list(
     connection: &Connection,
     order_date: &str,
@@ -700,8 +877,11 @@ fn map_sale(row: &Row<'_>) -> rusqlite::Result<SaleRecord> {
     Ok(SaleRecord {
         id: row.get("id")?,
         invoice_no: row.get("invoice_no")?,
+        customer_id: row.get("customer_id")?,
         customer_name: row.get("customer_name")?,
         customer_phone: row.get("customer_phone")?,
+        customer_state_code: row.get("customer_state_code")?,
+        place_of_supply_state_code: row.get("place_of_supply_state_code")?,
         subtotal: row.get("subtotal")?,
         discount: row.get("discount")?,
         flat_discount: row.get("flat_discount")?,
@@ -709,6 +889,16 @@ fn map_sale(row: &Row<'_>) -> rusqlite::Result<SaleRecord> {
         payment_mode: row.get("payment_mode")?,
         cash_tendered: row.get("cash_tendered")?,
         change_due: row.get("change_due")?,
+        upi_transaction_id: row.get("upi_transaction_id")?,
+        upi_payment_verified: row.get("upi_payment_verified")?,
+        gst_enabled: row.get("gst_enabled")?,
+        gst_pricing_mode: row.get("gst_pricing_mode")?,
+        tax_type: row.get("tax_type")?,
+        taxable_amount: row.get("taxable_amount")?,
+        cgst_amount: row.get("cgst_amount")?,
+        sgst_amount: row.get("sgst_amount")?,
+        igst_amount: row.get("igst_amount")?,
+        total_gst: row.get("total_gst")?,
         created_at: row.get("created_at")?,
     })
 }
@@ -765,8 +955,11 @@ fn query_sale_details(
 ) -> Result<Option<SaleDetailsRecord>, String> {
     let mut sales = query_rows(
         connection,
-        r#"SELECT id, invoice_no, customer_name, customer_phone, subtotal, discount,
+        r#"SELECT id, invoice_no, customer_id, customer_name, customer_phone,
+                  customer_state_code, place_of_supply_state_code, subtotal, discount,
                   flat_discount, grand_total, payment_mode, cash_tendered, change_due,
+                  upi_transaction_id, upi_payment_verified, gst_enabled, gst_pricing_mode, tax_type,
+                  taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst,
                   created_at
            FROM sales
            WHERE invoice_no = ?1
@@ -788,6 +981,12 @@ fn query_sale_details(
              si.unit_price,
              si.item_discount,
              si.total_price,
+             si.gst_rate_basis_points,
+             si.taxable_amount,
+             si.cgst_amount,
+             si.sgst_amount,
+             si.igst_amount,
+             si.total_gst,
              m.name AS medicine_name,
              m.generic_name,
              b.batch_no,
@@ -807,6 +1006,12 @@ fn query_sale_details(
                 unit_price: row.get("unit_price")?,
                 item_discount: row.get("item_discount")?,
                 total_price: row.get("total_price")?,
+                gst_rate_basis_points: row.get("gst_rate_basis_points")?,
+                taxable_amount: row.get("taxable_amount")?,
+                cgst_amount: row.get("cgst_amount")?,
+                sgst_amount: row.get("sgst_amount")?,
+                igst_amount: row.get("igst_amount")?,
+                total_gst: row.get("total_gst")?,
                 medicine_name: row.get("medicine_name")?,
                 generic_name: row.get("generic_name")?,
                 batch_no: row.get("batch_no")?,
@@ -1166,6 +1371,27 @@ pub(crate) fn get_suppliers(
     search_term: String,
 ) -> Result<Vec<SupplierRecord>, String> {
     query_suppliers(&open_pharmacy_connection(&app)?, &search_term)
+}
+
+#[tauri::command]
+pub(crate) fn get_customers(
+    app: AppHandle,
+    search_term: String,
+    include_inactive: bool,
+) -> Result<Vec<CustomerRecord>, String> {
+    query_customers(
+        &open_pharmacy_connection(&app)?,
+        &search_term,
+        include_inactive,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn get_customer_ledger(
+    app: AppHandle,
+    customer_id: i64,
+) -> Result<Vec<CustomerLedgerEntryRecord>, String> {
+    query_customer_ledger(&open_pharmacy_connection(&app)?, customer_id)
 }
 
 #[tauri::command]
@@ -1702,17 +1928,21 @@ mod tests {
             crate::complete_sale_in_connection(
                 &mut connection,
                 crate::SaleCheckoutRequest {
+                    customer_id: None,
                     customer_name: None,
                     customer_phone: None,
                     payment_mode: "CASH".to_owned(),
                     flat_discount_cents: 0,
                     cash_tendered_cents: 700,
+                    gst_pricing_mode: None,
+                    upi_transaction_id: None,
                     items: vec![crate::SaleCheckoutItem {
                         medicine_id: 1,
                         batch_id,
                         quantity: 1,
                         unit_price_cents: 700,
                         item_discount_cents: 0,
+                        gst_rate_override_basis_points: None,
                     }],
                 },
             )

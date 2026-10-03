@@ -21,6 +21,7 @@ import { OrderListPage } from "./components/orders/OrderListPage";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
+import { CustomersPage } from "./components/customers/CustomersPage";
 import { SalesPage } from "./components/sales/SalesPage";
 import { ReportsView } from "./components/reports/ReportsView";
 import { StoreSettings } from "./components/settings/StoreSettings";
@@ -37,6 +38,7 @@ const navigation: Array<{
   { id: "inventory", label: "Inventory & Batches", icon: Boxes },
   { id: "purchases", label: "Purchases", icon: Pill },
   { id: "suppliers", label: "Suppliers", icon: UsersRound },
+  { id: "customers", label: "Customers & credit", icon: UsersRound },
   { id: "sales", label: "Sales", icon: Receipt },
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings2 },
@@ -184,6 +186,8 @@ export default function App() {
           <PurchasesPage />
         ) : activeSection === "suppliers" ? (
           <SuppliersPage />
+        ) : activeSection === "customers" ? (
+          <CustomersPage />
         ) : activeSection === "sales" ? (
           <SalesPage />
         ) : activeSection === "reports" ? (

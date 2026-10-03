@@ -9,6 +9,7 @@ export interface Medicine {
   company: string | null;
   rack_location: string | null;
   min_stock_alert: number;
+  gst_rate_basis_points: number | null;
   created_at: ISODateTime;
 }
 
@@ -27,6 +28,7 @@ export interface MedicineFormValues {
   company: string;
   rack_location: string;
   min_stock_alert: number;
+  gst_rate_basis_points: number | null;
 }
 
 export interface MedicineBatch {
@@ -164,8 +166,11 @@ export type PaymentMode = "CASH" | "CARD" | "UPI" | "CREDIT" | "OTHER";
 export interface Sale {
   id: EntityId;
   invoice_no: string;
+  customer_id?: EntityId | null;
   customer_name: string | null;
   customer_phone: string | null;
+  customer_state_code?: string | null;
+  place_of_supply_state_code?: string | null;
   subtotal: number;
   discount: number;
   flat_discount: number;
@@ -173,6 +178,16 @@ export interface Sale {
   payment_mode: PaymentMode;
   cash_tendered: number;
   change_due: number;
+  upi_transaction_id?: string | null;
+  upi_payment_verified?: boolean;
+  gst_enabled?: boolean;
+  gst_pricing_mode?: "INCLUSIVE" | "EXCLUSIVE";
+  tax_type?: "NONE" | "CGST_SGST" | "IGST";
+  taxable_amount?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  total_gst?: number;
   created_at: ISODateTime;
 }
 
@@ -187,6 +202,12 @@ export interface SaleItem {
 }
 
 export interface SaleItemDetail extends SaleItem {
+  gst_rate_basis_points?: number;
+  taxable_amount?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  total_gst?: number;
   medicine_name: string;
   generic_name: string | null;
   batch_no: string;
@@ -209,12 +230,16 @@ export interface CheckoutSaleItem {
   quantity: number;
   unit_price: number;
   item_discount: number;
+  gst_rate_override_basis_points: number | null;
 }
 
 export interface CheckoutSaleInput {
+  customer_id: EntityId | null;
   customer_name: string | null;
   customer_phone: string | null;
   payment_mode: PaymentMode;
+  gst_pricing_mode: "INCLUSIVE" | "EXCLUSIVE";
+  upi_transaction_id: string | null;
   flat_discount: number;
   cash_tendered: number;
   items: CheckoutSaleItem[];
@@ -284,6 +309,56 @@ export interface StoreSettings {
   contact_number: string;
   drug_license_number: string;
   receipt_footer_note: string;
+  upi_id: string;
+  upi_display_name: string;
+  gst_enabled: boolean;
+  gst_default_rate_basis_points: number | null;
+  gst_pricing_mode: "INCLUSIVE" | "EXCLUSIVE";
+  gst_pharmacy_state_code: string;
+}
+
+export interface Customer {
+  id: EntityId;
+  name: string;
+  phone: string | null;
+  address: string | null;
+  notes: string | null;
+  state_code: string | null;
+  active: boolean;
+  credit_total: number;
+  amount_paid: number;
+  balance_due: number;
+  created_at: ISODateTime;
+}
+
+export interface CustomerFormValues {
+  name: string;
+  phone: string;
+  address: string;
+  notes: string;
+  state_code: string;
+}
+
+export interface CustomerLedgerEntry {
+  id: EntityId;
+  customer_id: EntityId;
+  entry_type: "CREDIT_SALE" | "COLLECTION";
+  invoice_no: string | null;
+  debit: number;
+  credit: number;
+  payment_mode: PaymentMode | null;
+  upi_transaction_id: string | null;
+  note: string | null;
+  created_at: ISODateTime;
+  running_balance: number;
+}
+
+export interface CustomerPaymentInput {
+  customer_id: EntityId;
+  amount: number;
+  payment_mode: Exclude<PaymentMode, "CREDIT">;
+  upi_transaction_id: string | null;
+  note: string;
 }
 
 export interface DatabaseBackupResult {
@@ -302,6 +377,8 @@ export interface CartItem {
   item_discount: number;
   available_in_batch: number;
   line_total: number;
+  gst_rate_basis_points: number | null;
+  gst_rate_override_basis_points: number | null;
 }
 
 export interface CartState {
@@ -319,8 +396,8 @@ export type AppSection =
   | "orders"
   | "inventory"
   | "purchases"
-  | "orders"
   | "suppliers"
+  | "customers"
   | "sales"
   | "reports"
   | "settings";

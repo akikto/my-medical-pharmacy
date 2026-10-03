@@ -9,6 +9,7 @@ export type PharmacyMutation =
       company: string | null;
       rack_location: string | null;
       min_stock_alert: number;
+      gst_rate_basis_points: number | null;
     }
   | {
       kind: "update_medicine";
@@ -18,6 +19,7 @@ export type PharmacyMutation =
       company: string | null;
       rack_location: string | null;
       min_stock_alert: number;
+      gst_rate_basis_points: number | null;
     }
   | { kind: "delete_medicine"; medicine_id: number }
   | {
@@ -60,6 +62,24 @@ export type PharmacyMutation =
       notes: string | null;
     }
   | { kind: "delete_supplier"; supplier_id: number }
+  | {
+      kind: "create_customer";
+      name: string;
+      phone: string | null;
+      address: string | null;
+      notes: string | null;
+      state_code: string | null;
+    }
+  | {
+      kind: "update_customer";
+      customer_id: number;
+      name: string;
+      phone: string | null;
+      address: string | null;
+      notes: string | null;
+      state_code: string | null;
+    }
+  | { kind: "set_customer_active"; customer_id: number; active: boolean }
   | { kind: "save_settings"; settings: StoreSettings };
 
 interface PharmacyMutationResult {

@@ -24,6 +24,11 @@ export function MedicineFormDialog({
   const [minStockAlert, setMinStockAlert] = useState(
     String(medicine?.min_stock_alert ?? 10),
   );
+  const [gstRate, setGstRate] = useState(
+    medicine?.gst_rate_basis_points == null
+      ? ""
+      : (medicine.gst_rate_basis_points / 100).toString(),
+  );
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,6 +38,8 @@ export function MedicineFormDialog({
       company,
       rack_location: rackLocation,
       min_stock_alert: Number(minStockAlert),
+      gst_rate_basis_points:
+        gstRate.trim() === "" ? null : Math.round(Number(gstRate) * 100),
     });
   }
 
@@ -118,6 +125,24 @@ export function MedicineFormDialog({
                 type="number"
                 value={minStockAlert}
               />
+            </label>
+            <label className="field-label">
+              Product GST rate (%) <span className="field-optional">Optional</span>
+              <input
+                className="workspace-input"
+                data-testid="input-medicine-gst-rate"
+                inputMode="decimal"
+                max={100}
+                min={0}
+                onChange={(event) => setGstRate(event.target.value)}
+                placeholder="Uses Settings default"
+                step="0.01"
+                type="number"
+                value={gstRate}
+              />
+              <span className="field-hint">
+                Leave blank to use the configured default rate.
+              </span>
             </label>
           </div>
           {error && <p className="workspace-error" role="alert">{error}</p>}
