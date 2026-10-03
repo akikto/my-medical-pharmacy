@@ -2208,6 +2208,18 @@ kbd {
   }
 }
 
+@media (min-width: 1181px) and (max-width: 1415px) {
+  .pos-workspace {
+    padding-right: 22px;
+    padding-left: 22px;
+  }
+
+  .pos-main-grid {
+    grid-template-columns: minmax(0, 1fr) 290px;
+    gap: 13px;
+  }
+}
+
 @media (max-width: 1180px) {
   .app-sidebar {
     flex-basis: 220px;
