@@ -149,6 +149,11 @@ function invokeRead(command, args = {}) {
                   FROM medicine_batches AS stock_batch
                   WHERE stock_batch.medicine_id = m.id
                     AND stock_batch.expiry_date >= date('now', 'localtime')), 0) AS available_stock,
+                CASE WHEN UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
+                       OR EXISTS (SELECT 1 FROM medicine_batches AS exact_batch
+                         WHERE exact_batch.medicine_id = m.id
+                           AND UPPER(TRIM(COALESCE(exact_batch.barcode, ''))) = ?2)
+                     THEN 1 ELSE 0 END AS exact_barcode_match,
                 b.id AS batch_id, b.medicine_id AS batch_medicine_id, b.batch_no,
                 b.expiry_date, b.purchase_rate, b.mrp, b.sale_rate,
                 b.current_stock, b.barcode
@@ -157,12 +162,14 @@ function invokeRead(command, args = {}) {
            SELECT candidate.id FROM medicine_batches AS candidate
            WHERE candidate.medicine_id = m.id AND candidate.current_stock > 0
              AND candidate.expiry_date >= date('now', 'localtime')
-            ORDER BY CASE WHEN UPPER(TRIM(candidate.barcode)) = ?2 THEN 0 ELSE 1 END,
-             candidate.expiry_date ASC, candidate.id ASC LIMIT 1
+           ORDER BY candidate.expiry_date ASC, candidate.id ASC LIMIT 1
          )
          WHERE m.name LIKE ?1 ESCAPE '!'
             OR COALESCE(m.generic_name, '') LIKE ?1 ESCAPE '!'
             OR COALESCE(m.company, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.product_type, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.strength, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.composition, '') LIKE ?1 ESCAPE '!'
             OR UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
             OR COALESCE(m.barcode, '') LIKE ?1 ESCAPE '!'
             OR EXISTS (SELECT 1 FROM medicine_batches AS barcode_batch
@@ -177,7 +184,7 @@ function invokeRead(command, args = {}) {
               ELSE 2 END,
            m.name COLLATE NOCASE ASC, m.id ASC LIMIT ?3`,
         pattern,
-        args.searchTerm,
+        args.searchTerm.trim().toUpperCase(),
         args.limit,
       );
     }

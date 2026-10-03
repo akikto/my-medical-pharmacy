@@ -60,6 +60,7 @@ pub(crate) struct MedicineSearchRecord {
     gst_rate_basis_points: Option<i64>,
     created_at: String,
     available_stock: f64,
+    exact_barcode_match: bool,
     batch_id: Option<i64>,
     batch_medicine_id: Option<i64>,
     batch_no: Option<String>,
@@ -493,6 +494,13 @@ fn query_medicine_search(
                WHERE stock_batch.medicine_id = m.id
                  AND stock_batch.expiry_date >= date('now', 'localtime')
              ), 0) AS available_stock,
+              CASE WHEN UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
+                       OR EXISTS (
+                         SELECT 1 FROM medicine_batches AS exact_batch
+                         WHERE exact_batch.medicine_id = m.id
+                           AND UPPER(TRIM(COALESCE(exact_batch.barcode, ''))) = ?2
+                       )
+                   THEN 1 ELSE 0 END AS exact_barcode_match,
              b.id AS batch_id,
              b.medicine_id AS batch_medicine_id,
              b.batch_no,
@@ -510,15 +518,16 @@ fn query_medicine_search(
                WHERE candidate.medicine_id = m.id
                  AND candidate.current_stock > 0
                  AND candidate.expiry_date >= date('now', 'localtime')
-               ORDER BY
-                  CASE WHEN UPPER(TRIM(candidate.barcode)) = ?2 THEN 0 ELSE 1 END,
-                 candidate.expiry_date ASC,
+                ORDER BY candidate.expiry_date ASC,
                  candidate.id ASC
                LIMIT 1
              )
            WHERE m.name LIKE ?1 ESCAPE '!'
               OR COALESCE(m.generic_name, '') LIKE ?1 ESCAPE '!'
               OR COALESCE(m.company, '') LIKE ?1 ESCAPE '!'
+              OR COALESCE(m.product_type, '') LIKE ?1 ESCAPE '!'
+              OR COALESCE(m.strength, '') LIKE ?1 ESCAPE '!'
+              OR COALESCE(m.composition, '') LIKE ?1 ESCAPE '!'
                OR UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
                OR COALESCE(m.barcode, '') LIKE ?1 ESCAPE '!'
               OR EXISTS (
@@ -540,7 +549,7 @@ fn query_medicine_search(
              m.name COLLATE NOCASE ASC,
              m.id ASC
            LIMIT ?3"#,
-        params![pattern, search_term, limit],
+        params![pattern, search_term.trim().to_uppercase(), limit],
         |row| {
             Ok(MedicineSearchRecord {
                 id: row.get("id")?,
@@ -560,6 +569,7 @@ fn query_medicine_search(
                 gst_rate_basis_points: row.get("gst_rate_basis_points")?,
                 created_at: row.get("created_at")?,
                 available_stock: row.get("available_stock")?,
+                exact_barcode_match: row.get("exact_barcode_match")?,
                 batch_id: row.get("batch_id")?,
                 batch_medicine_id: row.get("batch_medicine_id")?,
                 batch_no: row.get("batch_no")?,
@@ -1702,6 +1712,7 @@ mod tests {
             query_medicine_search(&connection, "BAR-1", 30).expect("search exact barcode");
         assert_eq!(exact_barcode[0].id, 1);
         assert_eq!(exact_barcode[0].batch_id, Some(2));
+        assert!(exact_barcode[0].exact_barcode_match);
         assert_eq!(
             query_sellable_batches(&connection, 1, false)
                 .expect("read sellable batches")
@@ -1758,6 +1769,110 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].medicine_barcode.as_deref(), Some("MED-100"));
         assert_eq!(result[0].batch_id, Some(2));
+        assert!(result[0].exact_barcode_match);
+
+        connection
+            .execute(
+                r#"UPDATE medicines
+                   SET company = 'Northstar', product_type = 'Syrup',
+                       strength = '100 mg / 5 ml',
+                       composition = 'dextromethorphan'
+                   WHERE id = 1"#,
+                [],
+            )
+            .expect("save searchable product identifiers");
+        for identifier in [
+            "Northstar",
+            "Syrup",
+            "100 mg / 5 ml",
+            "dextromethorphan",
+        ] {
+            let matches = query_medicine_search(&connection, identifier, 10)
+                .expect("search medicine identifier");
+            assert_eq!(matches.len(), 1, "identifier {identifier}");
+            assert_eq!(matches[0].id, 1, "identifier {identifier}");
+        }
+    }
+
+    #[test]
+    fn duplicate_exact_batch_barcodes_return_each_medicine_candidate() {
+        let connection = migrated_connection();
+        insert_medicine(&connection, 1, "First medicine", 1);
+        insert_medicine(&connection, 2, "Second medicine", 1);
+        let dates: (String, String) = connection
+            .query_row(
+                "SELECT date('now', 'localtime', '+2 days'), date('now', 'localtime', '+6 days')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("compute duplicate barcode fixture expiry dates");
+        insert_batch(
+            &connection,
+            1,
+            1,
+            "FIRST",
+            &dates.0,
+            4,
+            2.0,
+            Some("DUP-100"),
+        );
+        insert_batch(
+            &connection,
+            2,
+            2,
+            "SECOND",
+            &dates.1,
+            5,
+            3.0,
+            Some("DUP-100"),
+        );
+
+        let matches =
+            query_medicine_search(&connection, "dup-100", 100).expect("search duplicate code");
+        assert_eq!(
+            matches.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(matches.iter().all(|row| row.exact_barcode_match));
+        assert_eq!(
+            matches
+                .iter()
+                .map(|row| row.batch_id)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn customer_suggestions_search_name_or_normalized_phone_and_include_due_balance() {
+        let connection = migrated_connection();
+        connection
+            .execute(
+                r#"INSERT INTO customers
+                   (id, name, phone, phone_normalized, state_code)
+                   VALUES (1, 'Asha Rao', '+91 98765 43210', '919876543210', '29')"#,
+                [],
+            )
+            .expect("insert saved customer");
+        connection
+            .execute(
+                r#"INSERT INTO customer_ledger
+                   (customer_id, entry_type, invoice_no, debit_cents, credit_cents)
+                   VALUES (1, 'CREDIT_SALE', 'INV-CUST-1', 7250, 0)"#,
+                [],
+            )
+            .expect("record saved customer's due balance");
+
+        let by_name = query_customers(&connection, "Asha", false)
+            .expect("search customer suggestion by name");
+        let by_phone = query_customers(&connection, "9876543210", false)
+            .expect("search customer suggestion by normalized phone");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_phone.len(), 1);
+        assert_eq!(by_name[0].id, 1);
+        assert_eq!(by_name[0].name, "Asha Rao");
+        assert_eq!(by_name[0].balance_due, 72.5);
+        assert_eq!(by_phone[0].balance_due, 72.5);
     }
 
     #[test]

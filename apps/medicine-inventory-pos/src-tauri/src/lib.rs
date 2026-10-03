@@ -4286,6 +4286,75 @@ mod sale_tests {
 
         assert_eq!((sale_count, stock), (0, 6));
     }
+
+    #[test]
+    fn invoice_sale_price_is_saved_without_changing_batch_pricing() {
+        let mut connection = sale_connection();
+        add_sale_batch(&connection, 223, 2, 6, 4.0);
+
+        let mut request = checkout(223, 1, 0);
+        request.items[0].unit_price_cents = 1_234;
+        let result =
+            complete_sale_in_connection(&mut connection, request).expect("complete edited-price sale");
+
+        let saved_line: (i64, i64, f64) = connection
+            .query_row(
+                r#"SELECT CAST(round(unit_price * 100) AS INTEGER),
+                          CAST(round(total_price * 100) AS INTEGER),
+                          purchase_rate_at_sale
+                   FROM sale_items WHERE sale_id = ?1"#,
+                [result.sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read sale-time line price");
+        let (batch_sale_rate, batch_stock): (i64, i64) = connection
+            .query_row(
+                r#"SELECT CAST(round(sale_rate * 100) AS INTEGER), current_stock
+                   FROM medicine_batches WHERE id = 223"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read unchanged batch price and stock");
+        let invoice_total_cents: i64 = connection
+            .query_row(
+                "SELECT CAST(round(grand_total * 100) AS INTEGER) FROM sales WHERE id = ?1",
+                [result.sale_id],
+                |row| row.get(0),
+            )
+            .expect("read invoice total");
+
+        assert_eq!(saved_line, (1_234, 1_234, 4.0));
+        assert_eq!((batch_sale_rate, batch_stock), (1_000, 5));
+        assert_eq!(invoice_total_cents, 1_184);
+    }
+
+    #[test]
+    fn checkout_rejects_empty_cart_and_negative_price_without_mutating_stock() {
+        let mut connection = sale_connection();
+        add_sale_batch(&connection, 224, 2, 6, 4.0);
+
+        let mut empty_cart = checkout(224, 1, 0);
+        empty_cart.items.clear();
+        assert!(complete_sale_in_connection(&mut connection, empty_cart)
+            .expect_err("reject empty cart")
+            .contains("at least one medicine"));
+
+        let mut invalid_price = checkout(224, 1, 0);
+        invalid_price.items[0].unit_price_cents = -1;
+        assert!(complete_sale_in_connection(&mut connection, invalid_price)
+            .expect_err("reject negative price")
+            .contains("invalid id, quantity, price, or discount"));
+
+        let (sale_count, stock): (i64, i64) = connection
+            .query_row(
+                r#"SELECT (SELECT COUNT(*) FROM sales),
+                          (SELECT current_stock FROM medicine_batches WHERE id = 224)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read database after rejected checkouts");
+        assert_eq!((sale_count, stock), (0, 6));
+    }
 }
 
 #[cfg(test)]
@@ -6235,6 +6304,64 @@ mod gst_checkout_tests {
             )
             .expect("read saved GST sale line");
         assert_eq!(line, (500, 100.0, 5.0));
+    }
+
+    #[test]
+    fn pos_gst_override_is_invoice_scoped_and_historical_rates_stay_fixed() {
+        let mut connection = gst_connection(Some(500), 1_200);
+        let customer_id = create_customer(&mut connection, "29");
+        add_batch(&connection, 303, 100.0);
+
+        let mut first_request =
+            sale_request(customer_id, 303, "CARD", "EXCLUSIVE", 10_000, None);
+        first_request.items[0].gst_rate_override_basis_points = Some(1_200);
+        let first = complete_sale_in_connection(&mut connection, first_request)
+            .expect("complete sale with POS-only GST override");
+
+        let product_rate: i64 = connection
+            .query_row(
+                "SELECT gst_rate_basis_points FROM medicines WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read unchanged medicine GST rate");
+        assert_eq!(product_rate, 500);
+
+        connection
+            .execute(
+                "UPDATE medicines SET gst_rate_basis_points = 1800 WHERE id = 1",
+                [],
+            )
+            .expect("change medicine GST rate for later sale");
+        let second = complete_sale_in_connection(
+            &mut connection,
+            sale_request(customer_id, 303, "CARD", "EXCLUSIVE", 10_000, None),
+        )
+        .expect("complete later sale using current medicine GST rate");
+
+        let first_snapshot: (i64, i64) = connection
+            .query_row(
+                r#"SELECT gst_rate_basis_points,
+                          CAST(round(grand_total * 100) AS INTEGER)
+                   FROM sale_items JOIN sales ON sales.id = sale_items.sale_id
+                   WHERE sales.id = ?1"#,
+                [first.sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read first sale GST snapshot");
+        let second_snapshot: (i64, i64) = connection
+            .query_row(
+                r#"SELECT gst_rate_basis_points,
+                          CAST(round(grand_total * 100) AS INTEGER)
+                   FROM sale_items JOIN sales ON sales.id = sale_items.sale_id
+                   WHERE sales.id = ?1"#,
+                [second.sale_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read later sale GST snapshot");
+
+        assert_eq!(first_snapshot, (1_200, 11_200));
+        assert_eq!(second_snapshot, (1_800, 11_800));
     }
 
     #[test]
