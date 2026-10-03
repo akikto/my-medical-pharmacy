@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, Params, Row};
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::open_pharmacy_connection;
+use crate::{open_pharmacy_connection, validate_iso_date};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct MedicineInventoryRecord {
@@ -84,9 +84,34 @@ pub(crate) struct ExpiryAlertRecord {
 pub(crate) struct SupplierRecord {
     id: i64,
     name: String,
+    contact_person: Option<String>,
     phone: Option<String>,
+    whatsapp_phone: Option<String>,
     address: Option<String>,
+    notes: Option<String>,
     balance_due: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OrderListRecord {
+    id: i64,
+    medicine_id: i64,
+    medicine_name: String,
+    generic_name: Option<String>,
+    company: Option<String>,
+    supplier_id: Option<i64>,
+    supplier_name: Option<String>,
+    quantity: i64,
+    note: Option<String>,
+    ordered: bool,
+    order_date: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WeeklySalesDayRecord {
+    sale_date: String,
+    total_sales: f64,
+    invoice_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +245,7 @@ pub(crate) struct DevelopmentDatabaseCounts {
     sales: i64,
     sale_items: i64,
     stock_adjustments: i64,
+    order_list_items: i64,
     app_settings: i64,
 }
 
@@ -549,21 +575,71 @@ fn query_suppliers(
     let pattern = contains_pattern(search_term);
     query_rows(
         connection,
-        r#"SELECT id, name, phone, address, balance_due
+        r#"SELECT
+             id, name, contact_person, phone, whatsapp_phone, address, notes, balance_due
            FROM suppliers
            WHERE ?1 IS NULL
               OR name LIKE ?1 ESCAPE '!'
+              OR COALESCE(contact_person, '') LIKE ?1 ESCAPE '!'
               OR COALESCE(phone, '') LIKE ?1 ESCAPE '!'
+              OR COALESCE(whatsapp_phone, '') LIKE ?1 ESCAPE '!'
               OR COALESCE(address, '') LIKE ?1 ESCAPE '!'
+              OR COALESCE(notes, '') LIKE ?1 ESCAPE '!'
            ORDER BY name COLLATE NOCASE ASC, id ASC"#,
         [pattern],
         |row| {
             Ok(SupplierRecord {
                 id: row.get("id")?,
                 name: row.get("name")?,
+                contact_person: row.get("contact_person")?,
                 phone: row.get("phone")?,
+                whatsapp_phone: row.get("whatsapp_phone")?,
                 address: row.get("address")?,
+                notes: row.get("notes")?,
                 balance_due: row.get("balance_due")?,
+            })
+        },
+    )
+}
+
+fn query_order_list(
+    connection: &Connection,
+    order_date: &str,
+) -> Result<Vec<OrderListRecord>, String> {
+    validate_iso_date(connection, order_date, "Order date")?;
+    query_rows(
+        connection,
+        r#"SELECT
+             item.id,
+             item.medicine_id,
+             medicine.name AS medicine_name,
+             medicine.generic_name,
+             medicine.company,
+             item.supplier_id,
+             supplier.name AS supplier_name,
+             item.quantity,
+             item.note,
+             item.ordered,
+             item.order_date
+           FROM order_list_items AS item
+           INNER JOIN medicines AS medicine ON medicine.id = item.medicine_id
+           LEFT JOIN suppliers AS supplier ON supplier.id = item.supplier_id
+           WHERE item.order_date = ?1
+           ORDER BY item.ordered ASC, medicine.name COLLATE NOCASE ASC, item.id ASC"#,
+        [order_date],
+        |row| {
+            Ok(OrderListRecord {
+                id: row.get("id")?,
+                medicine_id: row.get("medicine_id")?,
+                medicine_name: row.get("medicine_name")?,
+                generic_name: row.get("generic_name")?,
+                company: row.get("company")?,
+                supplier_id: row.get("supplier_id")?,
+                supplier_name: row.get("supplier_name")?,
+                quantity: row.get("quantity")?,
+                note: row.get("note")?,
+                ordered: row.get::<_, i64>("ordered")? != 0,
+                order_date: row.get("order_date")?,
             })
         },
     )
@@ -838,6 +914,47 @@ fn query_sales_report_rows(
     )
 }
 
+fn query_weekly_sales(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<WeeklySalesDayRecord>, String> {
+    validate_iso_date(connection, start_date, "Week start")?;
+    validate_iso_date(connection, end_date, "Week end")?;
+    if start_date > end_date {
+        return Err("Week start must not be after week end.".to_owned());
+    }
+    let day_span = connection
+        .query_row(
+            "SELECT CAST(julianday(?2) - julianday(?1) AS INTEGER)",
+            params![start_date, end_date],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not validate the weekly sales range: {error}"))?;
+    if day_span > 6 {
+        return Err("Weekly sales can be requested for at most seven days.".to_owned());
+    }
+    query_rows(
+        connection,
+        r#"SELECT
+             date(created_at, 'localtime') AS sale_date,
+             COALESCE(SUM(grand_total), 0) AS total_sales,
+             COUNT(*) AS invoice_count
+           FROM sales
+           WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
+           GROUP BY date(created_at, 'localtime')
+           ORDER BY sale_date ASC"#,
+        params![start_date, end_date],
+        |row| {
+            Ok(WeeklySalesDayRecord {
+                sale_date: row.get("sale_date")?,
+                total_sales: row.get("total_sales")?,
+                invoice_count: row.get("invoice_count")?,
+            })
+        },
+    )
+}
+
 fn query_dashboard_inventory_summary(
     connection: &Connection,
 ) -> Result<DashboardInventorySummaryRecord, String> {
@@ -962,6 +1079,7 @@ fn query_development_database_counts(
              (SELECT COUNT(*) FROM sales) AS sales,
              (SELECT COUNT(*) FROM sale_items) AS sale_items,
              (SELECT COUNT(*) FROM stock_adjustments) AS stock_adjustments,
+             (SELECT COUNT(*) FROM order_list_items) AS order_list_items,
              (SELECT COUNT(*) FROM app_settings) AS app_settings"#,
         [],
         |row| {
@@ -974,6 +1092,7 @@ fn query_development_database_counts(
                 sales: row.get("sales")?,
                 sale_items: row.get("sale_items")?,
                 stock_adjustments: row.get("stock_adjustments")?,
+                order_list_items: row.get("order_list_items")?,
                 app_settings: row.get("app_settings")?,
             })
         },
@@ -1049,6 +1168,14 @@ pub(crate) fn get_suppliers(
 }
 
 #[tauri::command]
+pub(crate) fn get_order_list(
+    app: AppHandle,
+    order_date: String,
+) -> Result<Vec<OrderListRecord>, String> {
+    query_order_list(&open_pharmacy_connection(&app)?, &order_date)
+}
+
+#[tauri::command]
 pub(crate) fn get_store_settings(app: AppHandle) -> Result<Vec<StoreSettingRecord>, String> {
     query_store_settings(&open_pharmacy_connection(&app)?)
 }
@@ -1093,6 +1220,15 @@ pub(crate) fn get_sales_report_rows(
     end_date: String,
 ) -> Result<Vec<SalesReportRowRecord>, String> {
     query_sales_report_rows(&open_pharmacy_connection(&app)?, &start_date, &end_date)
+}
+
+#[tauri::command]
+pub(crate) fn get_weekly_sales(
+    app: AppHandle,
+    start_date: String,
+    end_date: String,
+) -> Result<Vec<WeeklySalesDayRecord>, String> {
+    query_weekly_sales(&open_pharmacy_connection(&app)?, &start_date, &end_date)
 }
 
 #[tauri::command]
@@ -1388,6 +1524,76 @@ mod tests {
         assert!(query_sales_report_rows(&empty, &today, &today)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn weekly_sales_returns_saved_invoice_totals_for_each_sold_day() {
+        let connection = migrated_connection();
+        connection
+            .execute(
+                r#"INSERT INTO sales (invoice_no, subtotal, grand_total, created_at) VALUES
+                   ('W-1', 10, 10, '2026-03-02 12:00:00'),
+                   ('W-2', 15, 15, '2026-03-04 12:00:00'),
+                   ('W-3', 20, 20, '2026-03-04 13:00:00'),
+                   ('W-4', 30, 30, '2026-03-08 12:00:00')"#,
+                [],
+            )
+            .expect("insert weekly sales");
+
+        let days = query_weekly_sales(&connection, "2026-03-02", "2026-03-08")
+            .expect("read saved sales for the week");
+        assert_eq!(days.len(), 3);
+        assert_eq!(
+            days.iter()
+                .map(|day| (day.sale_date.as_str(), day.total_sales, day.invoice_count))
+                .collect::<Vec<_>>(),
+            vec![
+                ("2026-03-02", 10.0, 1),
+                ("2026-03-04", 35.0, 2),
+                ("2026-03-08", 30.0, 1),
+            ]
+        );
+        assert!(query_weekly_sales(&connection, "2026-03-09", "2026-03-15")
+            .expect("read a week without sales")
+            .is_empty());
+        assert!(query_weekly_sales(&connection, "2026-03-02", "2026-03-09").is_err());
+    }
+
+    #[test]
+    fn order_list_read_joins_local_medicine_and_supplier_records() {
+        let connection = migrated_connection();
+        insert_medicine(&connection, 1, "Amoxicillin 250 mg", 10);
+        connection
+            .execute(
+                r#"INSERT INTO suppliers (
+                     id, name, contact_person, phone, whatsapp_phone, address, notes
+                   ) VALUES (7, 'Central Wholesaler', 'Mina Das', '12345', '919876543210',
+                             'Market Road', 'Call before delivery')"#,
+                [],
+            )
+            .expect("insert supplier contact");
+        connection
+            .execute(
+                r#"INSERT INTO order_list_items (
+                     id, order_date, medicine_id, supplier_id, quantity, note
+                   ) VALUES (11, '2026-03-02', 1, 7, 24, 'Urgent restock')"#,
+                [],
+            )
+            .expect("insert order-list item");
+
+        let items = query_order_list(&connection, "2026-03-02").expect("read order list");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].medicine_name, "Amoxicillin 250 mg");
+        assert_eq!(
+            items[0].supplier_name.as_deref(),
+            Some("Central Wholesaler")
+        );
+        assert_eq!(items[0].quantity, 24);
+        assert!(!items[0].ordered);
+        let supplier = query_suppliers(&connection, "Mina Das").unwrap();
+        assert_eq!(supplier[0].contact_person.as_deref(), Some("Mina Das"));
+        assert_eq!(supplier[0].whatsapp_phone.as_deref(), Some("919876543210"));
+        assert_eq!(supplier[0].notes.as_deref(), Some("Call before delivery"));
     }
 
     #[cfg(debug_assertions)]

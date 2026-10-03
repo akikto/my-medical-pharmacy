@@ -44,15 +44,21 @@ export interface MedicineBatch {
 export interface Supplier {
   id: EntityId;
   name: string;
+  contact_person: string | null;
   phone: string | null;
+  whatsapp_phone: string | null;
   address: string | null;
+  notes: string | null;
   balance_due: number;
 }
 
 export interface SupplierFormValues {
   name: string;
+  contact_person: string;
   phone: string;
+  whatsapp_phone: string;
   address: string;
+  notes: string;
 }
 
 export interface Purchase {
@@ -94,6 +100,54 @@ export interface RecentPurchase {
   purchase_date: ISODate;
   item_count: number;
   total_units: number;
+}
+
+export interface OrderListItem {
+  id: EntityId;
+  medicine_id: EntityId;
+  medicine_name: string;
+  generic_name: string | null;
+  company: string | null;
+  supplier_id: EntityId | null;
+  supplier_name: string | null;
+  quantity: number;
+  note: string | null;
+  ordered: boolean;
+  order_date: ISODate;
+}
+
+export interface OrderListItemInput {
+  id?: EntityId;
+  medicine_id: EntityId;
+  supplier_id?: EntityId | null;
+  quantity: number;
+  note?: string | null;
+  order_date: ISODate;
+}
+
+export interface WeeklySalesDay {
+  sale_date: ISODate;
+  total_sales: number;
+  invoice_count: number;
+}
+
+export type DataResetScope =
+  | "sales_history"
+  | "purchase_history"
+  | "supplier_balances"
+  | "all_business_history";
+
+export interface DataResetSummary {
+  scope: DataResetScope;
+  backup_path: string;
+  sales_deleted: number;
+  sale_items_deleted: number;
+  purchases_deleted: number;
+  purchase_items_deleted: number;
+  stock_adjustments_deleted: number;
+  order_list_items_deleted: number;
+  supplier_balances_reset: number;
+  stock_quantities_preserved: boolean;
 }
 
 export interface PurchaseItem {
@@ -262,8 +316,10 @@ export interface CartState {
 export type AppSection =
   | "home"
   | "pos"
+  | "orders"
   | "inventory"
   | "purchases"
+  | "orders"
   | "suppliers"
   | "sales"
   | "reports"

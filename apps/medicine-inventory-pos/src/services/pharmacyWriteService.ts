@@ -43,16 +43,23 @@ export type PharmacyMutation =
   | {
       kind: "create_supplier";
       name: string;
+      contact_person: string | null;
       phone: string | null;
+      whatsapp_phone: string | null;
       address: string | null;
+      notes: string | null;
     }
   | {
       kind: "update_supplier";
       supplier_id: number;
       name: string;
+      contact_person: string | null;
       phone: string | null;
+      whatsapp_phone: string | null;
       address: string | null;
+      notes: string | null;
     }
+  | { kind: "delete_supplier"; supplier_id: number }
   | { kind: "save_settings"; settings: StoreSettings };
 
 interface PharmacyMutationResult {

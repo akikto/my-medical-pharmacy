@@ -1,6 +1,7 @@
-import { Building2, CircleAlert, MapPin, Pencil, Phone, Plus, Search, UsersRound, X } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Building2, CircleAlert, MapPin, MessageCircle, Pencil, Phone, Plus, Search, Trash2, UserRound, UsersRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getSuppliers, saveSupplier } from "../../services/supplierService";
+import { deleteSupplier, getSuppliers, saveSupplier } from "../../services/supplierService";
 import type { Supplier, SupplierFormValues } from "../../types";
 import { formatMoney } from "../../utils/money";
 import { SupplierFormDialog } from "./SupplierFormDialog";
@@ -18,6 +19,9 @@ export function SuppliersPage() {
   const [dialogSupplier, setDialogSupplier] = useState<Supplier | null | undefined>(undefined);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -52,6 +56,46 @@ export function SuppliersPage() {
       setDialogError(getErrorMessage(error));
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function handleDeleteSupplier() {
+    if (!supplierToDelete) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteSupplier(supplierToDelete.id);
+      setNotice(`${supplierToDelete.name} was removed. Purchase records remain saved.`);
+      setSupplierToDelete(null);
+      setRefreshKey((current) => current + 1);
+    } catch (error) {
+      setDeleteError(getErrorMessage(error));
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  async function openWhatsApp(supplier: Supplier) {
+    const phone = supplier.whatsapp_phone || supplier.phone || "";
+    const digits = phone.replace(/\D/g, "");
+    if (!digits) {
+      setNotice("Add a WhatsApp number or phone number to this supplier first.");
+      return;
+    }
+    try {
+      await openUrl(`https://wa.me/${digits}`);
+      setNotice("WhatsApp opened. If it is unavailable, use the saved number shown in this supplier record.");
+    } catch {
+      setNotice(`WhatsApp could not be opened. Use this saved number instead: ${phone}`);
+    }
+  }
+
+  async function openPhone(supplier: Supplier) {
+    if (!supplier.phone) return;
+    try {
+      await openUrl(`tel:${encodeURIComponent(supplier.phone)}`);
+    } catch {
+      setNotice(`Calling is unavailable. Use this saved number instead: ${supplier.phone}`);
     }
   }
 
@@ -98,7 +142,7 @@ export function SuppliersPage() {
               aria-label="Search suppliers"
               data-testid="input-supplier-search"
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Name, phone, or address"
+              placeholder="Name, contact, phone, WhatsApp, or address"
               value={searchQuery}
             />
             {searchQuery.length > 0 && (
@@ -141,26 +185,50 @@ export function SuppliersPage() {
                 <div className="supplier-main">
                   <strong>{supplier.name}</strong>
                   <div className="supplier-contact">
+                    {supplier.contact_person && <span><UserRound size={13} /> {supplier.contact_person}</span>}
                     {supplier.phone && <span><Phone size={13} /> {supplier.phone}</span>}
+                    {supplier.whatsapp_phone && <span><MessageCircle size={13} /> WhatsApp: {supplier.whatsapp_phone}</span>}
                     {supplier.address && <span><MapPin size={13} /> {supplier.address}</span>}
-                    {!supplier.phone && !supplier.address && <span className="workspace-muted">No contact details added</span>}
+                    {supplier.notes && <span className="supplier-notes">{supplier.notes}</span>}
+                    {!supplier.contact_person && !supplier.phone && !supplier.whatsapp_phone && !supplier.address && !supplier.notes && <span className="workspace-muted">No contact details added</span>}
                   </div>
                 </div>
                 <div className="supplier-balance">
                   <span>Balance due</span>
                   <strong>{formatMoney(supplier.balance_due)}</strong>
                 </div>
-                <button
-                  aria-label={`Edit ${supplier.name}`}
-                  className="icon-button"
-                  onClick={() => {
-                    setDialogError(null);
-                    setDialogSupplier(supplier);
-                  }}
-                  type="button"
-                >
-                  <Pencil size={15} />
-                </button>
+                <div className="supplier-row-actions">
+                  {supplier.phone && (
+                    <a aria-label={`Call ${supplier.name}`} className="supplier-contact-action" href={`tel:${encodeURIComponent(supplier.phone)}`} onClick={(event) => { event.preventDefault(); void openPhone(supplier); }} title={`Call ${supplier.phone}`}>
+                      <Phone size={14} /><span>Call</span>
+                    </a>
+                  )}
+                  <button className="supplier-contact-action" data-testid={`button-whatsapp-supplier-${supplier.id}`} onClick={() => void openWhatsApp(supplier)} type="button">
+                    <MessageCircle size={14} /><span>WhatsApp</span>
+                  </button>
+                  <button
+                    aria-label={`Edit ${supplier.name}`}
+                    className="icon-button"
+                    onClick={() => {
+                      setDialogError(null);
+                      setDialogSupplier(supplier);
+                    }}
+                    type="button"
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  <button
+                    aria-label={`Delete ${supplier.name}`}
+                    className="icon-button supplier-delete-button"
+                    onClick={() => {
+                      setDeleteError(null);
+                      setSupplierToDelete(supplier);
+                    }}
+                    type="button"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </article>
             ))}
           </div>
@@ -178,6 +246,28 @@ export function SuppliersPage() {
           onSave={(values) => void handleSave(values)}
           supplier={dialogSupplier}
         />
+      )}
+
+      {supplierToDelete && (
+        <div className="inventory-dialog-backdrop" data-testid="dialog-delete-supplier">
+          <section aria-describedby="delete-supplier-description" aria-labelledby="delete-supplier-title" aria-modal="true" className="workspace-dialog workspace-dialog--narrow" role="alertdialog">
+            <header className="dialog-header">
+              <div>
+                <span className="eyebrow">SUPPLIER RECORD</span>
+                <h2 id="delete-supplier-title">Delete {supplierToDelete.name}?</h2>
+                <p id="delete-supplier-description">Past purchases will remain saved, but this supplier will no longer be linked to them or order-list items.</p>
+              </div>
+              <button aria-label="Close delete confirmation" className="icon-button" disabled={isDeleting} onClick={() => setSupplierToDelete(null)} type="button"><X size={18} /></button>
+            </header>
+            {deleteError && <p className="workspace-error" role="alert">{deleteError}</p>}
+            <footer className="dialog-actions">
+              <button className="button button-secondary" disabled={isDeleting} onClick={() => setSupplierToDelete(null)} type="button">Cancel</button>
+              <button className="button button-danger" data-testid="button-confirm-delete-supplier" disabled={isDeleting} onClick={() => void handleDeleteSupplier()} type="button">
+                {isDeleting ? "Deleting…" : "Delete supplier"}
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
     </section>
   );

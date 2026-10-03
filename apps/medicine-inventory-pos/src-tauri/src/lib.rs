@@ -27,10 +27,10 @@ use reads::{
     get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
     get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
     get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
-    get_top_selling_medicines, search_medicines,
+    get_top_selling_medicines, get_weekly_sales, get_order_list, search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 4;
+const LATEST_DATABASE_VERSION: i64 = 5;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -96,14 +96,23 @@ enum PharmacyMutation {
     },
     CreateSupplier {
         name: String,
+        contact_person: Option<String>,
         phone: Option<String>,
+        whatsapp_phone: Option<String>,
         address: Option<String>,
+        notes: Option<String>,
     },
     UpdateSupplier {
         supplier_id: i64,
         name: String,
+        contact_person: Option<String>,
         phone: Option<String>,
+        whatsapp_phone: Option<String>,
         address: Option<String>,
+        notes: Option<String>,
+    },
+    DeleteSupplier {
+        supplier_id: i64,
     },
     SaveSettings {
         settings: StoreSettingsMutation,
@@ -204,6 +213,69 @@ struct PurchaseResult {
 #[serde(rename_all = "camelCase")]
 struct DatabaseBackupResult {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum OrderListMutation {
+    SaveItem {
+        id: Option<i64>,
+        medicine_id: i64,
+        supplier_id: Option<i64>,
+        quantity: i64,
+        note: Option<String>,
+        order_date: String,
+    },
+    SetOrdered {
+        item_id: i64,
+        ordered: bool,
+    },
+    DeleteItem {
+        item_id: i64,
+    },
+    ClearDate {
+        order_date: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct OrderListMutationResult {
+    item_id: Option<i64>,
+    rows_affected: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DataResetScope {
+    SalesHistory,
+    PurchaseHistory,
+    SupplierBalances,
+    AllBusinessHistory,
+}
+
+#[derive(Debug, Default)]
+struct DataResetCounts {
+    sales_deleted: usize,
+    sale_items_deleted: usize,
+    purchases_deleted: usize,
+    purchase_items_deleted: usize,
+    stock_adjustments_deleted: usize,
+    order_list_items_deleted: usize,
+    supplier_balances_reset: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DataResetSummary {
+    scope: DataResetScope,
+    backup_path: String,
+    sales_deleted: usize,
+    sale_items_deleted: usize,
+    purchases_deleted: usize,
+    purchase_items_deleted: usize,
+    stock_adjustments_deleted: usize,
+    order_list_items_deleted: usize,
+    supplier_balances_reset: usize,
+    stock_quantities_preserved: bool,
 }
 
 #[cfg(debug_assertions)]
@@ -358,6 +430,22 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
                 setting_key TEXT PRIMARY KEY,
                 setting_value TEXT NOT NULL
             )"#,
+        ]),
+        5 => Ok(&[
+            "ALTER TABLE suppliers ADD COLUMN contact_person TEXT",
+            "ALTER TABLE suppliers ADD COLUMN whatsapp_phone TEXT",
+            "ALTER TABLE suppliers ADD COLUMN notes TEXT",
+            r#"CREATE TABLE order_list_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_date TEXT NOT NULL CHECK (length(order_date) = 10),
+                medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+                supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+                quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 1000000000),
+                note TEXT,
+                ordered INTEGER NOT NULL DEFAULT 0 CHECK (ordered IN (0, 1)),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            "CREATE INDEX idx_order_list_items_date ON order_list_items(order_date, ordered, id)",
         ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
@@ -681,6 +769,27 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
             &connection,
             "app_settings",
             &["setting_key", "setting_value"],
+        )?;
+    }
+    if version >= 5 {
+        require_backup_columns(
+            &connection,
+            "suppliers",
+            &["contact_person", "whatsapp_phone", "notes"],
+        )?;
+        require_backup_columns(
+            &connection,
+            "order_list_items",
+            &[
+                "id",
+                "order_date",
+                "medicine_id",
+                "supplier_id",
+                "quantity",
+                "note",
+                "ordered",
+                "created_at",
+            ],
         )?;
     }
 
@@ -1225,6 +1334,22 @@ fn require_one_changed_row(rows_affected: usize, label: &str) -> Result<(), Stri
     Ok(())
 }
 
+pub(crate) fn validate_iso_date(
+    connection: &Connection,
+    value: &str,
+    label: &str,
+) -> Result<(), String> {
+    let parsed_date = connection
+        .query_row("SELECT date(?1, '+0 days')", [value], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(|error| format!("Could not validate {label}: {error}"))?;
+    if value.len() != 10 || parsed_date.as_deref() != Some(value) {
+        return Err(format!("{label} must be a valid date in YYYY-MM-DD format."));
+    }
+    Ok(())
+}
+
 fn apply_pharmacy_mutation_to_connection(
     connection: &mut Connection,
     operation: PharmacyMutation,
@@ -1420,16 +1545,26 @@ fn apply_pharmacy_mutation_to_connection(
         }
         PharmacyMutation::CreateSupplier {
             name,
+            contact_person,
             phone,
+            whatsapp_phone,
             address,
+            notes,
         } => {
             let name = normalized_required_text(name, 120, "Supplier name")?;
+            let contact_person =
+                normalized_optional_text(contact_person, 120, "Contact person")?;
             let phone = normalized_optional_text(phone, 40, "Supplier phone")?;
+            let whatsapp_phone =
+                normalized_optional_text(whatsapp_phone, 40, "WhatsApp number")?;
             let address = normalized_optional_text(address, 500, "Supplier address")?;
+            let notes = normalized_optional_text(notes, 1000, "Supplier notes")?;
             let rows_affected = transaction
                 .execute(
-                    "INSERT INTO suppliers (name, phone, address) VALUES (?1, ?2, ?3)",
-                    params![name, phone, address],
+                    r#"INSERT INTO suppliers (
+                         name, contact_person, phone, whatsapp_phone, address, notes
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                    params![name, contact_person, phone, whatsapp_phone, address, notes],
                 )
                 .map_err(|error| format!("Could not create the supplier: {error}"))?;
             require_one_changed_row(rows_affected, "Supplier")?;
@@ -1438,21 +1573,50 @@ fn apply_pharmacy_mutation_to_connection(
         PharmacyMutation::UpdateSupplier {
             supplier_id,
             name,
+            contact_person,
             phone,
+            whatsapp_phone,
             address,
+            notes,
         } => {
             if supplier_id <= 0 {
                 return Err("Supplier id must be a positive whole number.".to_owned());
             }
             let name = normalized_required_text(name, 120, "Supplier name")?;
+            let contact_person =
+                normalized_optional_text(contact_person, 120, "Contact person")?;
             let phone = normalized_optional_text(phone, 40, "Supplier phone")?;
+            let whatsapp_phone =
+                normalized_optional_text(whatsapp_phone, 40, "WhatsApp number")?;
             let address = normalized_optional_text(address, 500, "Supplier address")?;
+            let notes = normalized_optional_text(notes, 1000, "Supplier notes")?;
             let rows_affected = transaction
                 .execute(
-                    "UPDATE suppliers SET name = ?1, phone = ?2, address = ?3 WHERE id = ?4",
-                    params![name, phone, address, supplier_id],
+                    r#"UPDATE suppliers
+                       SET name = ?1, contact_person = ?2, phone = ?3,
+                           whatsapp_phone = ?4, address = ?5, notes = ?6
+                       WHERE id = ?7"#,
+                    params![
+                        name,
+                        contact_person,
+                        phone,
+                        whatsapp_phone,
+                        address,
+                        notes,
+                        supplier_id
+                    ],
                 )
                 .map_err(|error| format!("Could not update the supplier: {error}"))?;
+            require_one_changed_row(rows_affected, "Supplier")?;
+            None
+        }
+        PharmacyMutation::DeleteSupplier { supplier_id } => {
+            if supplier_id <= 0 {
+                return Err("Supplier id must be a positive whole number.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute("DELETE FROM suppliers WHERE id = ?1", [supplier_id])
+                .map_err(|error| format!("Could not delete the supplier: {error}"))?;
             require_one_changed_row(rows_affected, "Supplier")?;
             None
         }
@@ -1501,6 +1665,220 @@ fn apply_pharmacy_mutation(
     let mut connection = open_pharmacy_connection(&app)?;
     let entity_id = apply_pharmacy_mutation_to_connection(&mut connection, operation)?;
     Ok(PharmacyMutationResult { entity_id })
+}
+
+fn apply_order_list_mutation_to_connection(
+    connection: &mut Connection,
+    operation: OrderListMutation,
+) -> Result<OrderListMutationResult, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the order-list update: {error}"))?;
+
+    let result = match operation {
+        OrderListMutation::SaveItem {
+            id,
+            medicine_id,
+            supplier_id,
+            quantity,
+            note,
+            order_date,
+        } => {
+            if medicine_id <= 0 || supplier_id.is_some_and(|id| id <= 0) {
+                return Err("Medicine and supplier ids must be positive whole numbers.".to_owned());
+            }
+            if !(1..=1_000_000_000).contains(&quantity) {
+                return Err("Order quantity must be between 1 and 1,000,000,000.".to_owned());
+            }
+            validate_iso_date(&transaction, &order_date, "Order date")?;
+            let note = normalized_optional_text(note, 1000, "Order note")?;
+            if let Some(item_id) = id {
+                if item_id <= 0 {
+                    return Err("Order item id must be a positive whole number.".to_owned());
+                }
+                let rows_affected = transaction
+                    .execute(
+                        r#"UPDATE order_list_items
+                           SET medicine_id = ?1, supplier_id = ?2, quantity = ?3, note = ?4
+                           WHERE id = ?5 AND order_date = ?6"#,
+                        params![medicine_id, supplier_id, quantity, note, item_id, order_date],
+                    )
+                    .map_err(|error| format!("Could not update the order item: {error}"))?;
+                require_one_changed_row(rows_affected, "Order item")?;
+                OrderListMutationResult {
+                    item_id: Some(item_id),
+                    rows_affected,
+                }
+            } else {
+                let rows_affected = transaction
+                    .execute(
+                        r#"INSERT INTO order_list_items (
+                             order_date, medicine_id, supplier_id, quantity, note
+                           ) VALUES (?1, ?2, ?3, ?4, ?5)"#,
+                        params![order_date, medicine_id, supplier_id, quantity, note],
+                    )
+                    .map_err(|error| format!("Could not add the order item: {error}"))?;
+                require_one_changed_row(rows_affected, "Order item")?;
+                OrderListMutationResult {
+                    item_id: Some(transaction.last_insert_rowid()),
+                    rows_affected,
+                }
+            }
+        }
+        OrderListMutation::SetOrdered { item_id, ordered } => {
+            if item_id <= 0 {
+                return Err("Order item id must be a positive whole number.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE order_list_items SET ordered = ?1 WHERE id = ?2",
+                    params![if ordered { 1_i64 } else { 0_i64 }, item_id],
+                )
+                .map_err(|error| format!("Could not update the order status: {error}"))?;
+            require_one_changed_row(rows_affected, "Order item")?;
+            OrderListMutationResult {
+                item_id: Some(item_id),
+                rows_affected,
+            }
+        }
+        OrderListMutation::DeleteItem { item_id } => {
+            if item_id <= 0 {
+                return Err("Order item id must be a positive whole number.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute("DELETE FROM order_list_items WHERE id = ?1", [item_id])
+                .map_err(|error| format!("Could not remove the order item: {error}"))?;
+            require_one_changed_row(rows_affected, "Order item")?;
+            OrderListMutationResult {
+                item_id: Some(item_id),
+                rows_affected,
+            }
+        }
+        OrderListMutation::ClearDate { order_date } => {
+            validate_iso_date(&transaction, &order_date, "Order date")?;
+            let rows_affected = transaction
+                .execute(
+                    "DELETE FROM order_list_items WHERE order_date = ?1",
+                    [order_date],
+                )
+                .map_err(|error| format!("Could not clear the order list: {error}"))?;
+            OrderListMutationResult {
+                item_id: None,
+                rows_affected,
+            }
+        }
+    };
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not save the order-list update: {error}"))?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn mutate_order_list(
+    app: AppHandle,
+    operation: OrderListMutation,
+) -> Result<OrderListMutationResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    apply_order_list_mutation_to_connection(&mut connection, operation)
+}
+
+fn reset_count(
+    transaction: &Transaction<'_>,
+    query: &str,
+) -> Result<usize, String> {
+    transaction
+        .execute(query, [])
+        .map_err(|error| format!("Could not reset business records: {error}"))
+}
+
+fn apply_business_reset(
+    transaction: &Transaction<'_>,
+    scope: DataResetScope,
+) -> Result<DataResetCounts, String> {
+    let mut counts = DataResetCounts::default();
+    match scope {
+        DataResetScope::SalesHistory => {
+            counts.sale_items_deleted =
+                reset_count(transaction, "DELETE FROM sale_items")?;
+            counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
+        }
+        DataResetScope::PurchaseHistory => {
+            counts.purchase_items_deleted =
+                reset_count(transaction, "DELETE FROM purchase_items")?;
+            counts.purchases_deleted = reset_count(transaction, "DELETE FROM purchases")?;
+        }
+        DataResetScope::SupplierBalances => {
+            counts.supplier_balances_reset = transaction
+                .execute("UPDATE suppliers SET balance_due = 0 WHERE balance_due <> 0", [])
+                .map_err(|error| format!("Could not reset supplier balances: {error}"))?;
+        }
+        DataResetScope::AllBusinessHistory => {
+            counts.sale_items_deleted =
+                reset_count(transaction, "DELETE FROM sale_items")?;
+            counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
+            counts.purchase_items_deleted =
+                reset_count(transaction, "DELETE FROM purchase_items")?;
+            counts.purchases_deleted = reset_count(transaction, "DELETE FROM purchases")?;
+            counts.stock_adjustments_deleted =
+                reset_count(transaction, "DELETE FROM stock_adjustments")?;
+            counts.order_list_items_deleted =
+                reset_count(transaction, "DELETE FROM order_list_items")?;
+            counts.supplier_balances_reset = transaction
+                .execute("UPDATE suppliers SET balance_due = 0 WHERE balance_due <> 0", [])
+                .map_err(|error| format!("Could not reset supplier balances: {error}"))?;
+        }
+    }
+    Ok(counts)
+}
+
+fn reset_business_data_with_backup<F>(
+    connection: &mut Connection,
+    scope: DataResetScope,
+    create_backup: F,
+) -> Result<DataResetSummary, String>
+where
+    F: FnOnce() -> Result<String, String>,
+{
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the data reset: {error}"))?;
+    let backup_path = create_backup()?;
+    let counts = apply_business_reset(&transaction, scope)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not complete the data reset: {error}"))?;
+
+    Ok(DataResetSummary {
+        scope,
+        backup_path,
+        sales_deleted: counts.sales_deleted,
+        sale_items_deleted: counts.sale_items_deleted,
+        purchases_deleted: counts.purchases_deleted,
+        purchase_items_deleted: counts.purchase_items_deleted,
+        stock_adjustments_deleted: counts.stock_adjustments_deleted,
+        order_list_items_deleted: counts.order_list_items_deleted,
+        supplier_balances_reset: counts.supplier_balances_reset,
+        stock_quantities_preserved: true,
+    })
+}
+
+#[tauri::command]
+fn reset_business_data(
+    app: AppHandle,
+    scope: DataResetScope,
+    confirmation_phrase: String,
+) -> Result<DataResetSummary, String> {
+    if confirmation_phrase != "RESET MY DATA" {
+        return Err("Type RESET MY DATA exactly to confirm this reset.".to_owned());
+    }
+    let mut connection = open_pharmacy_connection(&app)?;
+    reset_business_data_with_backup(&mut connection, scope, || {
+        create_internal_snapshot(&app, "pre_reset")?
+            .map(|path| path.display().to_string())
+            .ok_or_else(|| "A validated pre-reset database backup could not be created.".to_owned())
+    })
 }
 
 fn allocate_sale_line_fefo(
@@ -2018,6 +2396,7 @@ fn complete_purchase(app: AppHandle, purchase: PurchaseRequest) -> Result<Purcha
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(register_auto_backup_on_close);
 
     #[cfg(debug_assertions)]
@@ -2037,11 +2416,15 @@ pub fn run() {
             get_sale_details,
             get_sales_report_summary,
             get_sales_report_rows,
+            get_weekly_sales,
+            get_order_list,
             get_dashboard_inventory_summary,
             get_dashboard_purchase_summary,
             get_top_selling_medicines,
             reads::check_development_database_empty,
             apply_pharmacy_mutation,
+            mutate_order_list,
+            reset_business_data,
             complete_sale,
             complete_purchase,
             create_database_backup,
@@ -2064,10 +2447,14 @@ pub fn run() {
         get_sale_details,
         get_sales_report_summary,
         get_sales_report_rows,
+        get_weekly_sales,
+        get_order_list,
         get_dashboard_inventory_summary,
         get_dashboard_purchase_summary,
         get_top_selling_medicines,
         apply_pharmacy_mutation,
+        mutate_order_list,
+        reset_business_data,
         complete_sale,
         complete_purchase,
         create_database_backup,
@@ -2522,8 +2909,11 @@ mod pharmacy_mutation_tests {
             &mut connection,
             PharmacyMutation::CreateSupplier {
                 name: "Test supplier".to_owned(),
+                contact_person: Some("Casey Manager".to_owned()),
                 phone: Some("12345".to_owned()),
+                whatsapp_phone: Some("919876543210".to_owned()),
                 address: None,
+                notes: Some("Morning delivery preferred".to_owned()),
             },
         )
         .expect("create supplier")
@@ -3107,5 +3497,317 @@ mod backup_tests {
 
         drop(backup);
         fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+}
+
+#[cfg(test)]
+mod business_history_tests {
+    use super::*;
+
+    fn create_business_database(directory: &Path) -> (PathBuf, Connection) {
+        fs::create_dir_all(directory).expect("create temporary database directory");
+        let database_path = directory.join("pharmacy.db");
+        let mut connection = Connection::open(&database_path).expect("open temporary database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+            .expect("configure temporary database");
+        migrate_connection(&mut connection).expect("migrate temporary database");
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (id, name, min_stock_alert)
+                VALUES (1, 'Reset test medicine', 2);
+                INSERT INTO medicine_batches (
+                    id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                ) VALUES (1, 1, 'B-1', '2099-12-31', 4, 8, 7, 9);
+                INSERT INTO suppliers (
+                    id, name, contact_person, phone, whatsapp_phone, address, notes, balance_due
+                ) VALUES (1, 'Reset test supplier', 'Contact One', '12345',
+                          '919876543210', 'Local Road', 'Keep for later', 40);
+                INSERT INTO purchases (id, invoice_no, supplier_id, total_amount, purchase_date)
+                VALUES (1, 'P-RESET-1', 1, 8, '2026-03-02');
+                INSERT INTO purchase_items (id, purchase_id, batch_id, quantity, rate, total)
+                VALUES (1, 1, 1, 2, 4, 8);
+                INSERT INTO sales (id, invoice_no, subtotal, grand_total, created_at)
+                VALUES (1, 'S-RESET-1', 7, 7, '2026-03-02 12:00:00');
+                INSERT INTO sale_items (id, sale_id, batch_id, quantity, unit_price, total_price)
+                VALUES (1, 1, 1, 1, 7, 7);
+                INSERT INTO stock_adjustments (id, medicine_id, batch_id, quantity_change, reason)
+                VALUES (1, 1, 1, 1, 'Count correction');
+                INSERT INTO order_list_items (
+                    id, order_date, medicine_id, supplier_id, quantity, note
+                ) VALUES (1, '2026-03-02', 1, 1, 5, 'Restock');
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES ('pharmacy_name', 'Reset Test Pharmacy');
+                "#,
+            )
+            .expect("seed isolated local database");
+        (database_path, connection)
+    }
+
+    fn count(connection: &Connection, table: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count isolated database rows")
+    }
+
+    fn stock(connection: &Connection) -> i64 {
+        connection
+            .query_row(
+                "SELECT current_stock FROM medicine_batches WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved stock")
+    }
+
+    #[test]
+    fn order_list_mutations_create_update_order_delete_and_clear_by_date() {
+        let mut connection = Connection::open_in_memory().expect("open order-list test database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable test foreign keys");
+        migrate_connection(&mut connection).expect("migrate order-list test database");
+        connection
+            .execute(
+                "INSERT INTO medicines (id, name) VALUES (1, 'Order test')",
+                [],
+            )
+            .expect("insert medicine");
+        connection
+            .execute(
+                "INSERT INTO suppliers (id, name) VALUES (1, 'Supplier')",
+                [],
+            )
+            .expect("insert supplier");
+
+        let created = apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::SaveItem {
+                id: None,
+                medicine_id: 1,
+                supplier_id: Some(1),
+                quantity: 4,
+                note: Some("First note".to_owned()),
+                order_date: "2026-03-02".to_owned(),
+            },
+        )
+        .expect("create order-list item");
+        let item_id = created.item_id.expect("created order-list id");
+        apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::SaveItem {
+                id: Some(item_id),
+                medicine_id: 1,
+                supplier_id: Some(1),
+                quantity: 7,
+                note: Some("Updated note".to_owned()),
+                order_date: "2026-03-02".to_owned(),
+            },
+        )
+        .expect("update order-list item");
+        apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::SetOrdered {
+                item_id,
+                ordered: true,
+            },
+        )
+        .expect("mark order item ordered");
+
+        let updated: (i64, i64, String) = connection
+            .query_row(
+                "SELECT quantity, ordered, note FROM order_list_items WHERE id = ?1",
+                [item_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read updated order item");
+        assert_eq!(updated, (7, 1, "Updated note".to_owned()));
+
+        let invalid = apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::SaveItem {
+                id: None,
+                medicine_id: 1,
+                supplier_id: None,
+                quantity: 2,
+                note: None,
+                order_date: "2026-02-30".to_owned(),
+            },
+        );
+        assert!(invalid.is_err());
+        assert_eq!(count(&connection, "order_list_items"), 1);
+
+        let deleted = apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::DeleteItem { item_id },
+        )
+        .expect("delete order-list item");
+        assert_eq!(deleted.rows_affected, 1);
+        assert_eq!(count(&connection, "order_list_items"), 0);
+
+        apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::SaveItem {
+                id: None,
+                medicine_id: 1,
+                supplier_id: Some(1),
+                quantity: 2,
+                note: None,
+                order_date: "2026-03-02".to_owned(),
+            },
+        )
+        .expect("create item for date clear");
+        let cleared = apply_order_list_mutation_to_connection(
+            &mut connection,
+            OrderListMutation::ClearDate {
+                order_date: "2026-03-02".to_owned(),
+            },
+        )
+        .expect("clear order list date");
+        assert_eq!(cleared.rows_affected, 1);
+        assert_eq!(count(&connection, "order_list_items"), 0);
+    }
+
+    #[test]
+    fn deleting_supplier_unassigns_but_keeps_purchase_and_order_history() {
+        let directory =
+            unique_internal_path(&std::env::temp_dir(), "pharmacy-supplier-delete", "dir");
+        let (_database_path, mut connection) = create_business_database(&directory);
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::DeleteSupplier { supplier_id: 1 },
+        )
+        .expect("delete supplier");
+
+        assert_eq!(count(&connection, "suppliers"), 0);
+        assert_eq!(count(&connection, "purchases"), 1);
+        let purchase_supplier: Option<i64> = connection
+            .query_row(
+                "SELECT supplier_id FROM purchases WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved purchase link");
+        assert_eq!(purchase_supplier, None);
+        let order_supplier: Option<i64> = connection
+            .query_row(
+                "SELECT supplier_id FROM order_list_items WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read cleared order-list supplier link");
+        assert_eq!(order_supplier, None);
+        drop(connection);
+        fs::remove_dir_all(directory).expect("remove isolated database");
+    }
+
+    #[test]
+    fn reset_stops_before_deleting_any_data_when_backup_creation_fails() {
+        let directory =
+            unique_internal_path(&std::env::temp_dir(), "pharmacy-reset-failure", "dir");
+        let (_database_path, mut connection) = create_business_database(&directory);
+        let result = reset_business_data_with_backup(
+            &mut connection,
+            DataResetScope::AllBusinessHistory,
+            || Err("simulated backup failure".to_owned()),
+        );
+        assert!(result.unwrap_err().contains("simulated backup failure"));
+        assert_eq!(count(&connection, "sales"), 1);
+        assert_eq!(count(&connection, "purchases"), 1);
+        assert_eq!(count(&connection, "order_list_items"), 1);
+        assert_eq!(stock(&connection), 9);
+        drop(connection);
+        fs::remove_dir_all(directory).expect("remove isolated database");
+    }
+
+    #[test]
+    fn sales_reset_keeps_purchase_history_stock_and_master_records() {
+        let directory = unique_internal_path(&std::env::temp_dir(), "pharmacy-reset-sales", "dir");
+        let (_database_path, mut connection) = create_business_database(&directory);
+        let summary =
+            reset_business_data_with_backup(&mut connection, DataResetScope::SalesHistory, || {
+                Ok("validated test backup".to_owned())
+            })
+            .expect("reset sales history");
+
+        assert_eq!(summary.sales_deleted, 1);
+        assert_eq!(summary.sale_items_deleted, 1);
+        assert!(summary.stock_quantities_preserved);
+        assert_eq!(count(&connection, "sales"), 0);
+        assert_eq!(count(&connection, "sale_items"), 0);
+        assert_eq!(count(&connection, "purchases"), 1);
+        assert_eq!(count(&connection, "purchase_items"), 1);
+        assert_eq!(count(&connection, "stock_adjustments"), 1);
+        assert_eq!(count(&connection, "order_list_items"), 1);
+        assert_eq!(count(&connection, "medicines"), 1);
+        assert_eq!(count(&connection, "suppliers"), 1);
+        assert_eq!(stock(&connection), 9);
+        drop(connection);
+        fs::remove_dir_all(directory).expect("remove isolated database");
+    }
+
+    #[test]
+    fn all_history_reset_keeps_a_valid_pre_reset_backup_and_preserves_stock() {
+        let directory = unique_internal_path(&std::env::temp_dir(), "pharmacy-reset-backup", "dir");
+        let (database_path, mut connection) = create_business_database(&directory);
+        let backup_path = directory.join("pre-reset.db");
+        let backup_path_for_closure = backup_path.clone();
+        let source_path_for_closure = database_path.clone();
+
+        let summary = reset_business_data_with_backup(
+            &mut connection,
+            DataResetScope::AllBusinessHistory,
+            move || {
+                create_snapshot(&source_path_for_closure, &backup_path_for_closure)?;
+                Ok(backup_path_for_closure.display().to_string())
+            },
+        )
+        .expect("create backup and reset all business history");
+
+        assert_eq!(summary.sales_deleted, 1);
+        assert_eq!(summary.sale_items_deleted, 1);
+        assert_eq!(summary.purchases_deleted, 1);
+        assert_eq!(summary.purchase_items_deleted, 1);
+        assert_eq!(summary.stock_adjustments_deleted, 1);
+        assert_eq!(summary.order_list_items_deleted, 1);
+        assert_eq!(summary.supplier_balances_reset, 1);
+        assert!(summary.stock_quantities_preserved);
+        assert_eq!(count(&connection, "sales"), 0);
+        assert_eq!(count(&connection, "purchases"), 0);
+        assert_eq!(count(&connection, "stock_adjustments"), 0);
+        assert_eq!(count(&connection, "order_list_items"), 0);
+        assert_eq!(count(&connection, "medicines"), 1);
+        assert_eq!(count(&connection, "suppliers"), 1);
+        assert_eq!(stock(&connection), 9);
+        let supplier_balance: f64 = connection
+            .query_row(
+                "SELECT balance_due FROM suppliers WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read reset supplier balance");
+        assert_eq!(supplier_balance, 0.0);
+        let setting: String = connection
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'pharmacy_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved app setting");
+        assert_eq!(setting, "Reset Test Pharmacy");
+        drop(connection);
+
+        validate_backup_database(&backup_path).expect("validate retained pre-reset backup");
+        let backup = Connection::open_with_flags(&backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open retained backup");
+        assert_eq!(count(&backup, "sales"), 1);
+        assert_eq!(count(&backup, "purchases"), 1);
+        assert_eq!(count(&backup, "order_list_items"), 1);
+        assert_eq!(stock(&backup), 9);
+        drop(backup);
+        fs::remove_dir_all(directory).expect("remove isolated database");
     }
 }
