@@ -22,21 +22,28 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod backup_package;
+mod purchase_management;
 mod reads;
+pub(crate) use purchase_management::PurchaseRequest;
+#[cfg(test)]
+pub(crate) use purchase_management::{record_purchase, PurchaseItemRequest};
 use backup_package::{
-    create_complete_backup_from_snapshot, stage_complete_backup, validate_photo_references,
+    create_complete_backup_from_snapshot, staged_purchase_attachment_directory,
+    stage_complete_backup, validate_attachment_references, validate_photo_references,
     BackupPhotoSummary, BackupSourceFormat, RestoredPhotoSummary,
 };
 use reads::{
     get_dashboard_inventory_summary, get_dashboard_purchase_summary, get_expiry_alerts,
-    get_customer_ledger, get_customers, get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
+    get_customer_ledger, get_customers, get_fefo_batch, get_inventory_medicines,
+    get_low_stock_alerts, get_medicine_batches,
     get_medicine_order_usage,
+    get_purchase_details, get_purchase_history, get_supplier_ledger,
     get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
     get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
     get_top_selling_medicines, get_weekly_sales, get_order_list, search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 8;
+const LATEST_DATABASE_VERSION: i64 = 9;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -135,6 +142,7 @@ enum PharmacyMutation {
         whatsapp_phone: Option<String>,
         address: Option<String>,
         notes: Option<String>,
+        state_code: Option<String>,
     },
     UpdateSupplier {
         supplier_id: i64,
@@ -144,6 +152,7 @@ enum PharmacyMutation {
         whatsapp_phone: Option<String>,
         address: Option<String>,
         notes: Option<String>,
+        state_code: Option<String>,
     },
     DeleteSupplier {
         supplier_id: i64,
@@ -237,6 +246,14 @@ struct StoreSettingsMutation {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct PurchaseResult {
+    purchase_id: i64,
+    total_cents: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PharmacyMutationResult {
     entity_id: Option<i64>,
 }
@@ -303,40 +320,14 @@ struct FefoBatch {
     current_stock: i64,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PurchaseItemRequest {
-    medicine_id: i64,
-    batch_no: String,
-    expiry_date: String,
-    purchase_rate_cents: i64,
-    mrp_cents: i64,
-    sale_rate_cents: i64,
-    quantity: i64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PurchaseRequest {
-    supplier_id: i64,
-    invoice_no: String,
-    purchase_date: String,
-    items: Vec<PurchaseItemRequest>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PurchaseResult {
-    purchase_id: i64,
-    total_cents: i64,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DatabaseBackupResult {
     path: String,
     photo_count: usize,
     ignored_orphaned_photo_count: usize,
+    attachment_count: usize,
+    ignored_orphaned_attachment_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -346,6 +337,8 @@ struct DatabaseRestoreResult {
     source_format: String,
     restored_photo_count: usize,
     ignored_orphaned_photo_count: usize,
+    restored_attachment_count: usize,
+    ignored_orphaned_attachment_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -651,6 +644,111 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
         8 => Ok(&[
             "ALTER TABLE stock_adjustments ADD COLUMN previous_quantity INTEGER CHECK (previous_quantity IS NULL OR previous_quantity >= 0)",
             "ALTER TABLE stock_adjustments ADD COLUMN new_quantity INTEGER CHECK (new_quantity IS NULL OR new_quantity >= 0)",
+        ]),
+        9 => Ok(&[
+            "ALTER TABLE suppliers ADD COLUMN state_code TEXT",
+            "ALTER TABLE purchases ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'CANCELLED'))",
+            "ALTER TABLE purchases ADD COLUMN gst_enabled INTEGER NOT NULL DEFAULT 0 CHECK (gst_enabled IN (0, 1))",
+            "ALTER TABLE purchases ADD COLUMN gst_pricing_mode TEXT NOT NULL DEFAULT 'EXCLUSIVE' CHECK (gst_pricing_mode IN ('INCLUSIVE', 'EXCLUSIVE'))",
+            "ALTER TABLE purchases ADD COLUMN tax_type TEXT NOT NULL DEFAULT 'NONE' CHECK (tax_type IN ('NONE', 'CGST_SGST', 'IGST'))",
+            "ALTER TABLE purchases ADD COLUMN taxable_amount REAL NOT NULL DEFAULT 0 CHECK (taxable_amount >= 0)",
+            "ALTER TABLE purchases ADD COLUMN cgst_amount REAL NOT NULL DEFAULT 0 CHECK (cgst_amount >= 0)",
+            "ALTER TABLE purchases ADD COLUMN sgst_amount REAL NOT NULL DEFAULT 0 CHECK (sgst_amount >= 0)",
+            "ALTER TABLE purchases ADD COLUMN igst_amount REAL NOT NULL DEFAULT 0 CHECK (igst_amount >= 0)",
+            "ALTER TABLE purchases ADD COLUMN total_gst REAL NOT NULL DEFAULT 0 CHECK (total_gst >= 0)",
+            "ALTER TABLE purchases ADD COLUMN place_of_supply_state_code TEXT",
+            "ALTER TABLE purchase_items ADD COLUMN gst_rate_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (gst_rate_basis_points >= 0 AND gst_rate_basis_points <= 10000)",
+            "ALTER TABLE purchase_items ADD COLUMN taxable_amount REAL NOT NULL DEFAULT 0 CHECK (taxable_amount >= 0)",
+            "ALTER TABLE purchase_items ADD COLUMN cgst_amount REAL NOT NULL DEFAULT 0 CHECK (cgst_amount >= 0)",
+            "ALTER TABLE purchase_items ADD COLUMN sgst_amount REAL NOT NULL DEFAULT 0 CHECK (sgst_amount >= 0)",
+            "ALTER TABLE purchase_items ADD COLUMN igst_amount REAL NOT NULL DEFAULT 0 CHECK (igst_amount >= 0)",
+            "ALTER TABLE purchase_items ADD COLUMN total_gst REAL NOT NULL DEFAULT 0 CHECK (total_gst >= 0)",
+            r#"CREATE TABLE supplier_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+                entry_type TEXT NOT NULL CHECK (entry_type IN ('PURCHASE', 'PURCHASE_RETURN', 'PAYMENT', 'ADJUSTMENT')),
+                purchase_id INTEGER REFERENCES purchases(id) ON DELETE RESTRICT,
+                reference TEXT,
+                debit_cents INTEGER NOT NULL DEFAULT 0 CHECK (debit_cents >= 0),
+                credit_cents INTEGER NOT NULL DEFAULT 0 CHECK (credit_cents >= 0),
+                payment_method TEXT,
+                transaction_reference TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (
+                  (entry_type = 'PURCHASE' AND debit_cents > 0 AND credit_cents = 0)
+                  OR (entry_type IN ('PURCHASE_RETURN', 'PAYMENT')
+                      AND debit_cents = 0 AND credit_cents > 0)
+                  OR (entry_type = 'ADJUSTMENT' AND (
+                      (debit_cents > 0 AND credit_cents = 0)
+                      OR (debit_cents = 0 AND credit_cents > 0)
+                  ))
+                )
+            )"#,
+            "CREATE INDEX idx_supplier_ledger_supplier_date ON supplier_ledger(supplier_id, created_at, id)",
+            r#"CREATE TABLE purchase_returns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE RESTRICT,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+                return_date TEXT NOT NULL CHECK (length(return_date) = 10),
+                total_cents INTEGER NOT NULL CHECK (total_cents > 0),
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            r#"CREATE TABLE purchase_return_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                return_id INTEGER NOT NULL REFERENCES purchase_returns(id) ON DELETE RESTRICT,
+                purchase_item_id INTEGER NOT NULL REFERENCES purchase_items(id) ON DELETE RESTRICT,
+                batch_id INTEGER NOT NULL REFERENCES medicine_batches(id) ON DELETE RESTRICT,
+                quantity INTEGER NOT NULL CHECK (quantity > 0),
+                rate_cents INTEGER NOT NULL CHECK (rate_cents >= 0),
+                total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+                UNIQUE (return_id, purchase_item_id)
+            )"#,
+            "CREATE INDEX idx_purchase_returns_purchase ON purchase_returns(purchase_id, id)",
+            r#"CREATE TABLE purchase_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE RESTRICT,
+                file_ref TEXT NOT NULL UNIQUE,
+                file_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL CHECK (mime_type IN ('application/pdf', 'image/jpeg', 'image/png')),
+                size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 20000000),
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            "CREATE INDEX idx_purchase_attachments_purchase ON purchase_attachments(purchase_id, id)",
+            r#"INSERT INTO supplier_ledger
+                (supplier_id, entry_type, purchase_id, reference, debit_cents, note, created_at)
+                SELECT p.supplier_id, 'PURCHASE', p.id, p.invoice_no,
+                       CAST(ROUND(p.total_amount * 100) AS INTEGER),
+                       'Carried forward from saved purchase invoice', p.purchase_date
+                FROM purchases AS p
+                WHERE p.supplier_id IS NOT NULL AND p.total_amount > 0"#,
+            r#"WITH invoice_totals AS (
+                 SELECT supplier_id,
+                        SUM(CAST(ROUND(total_amount * 100) AS INTEGER)) AS invoice_cents
+                 FROM purchases
+                 WHERE supplier_id IS NOT NULL
+                 GROUP BY supplier_id
+               ),
+               balances AS (
+                 SELECT s.id AS supplier_id,
+                        CAST(ROUND(s.balance_due * 100) AS INTEGER)
+                          - COALESCE(i.invoice_cents, 0) AS opening_cents
+                 FROM suppliers AS s
+                 LEFT JOIN invoice_totals AS i ON i.supplier_id = s.id
+               )
+               INSERT INTO supplier_ledger
+                 (supplier_id, entry_type, reference, debit_cents, credit_cents, note)
+               SELECT supplier_id, 'ADJUSTMENT', 'Opening balance',
+                      MAX(opening_cents, 0), MAX(-opening_cents, 0),
+                      'Balance carried forward from pre-ledger supplier state'
+               FROM balances WHERE opening_cents <> 0"#,
+            r#"UPDATE suppliers
+               SET balance_due = COALESCE((
+                 SELECT SUM(debit_cents - credit_cents) / 100.0
+                 FROM supplier_ledger WHERE supplier_id = suppliers.id
+               ), 0)"#,
         ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
@@ -1435,6 +1533,8 @@ fn create_database_backup(
         path: destination.display().to_string(),
         photo_count: summary.photo_count,
         ignored_orphaned_photo_count: summary.ignored_orphaned_photo_count,
+        attachment_count: summary.attachment_count,
+        ignored_orphaned_attachment_count: summary.ignored_orphaned_attachment_count,
     })
 }
 
@@ -1583,6 +1683,7 @@ where
 struct PhotoDirectorySwap {
     active_directory: PathBuf,
     previous_directory: Option<PathBuf>,
+    storage_label: &'static str,
 }
 
 fn remove_path_if_present(path: &Path) -> Result<(), String> {
@@ -1604,18 +1705,44 @@ fn install_staged_photo_directory(
     active_directory: &Path,
     staged_directory: &Path,
 ) -> Result<PhotoDirectorySwap, String> {
+    install_staged_directory(
+        active_directory,
+        staged_directory,
+        "medicine photo",
+        "restore-previous-photos",
+    )
+}
+
+fn install_staged_purchase_attachment_directory(
+    active_directory: &Path,
+    staged_directory: &Path,
+) -> Result<PhotoDirectorySwap, String> {
+    install_staged_directory(
+        active_directory,
+        staged_directory,
+        "purchase attachment",
+        "restore-previous-purchase-attachments",
+    )
+}
+
+fn install_staged_directory(
+    active_directory: &Path,
+    staged_directory: &Path,
+    storage_label: &'static str,
+    previous_prefix: &str,
+) -> Result<PhotoDirectorySwap, String> {
     let parent = active_directory
         .parent()
-        .ok_or_else(|| "Could not locate local medicine photo storage.".to_owned())?;
+        .ok_or_else(|| format!("Could not locate local {storage_label} storage."))?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not access local medicine photo storage: {error}"))?;
-    let previous_directory = unique_internal_path(parent, "restore-previous-photos", "dir");
+        .map_err(|error| format!("Could not access local {storage_label} storage: {error}"))?;
+    let previous_directory = unique_internal_path(parent, previous_prefix, "dir");
     let active_metadata = match fs::symlink_metadata(active_directory) {
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
             return Err(format!(
-                "Could not inspect current medicine photo storage: {error}"
+                "Could not inspect current {storage_label} storage: {error}"
             ))
         }
     };
@@ -1623,12 +1750,12 @@ fn install_staged_photo_directory(
         .as_ref()
         .is_some_and(|metadata| !metadata.file_type().is_dir())
     {
-        return Err("Current medicine photo storage is not a regular folder.".to_owned());
+        return Err(format!("Current {storage_label} storage is not a regular folder."));
     }
 
     let previous_moved = if active_metadata.is_some() {
         fs::rename(active_directory, &previous_directory).map_err(|error| {
-            format!("Could not prepare current medicine photo storage for restore: {error}")
+            format!("Could not prepare current {storage_label} storage for restore: {error}")
         })?;
         true
     } else {
@@ -1638,7 +1765,7 @@ fn install_staged_photo_directory(
         let rollback = if previous_moved {
             fs::rename(&previous_directory, active_directory).map_err(|rollback_error| {
                 format!(
-                    "Could not restore current medicine photos; their previous folder remains at {}: {rollback_error}",
+                    "Could not restore current {storage_label} files; their previous folder remains at {}: {rollback_error}",
                     previous_directory.display()
                 )
             })
@@ -1647,10 +1774,10 @@ fn install_staged_photo_directory(
         };
         return match rollback {
             Ok(()) => Err(format!(
-                "Could not install the restored medicine photos: {error}. Current photos were restored."
+                "Could not install restored {storage_label} files: {error}. Current files were restored."
             )),
             Err(rollback_error) => Err(format!(
-                "Could not install the restored medicine photos: {error}. {rollback_error}"
+                "Could not install restored {storage_label} files: {error}. {rollback_error}"
             )),
         };
     }
@@ -1658,6 +1785,7 @@ fn install_staged_photo_directory(
     Ok(PhotoDirectorySwap {
         active_directory: active_directory.to_path_buf(),
         previous_directory: previous_moved.then_some(previous_directory),
+        storage_label,
     })
 }
 
@@ -1666,7 +1794,8 @@ fn rollback_photo_directory_replacement(swap: &PhotoDirectorySwap) -> Result<(),
     if let Some(previous_directory) = &swap.previous_directory {
         fs::rename(previous_directory, &swap.active_directory).map_err(|error| {
             format!(
-                "Could not restore the original medicine photos; their previous folder remains at {}: {error}",
+                "Could not restore the original {} files; their previous folder remains at {}: {error}",
+                swap.storage_label,
                 previous_directory.display()
             )
         })?;
@@ -1677,7 +1806,7 @@ fn rollback_photo_directory_replacement(swap: &PhotoDirectorySwap) -> Result<(),
 fn cleanup_previous_photo_directory(swap: &PhotoDirectorySwap) {
     if let Some(previous_directory) = &swap.previous_directory {
         if let Err(error) = remove_path_if_present(previous_directory) {
-            eprintln!("Could not remove the old medicine photo folder: {error}");
+            eprintln!("Could not remove the old {} folder: {error}", swap.storage_label);
         }
     }
 }
@@ -1685,6 +1814,11 @@ fn cleanup_previous_photo_directory(swap: &PhotoDirectorySwap) {
 fn remove_restore_staging(staged_database: &Path, staged_photo_directory: &Path) {
     let _ = fs::remove_file(staged_database);
     let _ = fs::remove_dir_all(staged_photo_directory);
+    if let Ok(staged_attachment_directory) =
+        staged_purchase_attachment_directory(staged_photo_directory)
+    {
+        let _ = fs::remove_dir_all(staged_attachment_directory);
+    }
 }
 
 fn restore_database_backup_at(
@@ -1714,6 +1848,9 @@ fn restore_database_backup_at(
         .map_err(|error| format!("Could not access local medicine photo storage: {error}"))?;
     let staged_photo_directory =
         unique_internal_path(photo_parent, "restore-photo-stage", "dir");
+    let staged_attachment_directory =
+        staged_purchase_attachment_directory(&staged_photo_directory)?;
+    let active_attachment_directory = photo_parent.join("purchase-attachments");
 
     let staging_result = (|| {
         let summary = match source_format {
@@ -1724,6 +1861,9 @@ fn restore_database_backup_at(
                     photo_count: package_summary.photo_count,
                     ignored_orphaned_photo_count: package_summary
                         .ignored_orphaned_photo_count,
+                    attachment_count: package_summary.attachment_count,
+                    ignored_orphaned_attachment_count: package_summary
+                        .ignored_orphaned_attachment_count,
                 }
             }
             BackupSourceFormat::LegacyDatabaseOnly => {
@@ -1754,9 +1894,27 @@ fn restore_database_backup_at(
                 "The staged medicine photos do not match the restored database.".to_owned(),
             );
         }
+        let attachment_directory_to_validate = match source_format {
+            BackupSourceFormat::CompleteArchive => &staged_attachment_directory,
+            BackupSourceFormat::LegacyDatabaseOnly => &active_attachment_directory,
+        };
+        let attachment_count = validate_attachment_references(
+            &staged_database,
+            attachment_directory_to_validate,
+        )?;
+        if source_format == BackupSourceFormat::CompleteArchive
+            && attachment_count != summary.attachment_count
+        {
+            return Err(
+                "The staged purchase attachments do not match the restored database.".to_owned(),
+            );
+        }
         Ok(RestoredPhotoSummary {
             photo_count,
             ignored_orphaned_photo_count: summary.ignored_orphaned_photo_count,
+            attachment_count,
+            ignored_orphaned_attachment_count: summary
+                .ignored_orphaned_attachment_count,
         })
     })();
     let restored_photos = match staging_result {
@@ -1835,6 +1993,33 @@ fn restore_database_backup_at(
     } else {
         None
     };
+    let attachment_swap = if source_format == BackupSourceFormat::CompleteArchive {
+        match install_staged_purchase_attachment_directory(
+            &active_attachment_directory,
+            &staged_attachment_directory,
+        ) {
+            Ok(swap) => Some(swap),
+            Err(error) => {
+                let photo_rollback = photo_swap
+                    .as_ref()
+                    .map(rollback_photo_directory_replacement)
+                    .unwrap_or(Ok(()));
+                remove_restore_staging(&staged_database, &staged_photo_directory);
+                return Err(match photo_rollback {
+                    Ok(()) => format!(
+                        "{error} Original medicine photos were restored. Safety backup created at {}.",
+                        safety_backup.display()
+                    ),
+                    Err(rollback_error) => format!(
+                        "{error} {rollback_error} Safety backup created at {}.",
+                        safety_backup.display()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
 
     let install_result =
         install_staged_database(active_database, &staged_database, |installed_database| {
@@ -1847,11 +2032,21 @@ fn restore_database_backup_at(
             .as_ref()
             .map(rollback_photo_directory_replacement)
             .unwrap_or(Ok(()));
+        let attachment_rollback = attachment_swap
+            .as_ref()
+            .map(rollback_photo_directory_replacement)
+            .unwrap_or(Ok(()));
         remove_restore_staging(&staged_database, &staged_photo_directory);
-        let rollback_message = match photo_rollback {
-            Ok(()) if photo_swap.is_some() => "The original medicine photos were restored.".to_owned(),
-            Ok(()) => String::new(),
-            Err(rollback_error) => rollback_error,
+        let rollback_message = match (photo_rollback, attachment_rollback) {
+            (Ok(()), Ok(())) if photo_swap.is_some() || attachment_swap.is_some() => {
+                "The original medicine photos and purchase attachments were restored.".to_owned()
+            }
+            (Ok(()), Ok(())) => String::new(),
+            (Err(photo_error), Ok(())) => photo_error,
+            (Ok(()), Err(attachment_error)) => attachment_error,
+            (Err(photo_error), Err(attachment_error)) => {
+                format!("{photo_error} {attachment_error}")
+            }
         };
         return Err(format!(
             "{error} {rollback_message} Safety backup created at {}.",
@@ -1859,6 +2054,9 @@ fn restore_database_backup_at(
         ));
     }
     if let Some(swap) = &photo_swap {
+        cleanup_previous_photo_directory(swap);
+    }
+    if let Some(swap) = &attachment_swap {
         cleanup_previous_photo_directory(swap);
     }
 
@@ -1870,6 +2068,9 @@ fn restore_database_backup_at(
         },
         restored_photo_count: restored_photos.photo_count,
         ignored_orphaned_photo_count: restored_photos.ignored_orphaned_photo_count,
+        restored_attachment_count: restored_photos.attachment_count,
+        ignored_orphaned_attachment_count: restored_photos
+            .ignored_orphaned_attachment_count,
     })
 }
 
@@ -2742,6 +2943,7 @@ fn apply_pharmacy_mutation_to_connection(
             whatsapp_phone,
             address,
             notes,
+            state_code,
         } => {
             let name = normalized_required_text(name, 120, "Supplier name")?;
             let contact_person =
@@ -2751,12 +2953,13 @@ fn apply_pharmacy_mutation_to_connection(
                 normalized_optional_text(whatsapp_phone, 40, "WhatsApp number")?;
             let address = normalized_optional_text(address, 500, "Supplier address")?;
             let notes = normalized_optional_text(notes, 1000, "Supplier notes")?;
+            let state_code = normalized_state_code(state_code)?;
             let rows_affected = transaction
                 .execute(
                     r#"INSERT INTO suppliers (
-                         name, contact_person, phone, whatsapp_phone, address, notes
-                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-                    params![name, contact_person, phone, whatsapp_phone, address, notes],
+                         name, contact_person, phone, whatsapp_phone, address, notes, state_code
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                    params![name, contact_person, phone, whatsapp_phone, address, notes, state_code],
                 )
                 .map_err(|error| format!("Could not create the supplier: {error}"))?;
             require_one_changed_row(rows_affected, "Supplier")?;
@@ -2770,6 +2973,7 @@ fn apply_pharmacy_mutation_to_connection(
             whatsapp_phone,
             address,
             notes,
+            state_code,
         } => {
             if supplier_id <= 0 {
                 return Err("Supplier id must be a positive whole number.".to_owned());
@@ -2782,12 +2986,13 @@ fn apply_pharmacy_mutation_to_connection(
                 normalized_optional_text(whatsapp_phone, 40, "WhatsApp number")?;
             let address = normalized_optional_text(address, 500, "Supplier address")?;
             let notes = normalized_optional_text(notes, 1000, "Supplier notes")?;
+            let state_code = normalized_state_code(state_code)?;
             let rows_affected = transaction
                 .execute(
                     r#"UPDATE suppliers
                        SET name = ?1, contact_person = ?2, phone = ?3,
-                           whatsapp_phone = ?4, address = ?5, notes = ?6
-                       WHERE id = ?7"#,
+                           whatsapp_phone = ?4, address = ?5, notes = ?6, state_code = ?7
+                       WHERE id = ?8"#,
                     params![
                         name,
                         contact_person,
@@ -2795,6 +3000,7 @@ fn apply_pharmacy_mutation_to_connection(
                         whatsapp_phone,
                         address,
                         notes,
+                        state_code,
                         supplier_id
                     ],
                 )
@@ -3266,11 +3472,19 @@ fn apply_business_reset(
             counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
         }
         DataResetScope::PurchaseHistory => {
+            reset_count(transaction, "DELETE FROM purchase_return_items")?;
+            reset_count(transaction, "DELETE FROM purchase_returns")?;
+            reset_count(transaction, "DELETE FROM purchase_attachments")?;
+            reset_count(transaction, "DELETE FROM supplier_ledger")?;
+            counts.supplier_balances_reset = transaction
+                .execute("UPDATE suppliers SET balance_due = 0 WHERE balance_due <> 0", [])
+                .map_err(|error| format!("Could not reset supplier balances: {error}"))?;
             counts.purchase_items_deleted =
                 reset_count(transaction, "DELETE FROM purchase_items")?;
             counts.purchases_deleted = reset_count(transaction, "DELETE FROM purchases")?;
         }
         DataResetScope::SupplierBalances => {
+            reset_count(transaction, "DELETE FROM supplier_ledger")?;
             counts.supplier_balances_reset = transaction
                 .execute("UPDATE suppliers SET balance_due = 0 WHERE balance_due <> 0", [])
                 .map_err(|error| format!("Could not reset supplier balances: {error}"))?;
@@ -3279,6 +3493,10 @@ fn apply_business_reset(
             counts.sale_items_deleted =
                 reset_count(transaction, "DELETE FROM sale_items")?;
             counts.sales_deleted = reset_count(transaction, "DELETE FROM sales")?;
+            reset_count(transaction, "DELETE FROM purchase_return_items")?;
+            reset_count(transaction, "DELETE FROM purchase_returns")?;
+            reset_count(transaction, "DELETE FROM purchase_attachments")?;
+            reset_count(transaction, "DELETE FROM supplier_ledger")?;
             counts.purchase_items_deleted =
                 reset_count(transaction, "DELETE FROM purchase_items")?;
             counts.purchases_deleted = reset_count(transaction, "DELETE FROM purchases")?;
@@ -4068,7 +4286,8 @@ fn collect_customer_payment(
     collect_customer_payment_in_connection(&mut connection, payment)
 }
 
-fn record_purchase(
+#[allow(dead_code)]
+fn record_purchase_legacy(
     connection: &mut Connection,
     purchase: PurchaseRequest,
 ) -> Result<PurchaseResult, String> {
@@ -4276,9 +4495,10 @@ fn record_purchase(
 }
 
 #[tauri::command]
-fn complete_purchase(app: AppHandle, purchase: PurchaseRequest) -> Result<PurchaseResult, String> {
+#[allow(dead_code)]
+fn complete_purchase_legacy(app: AppHandle, purchase: PurchaseRequest) -> Result<PurchaseResult, String> {
     let mut connection = open_pharmacy_connection(&app)?;
-    record_purchase(&mut connection, purchase)
+    record_purchase_legacy(&mut connection, purchase)
 }
 
 pub fn run() {
@@ -4303,6 +4523,9 @@ pub fn run() {
             get_customer_ledger,
             get_store_settings,
             get_recent_purchases,
+            get_purchase_history,
+            get_purchase_details,
+            get_supplier_ledger,
             get_recent_sales,
             get_sale_details,
             get_sales_report_summary,
@@ -4321,7 +4544,13 @@ pub fn run() {
             remove_medicine_photo,
             complete_sale,
             collect_customer_payment,
-            complete_purchase,
+            purchase_management::complete_purchase,
+            purchase_management::edit_purchase,
+            purchase_management::cancel_purchase,
+            purchase_management::return_purchase,
+            purchase_management::create_supplier_payment,
+            purchase_management::add_purchase_attachment,
+            purchase_management::get_purchase_attachment_path,
             create_database_backup,
             restore_database_backup
     ]);
@@ -4341,6 +4570,9 @@ pub fn run() {
         get_customer_ledger,
         get_store_settings,
         get_recent_purchases,
+        get_purchase_history,
+        get_purchase_details,
+        get_supplier_ledger,
         get_recent_sales,
         get_sale_details,
         get_sales_report_summary,
@@ -4358,7 +4590,13 @@ pub fn run() {
         remove_medicine_photo,
         complete_sale,
         collect_customer_payment,
-        complete_purchase,
+        purchase_management::complete_purchase,
+        purchase_management::edit_purchase,
+        purchase_management::cancel_purchase,
+        purchase_management::return_purchase,
+        purchase_management::create_supplier_payment,
+        purchase_management::add_purchase_attachment,
+        purchase_management::get_purchase_attachment_path,
         create_database_backup,
         restore_database_backup
     ]);
@@ -5258,6 +5496,7 @@ mod pharmacy_mutation_tests {
                 whatsapp_phone: Some("919876543210".to_owned()),
                 address: None,
                 notes: Some("Morning delivery preferred".to_owned()),
+                state_code: None,
             },
         )
         .expect("create supplier")
@@ -5761,50 +6000,17 @@ mod purchase_tests {
     use super::*;
 
     fn test_connection() -> Connection {
-        let connection = Connection::open_in_memory().expect("open in-memory database");
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable foreign keys");
+        migrate_connection(&mut connection).expect("migrate purchase test schema");
         connection
             .execute_batch(
-                r#"
-                PRAGMA foreign_keys = ON;
-                CREATE TABLE medicines (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL
-                );
-                CREATE TABLE suppliers (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL
-                );
-                CREATE TABLE medicine_batches (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
-                    batch_no TEXT NOT NULL,
-                    expiry_date TEXT NOT NULL,
-                    purchase_rate REAL NOT NULL,
-                    mrp REAL NOT NULL,
-                    sale_rate REAL NOT NULL,
-                    current_stock INTEGER NOT NULL,
-                    barcode TEXT
-                );
-                CREATE TABLE purchases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    invoice_no TEXT NOT NULL,
-                    supplier_id INTEGER REFERENCES suppliers(id),
-                    total_amount REAL NOT NULL,
-                    purchase_date TEXT NOT NULL
-                );
-                CREATE TABLE purchase_items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    purchase_id INTEGER NOT NULL REFERENCES purchases(id),
-                    batch_id INTEGER NOT NULL REFERENCES medicine_batches(id),
-                    quantity INTEGER NOT NULL,
-                    rate REAL NOT NULL,
-                    total REAL NOT NULL
-                );
-                INSERT INTO medicines (id, name) VALUES (1, 'Test medicine');
-                INSERT INTO suppliers (id, name) VALUES (1, 'Test supplier');
-                "#,
+                "INSERT INTO medicines (id, name) VALUES (1, 'Test medicine');
+                 INSERT INTO suppliers (id, name) VALUES (1, 'Test supplier');",
             )
-            .expect("create purchase schema");
+            .expect("insert purchase test records");
         connection
     }
 
@@ -5817,6 +6023,7 @@ mod purchase_tests {
             mrp_cents: 2_000,
             sale_rate_cents: 1_800,
             quantity,
+            gst_rate_override_basis_points: None,
         }
     }
 
@@ -5825,6 +6032,8 @@ mod purchase_tests {
             supplier_id: 1,
             invoice_no: invoice_no.to_owned(),
             purchase_date: "2026-10-01".to_owned(),
+            gst_pricing_mode: None,
+            place_of_supply_state_code: None,
             items,
         }
     }
@@ -6715,6 +6924,143 @@ mod backup_tests {
     }
 
     #[test]
+    fn supplier_ledger_backfill_preserves_existing_balance_and_links_purchase_rows() {
+        let directory = create_test_backup_directory();
+        let database = directory.join("pharmacy.db");
+        let connection = create_restore_fixture_database(&database, 8);
+        drop(connection);
+
+        let mut connection = Connection::open(&database).expect("reopen legacy supplier database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable foreign keys");
+        migrate_connection(&mut connection).expect("apply supplier ledger migration");
+        let balance_cents: i64 = connection
+            .query_row(
+                "SELECT CAST(ROUND(balance_due * 100) AS INTEGER) FROM suppliers WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read carried supplier balance");
+        let ledger_balance_cents: i64 = connection
+            .query_row(
+                "SELECT COALESCE(SUM(debit_cents - credit_cents), 0)
+                 FROM supplier_ledger WHERE supplier_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated supplier ledger");
+        let linked_purchase_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM supplier_ledger
+                 WHERE supplier_id = 1 AND purchase_id = 1 AND entry_type = 'PURCHASE'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count linked migrated purchases");
+        assert_eq!(balance_cents, 1_250);
+        assert_eq!(ledger_balance_cents, balance_cents);
+        assert_eq!(linked_purchase_rows, 1);
+        drop(connection);
+        fs::remove_dir_all(directory).expect("remove supplier migration fixture");
+    }
+
+    #[test]
+    fn complete_backup_restores_purchase_attachments_and_rejects_tampering() {
+        use sha2::Digest as _;
+
+        let directory = create_test_backup_directory();
+        let source_directory = directory.join("source");
+        fs::create_dir_all(&source_directory).expect("create purchase backup fixture");
+        let source_database = source_directory.join("pharmacy.db");
+        let source_connection = create_restore_fixture_database(&source_database, 9);
+        let attachment_bytes = b"%PDF-1.7\noriginal-invoice";
+        let attachment_ref = "purchase-1-12345.pdf";
+        source_connection
+            .execute(
+                r#"INSERT INTO purchase_attachments
+                   (purchase_id, file_ref, file_name, mime_type, size_bytes, sha256)
+                   VALUES (1, ?1, 'supplier-invoice.pdf', 'application/pdf', ?2, ?3)"#,
+                params![
+                    attachment_ref,
+                    attachment_bytes.len() as i64,
+                    format!("{:x}", sha2::Sha256::digest(attachment_bytes)),
+                ],
+            )
+            .expect("add attachment metadata");
+        drop(source_connection);
+
+        let source_photos = create_test_photo_directory(&source_directory, "medicine-photos");
+        let photo_ref = "medicine-1-12345.jpg";
+        set_test_photo_reference(&source_database, 1, photo_ref);
+        let photo_bytes = test_jpeg(0x51);
+        fs::write(source_photos.join(photo_ref), &photo_bytes)
+            .expect("write source medicine photo");
+        let source_attachments = source_directory.join("purchase-attachments");
+        fs::create_dir_all(&source_attachments).expect("create purchase attachment storage");
+        fs::write(
+            source_attachments.join(attachment_ref),
+            attachment_bytes,
+        )
+        .expect("write source invoice attachment");
+        let source_backup = directory.join("with-purchase-attachment.zip");
+        let summary = create_complete_backup_at(&source_database, &source_photos, &source_backup)
+            .expect("create purchase attachment backup");
+        assert_eq!(summary.attachment_count, 1);
+        assert_eq!(summary.ignored_orphaned_attachment_count, 0);
+
+        let corrupt_backup = directory.join("tampered-purchase-attachment.zip");
+        let mut tampered_bytes = attachment_bytes.to_vec();
+        *tampered_bytes.last_mut().expect("test PDF is not empty") ^= 1;
+        rewrite_zip_entry(
+            &source_backup,
+            &corrupt_backup,
+            &format!("purchase-attachments/{attachment_ref}"),
+            Some(&tampered_bytes),
+        );
+        let invalid_stage_database = directory.join("invalid-stage.db");
+        let invalid_stage_photos = directory.join("invalid-stage-photos");
+        assert!(stage_complete_backup(
+            &corrupt_backup,
+            &invalid_stage_database,
+            &invalid_stage_photos,
+        )
+        .is_err());
+        assert!(!invalid_stage_database.exists());
+        assert!(!invalid_stage_photos.exists());
+        assert!(!staged_purchase_attachment_directory(&invalid_stage_photos)
+            .expect("derive invalid attachment staging path")
+            .exists());
+
+        let active_directory = directory.join("active");
+        fs::create_dir_all(&active_directory).expect("create active restore directory");
+        let active_database = active_directory.join("pharmacy.db");
+        let active_connection = create_restore_fixture_database(&active_database, 9);
+        drop(active_connection);
+        let active_photos = create_test_photo_directory(&active_directory, "medicine-photos");
+        let restored = restore_database_backup_at(
+            &active_database,
+            &active_photos,
+            &source_backup,
+        )
+        .expect("restore complete backup with purchase attachment");
+        assert_eq!(restored.restored_attachment_count, 1);
+        assert_eq!(restored.restored_photo_count, 1);
+        assert_eq!(restored.ignored_orphaned_attachment_count, 0);
+        assert_eq!(
+            fs::read(active_photos.join(photo_ref)).expect("read restored medicine photo"),
+            photo_bytes,
+        );
+        assert_eq!(
+            fs::read(active_directory.join("purchase-attachments").join(attachment_ref))
+                .expect("read restored purchase attachment"),
+            attachment_bytes,
+        );
+
+        fs::remove_dir_all(directory).expect("remove purchase attachment backup fixture");
+    }
+
+    #[test]
     fn complete_backup_rejects_unsafe_photo_references() {
         let directory = create_test_backup_directory();
         let database = directory.join("pharmacy.db");
@@ -7007,11 +7353,12 @@ mod backup_tests {
         let active_connection = create_restore_fixture_database(&active_database, 8);
         drop(active_connection);
 
-        fs::copy(&active_database, &future_backup).expect("copy future-schema fixture");
+        let future_connection = create_restore_fixture_database(&future_backup, 9);
+        drop(future_connection);
         let future_connection =
             Connection::open(&future_backup).expect("open future-schema fixture");
         future_connection
-            .execute("INSERT INTO schema_migrations (version) VALUES (9)", [])
+            .execute("INSERT INTO schema_migrations (version) VALUES (10)", [])
             .expect("mark fixture as a future schema");
         drop(future_connection);
 

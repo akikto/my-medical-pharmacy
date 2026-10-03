@@ -83,6 +83,7 @@ export type PharmacyMutation =
       whatsapp_phone: string | null;
       address: string | null;
       notes: string | null;
+      state_code: string | null;
     }
   | {
       kind: "update_supplier";
@@ -93,6 +94,7 @@ export type PharmacyMutation =
       whatsapp_phone: string | null;
       address: string | null;
       notes: string | null;
+      state_code: string | null;
     }
   | { kind: "delete_supplier"; supplier_id: number }
   | {

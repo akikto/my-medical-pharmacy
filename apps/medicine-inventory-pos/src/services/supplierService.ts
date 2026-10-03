@@ -16,6 +16,7 @@ function normalizeSupplierInput(input: SupplierFormValues) {
   const whatsappPhone = input.whatsapp_phone.trim();
   const address = input.address.trim();
   const notes = input.notes.trim();
+  const stateCode = input.state_code?.trim() ?? "";
   if (!name || name.length > 120) {
     throw new SupplierError("Supplier name is required and must be 120 characters or fewer.");
   }
@@ -28,6 +29,9 @@ function normalizeSupplierInput(input: SupplierFormValues) {
   ) {
     throw new SupplierError("Supplier contact details exceed their character limits.");
   }
+  if (stateCode && !/^\d{2}$/.test(stateCode)) {
+    throw new SupplierError("State code must contain two digits.");
+  }
   return {
     name,
     contact_person: contactPerson || null,
@@ -35,6 +39,7 @@ function normalizeSupplierInput(input: SupplierFormValues) {
     whatsapp_phone: whatsappPhone || null,
     address: address || null,
     notes: notes || null,
+    state_code: stateCode || null,
   };
 }
 
