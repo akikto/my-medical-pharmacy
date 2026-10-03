@@ -24,8 +24,17 @@ Module._load = function loadWithTauriReadMock(request, parent, isMain) {
         ) {
           backupServiceState.invocations.push({ command, args });
           return command === "create_database_backup"
-            ? { path: args.destinationPath }
-            : { safetyBackupPath: "/local/backups/before-restore.db" };
+            ? {
+                path: args.destinationPath,
+                photoCount: 2,
+                ignoredOrphanedPhotoCount: 1,
+              }
+            : {
+                safetyBackupPath: "/local/backups/before-restore.zip",
+                sourceFormat: "legacyDatabaseOnly",
+                restoredPhotoCount: 2,
+                ignoredOrphanedPhotoCount: 0,
+              };
         }
         return invokeRead(command, args);
       },
@@ -121,40 +130,50 @@ afterEach(() => {
   fixture = null;
 });
 
-describe("local database backup and restore service", () => {
-  it("uses local .db dialogs and treats cancellation as no selected file", async () => {
+describe("local complete backup and restore service", () => {
+  it("uses a local .zip save, supports .zip and legacy .db restore, and handles cancellation", async () => {
     assert.equal(await selectBackupDestination(), null);
     assert.deepEqual(backupServiceState.saveOptions.filters, [
-      { name: "MY MEDICAL database backup", extensions: ["db"] },
+      { name: "MY MEDICAL complete backup", extensions: ["zip"] },
     ]);
-    assert.match(backupServiceState.saveOptions.defaultPath, /^my-medical-backup-.*\.db$/);
+    assert.match(backupServiceState.saveOptions.defaultPath, /^my-medical-backup-.*\.zip$/);
 
     assert.equal(await selectRestoreSource(), null);
     assert.equal(backupServiceState.openOptions.directory, false);
     assert.equal(backupServiceState.openOptions.multiple, false);
     assert.deepEqual(backupServiceState.openOptions.filters, [
-      { name: "MY MEDICAL database backup", extensions: ["db"] },
+      { name: "MY MEDICAL backups", extensions: ["zip", "db"] },
     ]);
+    backupServiceState.openSelection = "/local/complete-backup.zip";
+    assert.equal(await selectRestoreSource(), "/local/complete-backup.zip");
+    backupServiceState.openSelection = null;
     assert.deepEqual(backupServiceState.invocations, []);
   });
 
   it("normalizes a selected restore file and forwards native results", async () => {
-    backupServiceState.saveSelection = "/local/manual-backup.db";
+    backupServiceState.saveSelection = "/local/manual-backup.zip";
     const destination = await selectBackupDestination();
     const backupResult = await createDatabaseBackup(destination);
-    assert.deepEqual(backupResult, { path: "/local/manual-backup.db" });
+    assert.deepEqual(backupResult, {
+      path: "/local/manual-backup.zip",
+      photoCount: 2,
+      ignoredOrphanedPhotoCount: 1,
+    });
 
     backupServiceState.openSelection = ["/local/restore-source.db"];
     const selectedSource = await selectRestoreSource();
     assert.equal(selectedSource, "/local/restore-source.db");
     const restoreResult = await restoreDatabaseBackup(selectedSource);
     assert.deepEqual(restoreResult, {
-      safetyBackupPath: "/local/backups/before-restore.db",
+      safetyBackupPath: "/local/backups/before-restore.zip",
+      sourceFormat: "legacyDatabaseOnly",
+      restoredPhotoCount: 2,
+      ignoredOrphanedPhotoCount: 0,
     });
     assert.deepEqual(backupServiceState.invocations, [
       {
         command: "create_database_backup",
-        args: { destinationPath: "/local/manual-backup.db" },
+        args: { destinationPath: "/local/manual-backup.zip" },
       },
       {
         command: "restore_database_backup",
@@ -165,7 +184,7 @@ describe("local database backup and restore service", () => {
 
   it("rejects empty paths instead of invoking native database commands", async () => {
     await assert.rejects(createDatabaseBackup("  "), /Choose a destination/);
-    await assert.rejects(restoreDatabaseBackup("  "), /Choose a database backup/);
+    await assert.rejects(restoreDatabaseBackup("  "), /Choose a backup file/);
     assert.deepEqual(backupServiceState.invocations, []);
   });
 });

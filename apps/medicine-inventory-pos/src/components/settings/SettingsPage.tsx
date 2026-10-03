@@ -117,9 +117,15 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
         return;
       }
       const result = await createDatabaseBackup(destination);
-      setNotice({ kind: "success", message: `Database backup created: ${result.path}` });
+      const photoLabel = result.photoCount === 1 ? "photo" : "photos";
+      const orphanLabel =
+        result.ignoredOrphanedPhotoCount === 1 ? "file was" : "files were";
+      setNotice({
+        kind: "success",
+        message: `Complete backup created: ${result.path}. ${result.photoCount} referenced medicine ${photoLabel} included; ${result.ignoredOrphanedPhotoCount} unreferenced ${orphanLabel} omitted.`,
+      });
     } catch (error) {
-      setNotice({ kind: "error", message: getError(error, "Database backup could not be created.") });
+      setNotice({ kind: "error", message: getError(error, "Complete backup could not be created.") });
     } finally {
       setBackupAction(null);
     }
@@ -173,9 +179,20 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
       const result = await restoreDatabaseBackup(source);
       setRestorePath(null);
       onDatabaseRestored();
+      const photoLabel =
+        result.restoredPhotoCount === 1 ? "photo" : "photos";
+      const restoreContents =
+        result.sourceFormat === "complete"
+          ? `${result.restoredPhotoCount} referenced medicine ${photoLabel} restored`
+          : `${result.restoredPhotoCount} referenced medicine ${photoLabel} matched from this device`;
+      const omittedPhotos =
+        result.sourceFormat === "complete" &&
+        result.ignoredOrphanedPhotoCount > 0
+          ? ` ${result.ignoredOrphanedPhotoCount} unreferenced files were omitted when this backup was created.`
+          : "";
       setNotice({
         kind: "success",
-        message: `Database restored. Safety copy saved at ${result.safetyBackupPath}. The app is refreshing its data.`,
+        message: `Backup restored. ${restoreContents}.${omittedPhotos} Safety copy saved at ${result.safetyBackupPath}. The app is refreshing its data.`,
       });
     } catch (error) {
       setNotice({
@@ -384,23 +401,23 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
           <section className="workspace-card backup-card" aria-labelledby="database-backup-title">
             <div className="settings-card-heading">
               <span className="settings-heading-mark settings-heading-mark--backup"><DatabaseBackup size={17} /></span>
-              <div><h2 id="database-backup-title">Database backup</h2><p>Manual backups are saved as a local file.</p></div>
+              <div><h2 id="database-backup-title">Complete backup</h2><p>One local ZIP file contains the database and referenced medicine photos. Legacy .db restore is supported.</p></div>
             </div>
             <div className="backup-assurance">
               <ShieldCheck size={16} />
-              <span><strong>Private and local</strong><small>Your sales, stock, and settings stay on this device unless you choose a destination.</small></span>
+              <span><strong>Private and local</strong><small>Your sales, stock, settings, and medicine photos stay on this device unless you choose a destination.</small></span>
             </div>
             <div className="backup-actions">
               <button className="button button-primary settings-backup-button" data-testid="button-create-backup" disabled={backupAction !== null || restorePath !== null} onClick={() => void handleBackup()} type="button">
                 {backupAction === "backup" ? <LoaderCircle className="settings-button-spin" size={15} /> : <ArrowDownToLine size={15} />}
-                {backupAction === "backup" ? "Creating backup…" : "Create backup"}
+                {backupAction === "backup" ? "Creating backup…" : "Create complete backup"}
               </button>
               <button className="button button-secondary settings-restore-button" data-testid="button-select-restore" disabled={backupAction !== null || restorePath !== null} onClick={() => void beginRestore()} type="button">
                 {backupAction === "restore" ? <LoaderCircle className="settings-button-spin" size={15} /> : <RotateCcw size={15} />}
                 Restore from backup
               </button>
             </div>
-            <p className="backup-caution">Restore replaces this device’s active database. A safety copy is saved first.</p>
+            <p className="backup-caution">A complete restore replaces the active database and medicine photos. Legacy .db files are accepted only when their referenced photos are already available locally. A safety copy is saved first.</p>
           </section>
 
           <DataResetPanel />
@@ -442,18 +459,18 @@ export function SettingsPage({ onDatabaseRestored }: SettingsPageProps) {
         <div className="inventory-dialog-backdrop settings-dialog-backdrop" data-testid="dialog-confirm-restore">
           <section aria-describedby="restore-confirm-description" aria-labelledby="restore-confirm-title" aria-modal="true" className="workspace-dialog workspace-dialog--narrow settings-restore-dialog" role="alertdialog">
             <span className="settings-restore-icon"><RotateCcw size={20} /></span>
-            <span className="eyebrow">DATABASE RESTORE</span>
-            <h2 id="restore-confirm-title">Replace this device’s database?</h2>
-            <p id="restore-confirm-description">This replaces current sales, inventory, and pharmacy settings. A safety copy is saved internally before restore.</p>
+            <span className="eyebrow">LOCAL BACKUP RESTORE</span>
+            <h2 id="restore-confirm-title">Replace this device’s pharmacy data?</h2>
+            <p id="restore-confirm-description">A complete .zip replaces the database and referenced medicine photos. A legacy .db backup is accepted only when all referenced photos are already available here. A safety copy is saved internally before restore.</p>
             <div className="restore-file-label"><FolderOpen size={14} /><span title={restorePath}>{restorePath}</span></div>
             <div className="dialog-actions settings-restore-actions">
               <button className="button button-secondary" data-testid="button-cancel-restore" disabled={backupAction === "restore"} onClick={() => {
                 setRestorePath(null);
-                setNotice({ kind: "info", message: "Restore cancelled. The current database was not changed." });
+                setNotice({ kind: "info", message: "Restore cancelled. The current pharmacy data and photos were not changed." });
               }} type="button">Cancel</button>
               <button className="button button-primary" data-testid="button-confirm-restore" disabled={backupAction === "restore"} onClick={() => void confirmRestore()} type="button">
                 {backupAction === "restore" ? <LoaderCircle className="settings-button-spin" size={15} /> : <RotateCcw size={15} />}
-                {backupAction === "restore" ? "Restoring…" : "Replace database"}
+                {backupAction === "restore" ? "Restoring…" : "Restore backup"}
               </button>
             </div>
           </section>
