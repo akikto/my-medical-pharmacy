@@ -2855,6 +2855,97 @@ mod migration_tests {
     }
 
     #[test]
+    fn version_five_migration_preserves_existing_version_four_business_data() {
+        let mut connection = Connection::open_in_memory().expect("open existing database fixture");
+        connection
+            .execute_batch(
+                r#"PRAGMA foreign_keys = ON;
+                   CREATE TABLE schema_migrations (
+                       version INTEGER PRIMARY KEY,
+                       applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                   );"#,
+            )
+            .expect("create version-four migration history");
+        for version in 1..=4 {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin historical migration");
+            for statement in migration_statements(version).expect("read historical migration") {
+                transaction
+                    .execute_batch(statement)
+                    .expect("apply historical migration");
+            }
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?1)",
+                    [version],
+                )
+                .expect("record historical migration");
+            transaction.commit().expect("commit historical migration");
+        }
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (id, name)
+                VALUES (1, 'Existing medicine');
+                INSERT INTO medicine_batches (
+                    id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                ) VALUES (1, 1, 'OLD-1', '2099-12-31', 4, 8, 7, 23);
+                INSERT INTO suppliers (id, name, phone, address, balance_due)
+                VALUES (1, 'Existing supplier', '12345', 'Old Road', 75.25);
+                INSERT INTO purchases (id, invoice_no, supplier_id, total_amount, purchase_date)
+                VALUES (1, 'OLD-P-1', 1, 8, '2026-03-02');
+                INSERT INTO purchase_items (id, purchase_id, batch_id, quantity, rate, total)
+                VALUES (1, 1, 1, 2, 4, 8);
+                INSERT INTO sales (id, invoice_no, subtotal, grand_total, created_at)
+                VALUES (1, 'OLD-S-1', 7, 7, '2026-03-02 12:00:00');
+                INSERT INTO sale_items (id, sale_id, batch_id, quantity, unit_price, total_price)
+                VALUES (1, 1, 1, 1, 7, 7);
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES ('pharmacy_name', 'Existing Pharmacy');
+                "#,
+            )
+            .expect("seed version-four business records");
+
+        migrate_connection(&mut connection).expect("upgrade existing database to version five");
+        migrate_connection(&mut connection).expect("version-five startup migration is idempotent");
+
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+            .expect("read upgraded schema version");
+        let supplier: (String, Option<String>, f64) = connection
+            .query_row(
+                "SELECT name, contact_person, balance_due FROM suppliers WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read existing supplier after migration");
+        let preserved: (i64, i64, i64, String) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT current_stock FROM medicine_batches WHERE id = 1),
+                     (SELECT COUNT(*) FROM purchases),
+                     (SELECT COUNT(*) FROM sales),
+                     (SELECT setting_value FROM app_settings WHERE setting_key = 'pharmacy_name')"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read preserved business data");
+        let order_list_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM order_list_items", [], |row| row.get(0))
+            .expect("read new order-list table");
+        let integrity: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("check upgraded database integrity");
+
+        assert_eq!(version, LATEST_DATABASE_VERSION);
+        assert_eq!(supplier, ("Existing supplier".to_owned(), None, 75.25));
+        assert_eq!(preserved, (23, 1, 1, "Existing Pharmacy".to_owned()));
+        assert_eq!(order_list_count, 0);
+        assert_eq!(integrity, "ok");
+    }
+
+    #[test]
     fn rejects_non_contiguous_migration_history() {
         let mut connection = Connection::open_in_memory().expect("open migration test database");
         connection
@@ -3719,6 +3810,46 @@ mod business_history_tests {
         assert_eq!(count(&connection, "purchases"), 1);
         assert_eq!(count(&connection, "order_list_items"), 1);
         assert_eq!(stock(&connection), 9);
+        drop(connection);
+        fs::remove_dir_all(directory).expect("remove isolated database");
+    }
+
+    #[test]
+    fn reset_rolls_back_prior_deletions_when_a_later_step_fails() {
+        let directory = unique_internal_path(&std::env::temp_dir(), "pharmacy-reset-rollback", "dir");
+        let (_database_path, mut connection) = create_business_database(&directory);
+        connection
+            .execute_batch(
+                r#"CREATE TRIGGER reject_supplier_balance_reset
+                   BEFORE UPDATE OF balance_due ON suppliers
+                   BEGIN
+                     SELECT RAISE(ABORT, 'simulated reset failure');
+                   END;"#,
+            )
+            .expect("add isolated failure trigger");
+
+        let result = reset_business_data_with_backup(
+            &mut connection,
+            DataResetScope::AllBusinessHistory,
+            || Ok("validated test backup".to_owned()),
+        );
+
+        assert!(result.unwrap_err().contains("simulated reset failure"));
+        assert_eq!(count(&connection, "sales"), 1);
+        assert_eq!(count(&connection, "sale_items"), 1);
+        assert_eq!(count(&connection, "purchases"), 1);
+        assert_eq!(count(&connection, "purchase_items"), 1);
+        assert_eq!(count(&connection, "stock_adjustments"), 1);
+        assert_eq!(count(&connection, "order_list_items"), 1);
+        assert_eq!(stock(&connection), 9);
+        let supplier_balance: f64 = connection
+            .query_row(
+                "SELECT balance_due FROM suppliers WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read unchanged supplier balance");
+        assert_eq!(supplier_balance, 40.0);
         drop(connection);
         fs::remove_dir_all(directory).expect("remove isolated database");
     }

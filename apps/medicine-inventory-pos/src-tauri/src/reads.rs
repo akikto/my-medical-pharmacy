@@ -1596,6 +1596,190 @@ mod tests {
         assert_eq!(supplier[0].notes.as_deref(), Some("Call before delivery"));
     }
 
+    #[test]
+    fn purchase_sale_weekly_order_and_reset_flow_works_after_database_reopen() {
+        let directory = crate::unique_internal_path(
+            &std::env::temp_dir(),
+            "pharmacy-qa-flow",
+            "dir",
+        );
+        std::fs::create_dir_all(&directory).expect("create isolated database directory");
+        let database_path = directory.join("pharmacy.db");
+        let (today, week_start, week_end) = {
+            let mut connection =
+                Connection::open(&database_path).expect("open isolated pharmacy database");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+                .expect("configure isolated database");
+            migrate_connection(&mut connection).expect("migrate isolated database");
+            insert_medicine(&connection, 1, "QA Medicine", 1);
+            connection
+                .execute(
+                    "INSERT INTO suppliers (id, name, balance_due) VALUES (1, 'QA Supplier', 20)",
+                    [],
+                )
+                .expect("insert isolated supplier");
+            connection
+                .execute(
+                    "INSERT INTO app_settings (setting_key, setting_value) VALUES ('pharmacy_name', 'QA Pharmacy')",
+                    [],
+                )
+                .expect("insert isolated pharmacy setting");
+
+            let today: String = connection
+                .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
+                .expect("read local test date");
+            let week_start: String = connection
+                .query_row(
+                    "SELECT date('now', 'localtime', 'weekday 0', '-6 days')",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read local Monday");
+            let week_end: String = connection
+                .query_row("SELECT date(?1, '+6 days')", [&week_start], |row| row.get(0))
+                .expect("read local Sunday");
+
+            let purchase = crate::record_purchase(
+                &mut connection,
+                crate::PurchaseRequest {
+                    supplier_id: 1,
+                    invoice_no: "QA-P-1".to_owned(),
+                    purchase_date: today.clone(),
+                    items: vec![crate::PurchaseItemRequest {
+                        medicine_id: 1,
+                        batch_no: "QA-B-1".to_owned(),
+                        expiry_date: "2099-12-31".to_owned(),
+                        purchase_rate_cents: 400,
+                        mrp_cents: 800,
+                        sale_rate_cents: 700,
+                        quantity: 10,
+                    }],
+                },
+            )
+            .expect("record isolated purchase");
+            assert_eq!(purchase.total_cents, 4000);
+            let batch_id: i64 = connection
+                .query_row(
+                    "SELECT id FROM medicine_batches WHERE medicine_id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read purchased batch");
+            let stock_after_purchase: i64 = connection
+                .query_row(
+                    "SELECT current_stock FROM medicine_batches WHERE id = ?1",
+                    [batch_id],
+                    |row| row.get(0),
+                )
+                .expect("read stock after purchase");
+            assert_eq!(stock_after_purchase, 10);
+
+            crate::complete_sale_in_connection(
+                &mut connection,
+                crate::SaleCheckoutRequest {
+                    customer_name: None,
+                    customer_phone: None,
+                    payment_mode: "CASH".to_owned(),
+                    flat_discount_cents: 0,
+                    cash_tendered_cents: 700,
+                    items: vec![crate::SaleCheckoutItem {
+                        medicine_id: 1,
+                        batch_id,
+                        quantity: 1,
+                        unit_price_cents: 700,
+                        item_discount_cents: 0,
+                    }],
+                },
+            )
+            .expect("record isolated sale");
+            let stock_after_sale: i64 = connection
+                .query_row(
+                    "SELECT current_stock FROM medicine_batches WHERE id = ?1",
+                    [batch_id],
+                    |row| row.get(0),
+                )
+                .expect("read stock after sale");
+            assert_eq!(stock_after_sale, 9);
+
+            let weekly = query_weekly_sales(&connection, &week_start, &week_end)
+                .expect("read real weekly sales");
+            assert_eq!(
+                weekly.iter().map(|day| day.invoice_count).sum::<i64>(),
+                1
+            );
+            assert_eq!(
+                weekly.iter().map(|day| day.total_sales).sum::<f64>(),
+                7.0
+            );
+
+            crate::apply_order_list_mutation_to_connection(
+                &mut connection,
+                crate::OrderListMutation::SaveItem {
+                    id: None,
+                    medicine_id: 1,
+                    supplier_id: Some(1),
+                    quantity: 6,
+                    note: Some("QA restock note".to_owned()),
+                    order_date: today.clone(),
+                },
+            )
+            .expect("save isolated order-list item");
+            (today, week_start, week_end)
+        };
+
+        let mut connection =
+            Connection::open(&database_path).expect("reopen isolated pharmacy database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable foreign keys after reopen");
+        migrate_connection(&mut connection).expect("run idempotent startup migration");
+        let order_items = query_order_list(&connection, &today)
+            .expect("read persisted order list after database reopen");
+        assert_eq!(order_items.len(), 1);
+        assert_eq!(order_items[0].supplier_name.as_deref(), Some("QA Supplier"));
+        assert_eq!(order_items[0].quantity, 6);
+        assert_eq!(order_items[0].note.as_deref(), Some("QA restock note"));
+
+        let reset = crate::reset_business_data_with_backup(
+            &mut connection,
+            crate::DataResetScope::AllBusinessHistory,
+            || Ok("isolated validated backup".to_owned()),
+        )
+        .expect("reset isolated business history");
+        assert_eq!(reset.sales_deleted, 1);
+        assert_eq!(reset.purchases_deleted, 1);
+        assert_eq!(reset.order_list_items_deleted, 1);
+        let after_reset: (i64, i64, i64, i64, f64, String) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM sales),
+                     (SELECT COUNT(*) FROM purchases),
+                     (SELECT COUNT(*) FROM order_list_items),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 1),
+                     (SELECT balance_due FROM suppliers WHERE id = 1),
+                     (SELECT setting_value FROM app_settings WHERE setting_key = 'pharmacy_name')"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("read isolated database after reset");
+        assert_eq!(after_reset, (0, 0, 0, 9, 0.0, "QA Pharmacy".to_owned()));
+        assert!(query_weekly_sales(&connection, &week_start, &week_end)
+            .expect("read empty weekly sales after reset")
+            .is_empty());
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove isolated database directory");
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn development_empty_database_check_counts_each_protected_table() {
