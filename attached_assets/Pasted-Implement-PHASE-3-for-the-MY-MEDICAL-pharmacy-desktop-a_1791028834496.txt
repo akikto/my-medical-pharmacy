@@ -1,0 +1,487 @@
+Implement PHASE 3 for the MY MEDICAL pharmacy desktop app.
+
+IMPORTANT PROJECT RULES
+- This is the existing native Tauri + SQLite offline pharmacy application.
+- Preserve all existing functionality.
+- DO NOT modify or redesign the Home dashboard.
+- Do not break or redesign completed Phase 1 or Phase 2 functionality.
+- Keep the existing green workspace visual system and shared UI patterns.
+- Use INR (₹) where currency is displayed.
+- All data operations must remain offline/local SQLite.
+- All financial/stock-changing operations must be transactional and auditable.
+- Do not introduce arbitrary SQL execution from the renderer.
+- Reuse the existing typed Tauri/native data-access architecture.
+- Do not create a second backup system. Reuse the existing photo-inclusive ZIP backup/restore system.
+- Do NOT commit, push, publish, or create a release.
+- Do NOT run broad cargo fmt changes. Only format files directly touched if necessary.
+
+PHASE 3 GOAL
+Build a complete Purchase + Supplier financial workflow:
+
+3A. Purchase Invoice Management
+3B. Purchase Return
+3C. Supplier Payment
+3D. Supplier Ledger
+3E. Purchase GST
+3F. Purchase Invoice Attachments
+3G. Full regression + visual QA
+
+Work in small, safe steps. After each sub-phase, run focused tests before moving to the next one.
+
+--------------------------------------------------
+3A — PURCHASE INVOICE MANAGEMENT
+--------------------------------------------------
+
+First inspect the existing purchase schema, services, UI and existing purchase-entry workflow.
+
+Do NOT replace working purchase functionality unnecessarily.
+
+Implement:
+
+1. Purchase history/list:
+   - Invoice number
+   - Supplier
+   - Purchase date
+   - Total amount
+   - GST/tax amount where applicable
+   - Payment status
+   - Outstanding supplier balance where applicable
+
+2. Open/view saved purchase invoice.
+
+3. Edit saved purchase invoice:
+   - Allow editing appropriate purchase header and line-item information.
+   - Correctly reverse the original stock effect before applying the edited purchase.
+   - Recalculate stock from the new purchase lines.
+   - Preserve historical integrity.
+   - Do not silently modify unrelated sales or other purchases.
+   - All changes transactional.
+
+4. Delete/cancel purchase:
+   - Do NOT physically destroy historical financial information if the existing architecture supports cancellation/void.
+   - Prefer an auditable cancelled/void state.
+   - Reverse stock safely when cancelling.
+   - Prevent double reversal.
+   - Clearly show cancelled state.
+   - Existing sale history must remain unchanged.
+
+5. Validation:
+   - Invalid medicine/batch IDs rejected.
+   - Quantity must be > 0.
+   - Purchase price cannot be invalid/negative.
+   - Required supplier/invoice information validated.
+   - Duplicate invoice handling must be explicit and safe.
+   - Cannot edit/cancel an already-cancelled purchase incorrectly.
+
+6. Existing purchase history must remain compatible.
+
+Tests:
+- create purchase
+- edit purchase
+- stock before/after edit
+- cancel purchase
+- stock after cancellation
+- invalid quantity
+- invalid price
+- duplicate invoice
+- repeated cancellation protection
+- transaction rollback on failure
+
+--------------------------------------------------
+3B — PURCHASE RETURN
+--------------------------------------------------
+
+Implement supplier purchase returns.
+
+Requirements:
+
+1. Return from an existing purchase invoice.
+
+2. Return must be batch-aware.
+
+3. Show:
+   - Original purchase quantity
+   - Already returned quantity
+   - Available quantity to return
+   - Purchase price
+   - Return quantity
+   - Return value
+
+4. Never allow return quantity greater than available purchased quantity.
+
+5. On successful return:
+   - Reduce current stock safely.
+   - Record return transaction.
+   - Reduce the amount owed to the supplier appropriately.
+   - Preserve the original purchase invoice.
+   - Create an auditable purchase-return record.
+
+6. Do not allow returning stock that has already been returned.
+
+7. Handle edge cases:
+   - Partial return
+   - Full return
+   - Multiple partial returns
+   - Already cancelled purchase
+   - Missing batch
+   - Insufficient current stock
+
+IMPORTANT:
+If returned stock has already been sold, do NOT blindly make stock negative.
+Use the existing stock/business rules and reject the return when the current stock cannot safely support it, with a clear message.
+
+Tests:
+- partial return
+- full return
+- multiple partial returns
+- over-return rejection
+- already-returned quantity protection
+- insufficient stock rejection
+- supplier balance adjustment
+- rollback on failure
+
+--------------------------------------------------
+3C — SUPPLIER PAYMENT
+--------------------------------------------------
+
+Implement supplier payment entry.
+
+Supplier payment fields:
+
+- Supplier
+- Payment date
+- Amount
+- Payment method
+- Reference/transaction ID
+- Notes
+
+Payment methods can include the existing appropriate modes such as:
+- Cash
+- Bank
+- UPI
+- Other
+
+Requirements:
+
+1. Supplier payment reduces outstanding supplier balance.
+
+2. Partial payment supported.
+
+3. Full payment supported.
+
+4. Payment cannot create an invalid negative supplier balance.
+
+5. If payment exceeds outstanding balance:
+   - reject by default
+   - do not silently create negative balance
+
+6. Payment must have an auditable transaction record.
+
+7. Payment can be viewed later.
+
+8. If UPI/reference is used, store the reference exactly as entered.
+
+9. Do not claim that a UPI payment is externally verified unless the existing application has actual verification.
+
+Tests:
+- partial payment
+- full payment
+- overpayment rejection
+- invalid amount
+- payment history
+- supplier balance before/after
+- rollback on failure
+
+--------------------------------------------------
+3D — SUPPLIER LEDGER
+--------------------------------------------------
+
+Create a supplier ledger based on actual saved transactions.
+
+Ledger must support:
+
+- Purchase = supplier debit / amount owed
+- Supplier payment = credit / amount paid
+- Purchase return = adjustment reducing amount owed
+- Running balance
+- Date
+- Reference/invoice
+- Notes
+
+Show:
+
+Opening/starting balance where supported by the existing model
++
+Transaction rows
++
+Running balance
++
+Current outstanding balance
+
+Add useful filters:
+
+- Supplier
+- Date range
+- Transaction type
+- Search/reference
+
+Transaction types should be clearly distinguishable:
+
+- Purchase
+- Purchase Return
+- Payment
+- Adjustment if the existing architecture requires it
+
+Do NOT invent fake ledger entries.
+
+Ledger must be generated from actual persisted transactions.
+
+Tests:
+- purchase creates supplier debit
+- payment creates supplier credit
+- return adjusts supplier balance
+- multiple transactions calculate correct running balance
+- filters do not change underlying data
+- cancelled purchase is handled correctly
+
+--------------------------------------------------
+3E — PURCHASE GST
+--------------------------------------------------
+
+Integrate purchase GST with the existing configurable GST architecture.
+
+IMPORTANT:
+Do not create a separate conflicting GST system.
+
+Reuse existing GST concepts where appropriate.
+
+Support:
+
+- GST rate
+- GST-inclusive purchase pricing
+- GST-exclusive purchase pricing
+- CGST + SGST for same-state purchases
+- IGST for interstate purchases
+- supplier/place-of-supply information where needed
+
+GST precedence/configuration must be explicit and configurable.
+
+Store tax snapshots on the purchase invoice so later GST setting changes do NOT alter historical purchases.
+
+Store as appropriate:
+
+- GST rate
+- pricing mode
+- taxable amount
+- CGST
+- SGST
+- IGST
+- total GST
+- place of supply
+
+Existing purchase invoices must remain valid after migration.
+
+Tests:
+- inclusive GST
+- exclusive GST
+- CGST/SGST
+- IGST
+- zero GST
+- historical invoice snapshot
+- GST setting changed after purchase does not alter old invoice
+
+--------------------------------------------------
+3F — PURCHASE INVOICE ATTACHMENTS
+--------------------------------------------------
+
+Add optional purchase invoice attachment support.
+
+Supported practical types may include:
+- PDF
+- JPG/JPEG
+- PNG
+
+Requirements:
+
+1. Attach file to a purchase invoice.
+
+2. View/open attachment using the existing safe local file/opening mechanism.
+
+3. Store metadata/reference safely.
+
+4. Do NOT store large binary files directly inside SQLite unless the existing architecture specifically requires it.
+
+5. Integrate attachments into the EXISTING photo-inclusive ZIP backup/restore system.
+
+6. Backup must include referenced purchase attachments.
+
+7. Restore must validate:
+   - file presence
+   - file size
+   - SHA-256 checksum
+   - database reference
+
+8. Restore must remain atomic/safe:
+   - if an attachment is missing/corrupt, do not partially install the restore.
+   - rollback database and attachment files as needed.
+
+9. Legacy `.db` backup compatibility must remain intact.
+
+10. Existing medicine photo backup behavior must NOT regress.
+
+Tests:
+- purchase with no attachment
+- PDF attachment
+- image attachment
+- multiple purchase attachments
+- odd filename
+- missing attachment
+- corrupted attachment
+- backup/restore round trip
+- mixed medicine photos + purchase attachments
+- legacy DB backup compatibility
+- orphan attachment handling
+
+IMPORTANT:
+Reuse the existing backup manifest/checksum architecture rather than creating another backup format.
+
+--------------------------------------------------
+3G — UI / UX
+--------------------------------------------------
+
+Use the existing application design language.
+
+Purchase page should provide an obvious workflow for:
+
+- New Purchase
+- Purchase History
+- View
+- Edit
+- Cancel/Void
+- Purchase Return
+
+Supplier area should provide:
+
+- Supplier balance
+- Payment entry
+- Ledger
+- Purchase history
+
+Keep the interface simple and pharmacy-counter friendly.
+
+Do not overcrowd the page.
+
+Preserve:
+- shared sidebar
+- breadcrumbs
+- green workspace shell
+- white cards
+- existing typography
+- existing buttons
+- existing keyboard behavior where applicable
+
+Responsive QA at:
+- 1366×768
+- 1440×900
+- 1920×1080
+
+No horizontal page overflow.
+
+Do not redesign Home.
+
+--------------------------------------------------
+DATA / MIGRATION SAFETY
+--------------------------------------------------
+
+Before modifying schema:
+
+1. Inspect current migrations/schema.
+2. Reuse existing purchase/supplier tables where possible.
+3. Add only necessary migration(s).
+4. Migration must be safe for an existing database.
+5. Existing medicines, batches, purchases, sales, customers, suppliers, GST records and backups must remain valid.
+6. Do not reset or reseed production data.
+7. Demo seed remains development-only.
+
+--------------------------------------------------
+TEST REQUIREMENTS
+--------------------------------------------------
+
+Add focused tests for every new transactional rule.
+
+Frontend tests must cover:
+- purchase UI states
+- edit
+- cancel
+- return
+- supplier payment
+- ledger
+- GST display
+- attachment states
+- validation
+- loading/error/empty states
+
+Rust tests must cover:
+- purchase edit
+- purchase cancellation
+- purchase return
+- stock safety
+- supplier balances
+- supplier payments
+- supplier ledger
+- GST snapshots
+- attachment metadata
+- backup/restore attachment handling
+- rollback/failure paths
+
+Also run:
+
+- frontend tests
+- Rust tests
+- TypeScript typecheck
+- Vite production build
+- Linux Tauri `.deb` build
+- git diff --check
+
+Do NOT run broad cargo fmt.
+
+--------------------------------------------------
+FINAL REGRESSION CHECK
+--------------------------------------------------
+
+After all Phase 3 work:
+
+1. Confirm Home is untouched.
+2. Confirm Phase 1 GST/customer/due/UPI functionality still works.
+3. Confirm Phase 2 inventory/barcode/autofill/bulk stock functionality still works.
+4. Confirm medicine photo backup/restore still works.
+5. Confirm purchase attachment backup/restore works.
+6. Confirm 30-backup automatic retention still works.
+7. Confirm legacy `.db` backups still work where supported.
+8. Confirm no arbitrary renderer SQL was reintroduced.
+9. Confirm no production/demo data was reset or seeded.
+10. Run all tests and builds again.
+11. Run git diff --check.
+12. Report exact changed files.
+
+FINAL REPORT MUST INCLUDE:
+- 3A result
+- 3B result
+- 3C result
+- 3D result
+- 3E result
+- 3F result
+- 3G result
+- frontend test count/result
+- Rust test count/result
+- TypeScript result
+- Vite result
+- .deb result and exact path
+- backup/restore regression result
+- visual QA result and any environment limitation
+- migration number/details
+- modified file list
+- git diff --check result
+- confirm NO commit/push/publish
+
+Do not commit or push anything.
