@@ -47,6 +47,11 @@ const {
   getSalesReport,
   getSalesReportSummary,
 } = require("../src/services/reportsService.ts");
+const {
+  buildWeek,
+  formatCompactMoney,
+  getWeekRange,
+} = require("../src/components/dashboard/weeklySalesModel.ts");
 let fixture;
 
 beforeEach(() => {
@@ -75,6 +80,19 @@ function mondayStartForReport(today) {
 }
 
 describe("renderer read contracts against an isolated SQLite fixture", () => {
+  it("keeps zero-sales days in the weekly chart and formats them as ₹0", () => {
+    const range = getWeekRange("2026-03-04");
+    const points = buildWeek(range, [
+      { sale_date: "2026-03-02", total_sales: 10, invoice_count: 1 },
+    ]);
+
+    assert.equal(points.length, 7);
+    assert.equal(points[0].total, 10);
+    assert.equal(points[1].total, 0);
+    assert.equal(points[1].invoiceCount, 0);
+    assert.equal(formatCompactMoney(points[1].total), "₹0");
+  });
+
   it("keeps medicine list aggregates, matching, ordering, and literal search escaping", async () => {
     fixture.insertMedicine({
       id: 1,
