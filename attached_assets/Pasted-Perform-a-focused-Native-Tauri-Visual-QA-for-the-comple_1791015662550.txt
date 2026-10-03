@@ -1,0 +1,76 @@
+Perform a focused Native Tauri Visual QA for the completed Inventory/Medicine/Batches/Suppliers/Purchases work.
+
+IMPORTANT:
+- Do NOT commit.
+- Do NOT push.
+- Do NOT publish.
+- Do NOT change Home.
+- Do NOT redesign anything.
+- Do NOT change database/business logic unless required to fix a verified native-rendering issue.
+- Do NOT modify existing pharmacy data.
+- Use an isolated temporary database/data directory.
+
+The previous browser-based visual QA passed, but the native Tauri WebView could not be visually verified because it failed with:
+EGL_BAD_PARAMETER
+
+Investigate this specifically.
+
+1. Launch the actual Tauri desktop application in an isolated QA environment.
+2. Determine whether the EGL_BAD_PARAMETER error is:
+   - an environment-only rendering limitation,
+   - a WebView/runtime issue,
+   - or an actual application rendering problem.
+3. If the app can launch normally, visually inspect:
+   - Inventory
+   - Medicine Add/Edit
+   - Medicine details
+   - Batch/pricing dialog
+   - Stock adjustment dialog
+   - Suppliers
+   - Purchases
+   - Stock export
+   - Barcode label print preview/dialog
+4. Test:
+   - 1366x768
+   - 1440x900
+   - 1920x1080
+5. Verify:
+   - no horizontal page overflow
+   - no clipped buttons/labels
+   - dialogs fit on screen
+   - keyboard focus trapping
+   - Escape behavior
+   - Tab / Shift+Tab
+   - long medicine names
+   - long supplier names
+   - long barcode-label names
+   - print/export dialogs
+6. Do not complete a real sale or modify real pharmacy data.
+
+If native Tauri cannot render in this environment:
+- Do NOT make speculative code changes.
+- Clearly report that native Tauri visual QA is environment-blocked.
+- Explain the exact error and whether browser/Chromium visual QA provides sufficient supporting evidence.
+- Do not claim native Tauri PASS if it was not actually rendered.
+
+Run after any necessary code change:
+- pnpm test
+- pnpm run typecheck
+- pnpm run build
+- cargo test --manifest-path src-tauri/Cargo.toml
+- pnpm exec tauri build --bundles deb
+- git diff --check
+
+Do not run broad cargo formatting.
+
+Final report:
+- Native Tauri launch: PASS / BLOCKED
+- EGL error cause if known
+- Screens verified
+- Viewports verified
+- Any issues found
+- Files changed
+- Test results
+- Confirm Home unchanged
+- Confirm existing data unchanged
+- Confirm no commit/push/publish
