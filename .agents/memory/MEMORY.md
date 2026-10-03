@@ -11,3 +11,4 @@
 - [MY MEDICAL Phase 3 scope](phase3-scope.md) — Keep Home and completed Phase 1/2 behavior unchanged; access SQLite only through typed native commands.
 - [Supplier ledger migration](supplier-ledger-migration.md) — Backfill invoice debits, then reconcile to the legacy balance so migration does not change what suppliers are owed.
 - [Future-schema backup tests](future-schema-backup-tests.md) — Start from the current schema and mark exactly one higher migration when testing newer-backup rejection.
+- [Financial report SQL testing](financial-report-sql-testing.md) — SQLite fixtures catch report column-index errors that Rust compilation cannot.

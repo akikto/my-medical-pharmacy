@@ -47,6 +47,7 @@ const navigation: Array<{
 export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [pendingSaleSearch, setPendingSaleSearch] = useState<string | null>(null);
+  const [pendingCustomerLedgerId, setPendingCustomerLedgerId] = useState<number | null>(null);
   const [autoBackupError, setAutoBackupError] = useState<string | null>(null);
   const navigateToSection = useCallback(
     (section: AppSection, initialSaleSearch?: string) => {
@@ -57,6 +58,13 @@ export default function App() {
   );
   const clearPendingSaleSearch = useCallback(() => {
     setPendingSaleSearch(null);
+  }, []);
+  const openCustomerLedger = useCallback((customerId: number) => {
+    setPendingCustomerLedgerId(customerId);
+    setActiveSection("customers");
+  }, []);
+  const clearPendingCustomerLedger = useCallback(() => {
+    setPendingCustomerLedgerId(null);
   }, []);
 
   useEffect(() => {
@@ -187,11 +195,14 @@ export default function App() {
         ) : activeSection === "suppliers" ? (
           <SuppliersPage />
         ) : activeSection === "customers" ? (
-          <CustomersPage />
+          <CustomersPage
+            initialCustomerId={pendingCustomerLedgerId}
+            onInitialCustomerConsumed={clearPendingCustomerLedger}
+          />
         ) : activeSection === "sales" ? (
           <SalesPage />
         ) : activeSection === "reports" ? (
-          <ReportsView />
+          <ReportsView onOpenCustomerLedger={openCustomerLedger} />
         ) : activeSection === "settings" ? (
           <StoreSettings
             onDatabaseRestored={() => {
