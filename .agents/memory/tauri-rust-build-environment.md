@@ -5,6 +5,12 @@ description: Rust, native GTK dialog, linker, and Linux bundle constraints for t
 
 Use Rust 1.90.0 as the default toolchain for this project. Rust 1.98.1 failed to start here with `cannot allocate memory in static TLS block`.
 
+Rust 1.90.0 may be installed without its `rustfmt` component. If `cargo fmt` reports that `cargo-fmt` is missing, install it with `rustup component add rustfmt --toolchain 1.90.0` to keep the pinned compiler version.
+
+**Why:** The pinned compiler can be usable even when optional tools are missing.
+
+**How to apply:** Install only the `rustfmt` component if formatting checks require it; do not change the project’s pinned compiler version.
+
 Some shells can report the `rust-stable` module as installed while `rustup` has no installed or default toolchain. If Cargo reports that no default is configured, install and select the pinned project version with `rustup toolchain install 1.90.0 --profile minimal && rustup default 1.90.0`.
 
 The `zlib` system dependency can be present in the Nix store while Cargo test linking still fails to find `-lz`. Run linked Rust tests with `LIBRARY_PATH="$(pkg-config --variable=libdir zlib)"` set for the command. `cargo check` does not link the test harness and can pass without that setting.

@@ -5,11 +5,42 @@ const { afterEach, beforeEach, describe, it } = require("node:test");
 const ts = require("typescript");
 const { createFixture, invokeRead, state } = require("./rendererReadFixture.cjs");
 
+const backupServiceState = {
+  saveSelection: null,
+  openSelection: null,
+  saveOptions: null,
+  openOptions: null,
+  invocations: [],
+};
+
 const originalModuleLoad = Module._load;
 Module._load = function loadWithTauriReadMock(request, parent, isMain) {
   if (request === "@tauri-apps/api/core") {
     return {
-      invoke: async (command, args = {}) => invokeRead(command, args),
+      invoke: async (command, args = {}) => {
+        if (
+          command === "create_database_backup" ||
+          command === "restore_database_backup"
+        ) {
+          backupServiceState.invocations.push({ command, args });
+          return command === "create_database_backup"
+            ? { path: args.destinationPath }
+            : { safetyBackupPath: "/local/backups/before-restore.db" };
+        }
+        return invokeRead(command, args);
+      },
+    };
+  }
+  if (request === "@tauri-apps/plugin-dialog") {
+    return {
+      open: async (options) => {
+        backupServiceState.openOptions = options;
+        return backupServiceState.openSelection;
+      },
+      save: async (options) => {
+        backupServiceState.saveOptions = options;
+        return backupServiceState.saveSelection;
+      },
     };
   }
   return originalModuleLoad.call(this, request, parent, isMain);
@@ -67,16 +98,76 @@ const {
   buildStockWorkbookBuffer,
   filterStockExportRows,
 } = require("../src/services/inventoryWorkbookService.ts");
+const {
+  createDatabaseBackup,
+  restoreDatabaseBackup,
+  selectBackupDestination,
+  selectRestoreSource,
+} = require("../src/services/backupService.ts");
 const ExcelJS = require("exceljs");
 let fixture;
 
 beforeEach(() => {
   fixture = createFixture();
+  backupServiceState.saveSelection = null;
+  backupServiceState.openSelection = null;
+  backupServiceState.saveOptions = null;
+  backupServiceState.openOptions = null;
+  backupServiceState.invocations = [];
 });
 
 afterEach(() => {
   fixture?.close();
   fixture = null;
+});
+
+describe("local database backup and restore service", () => {
+  it("uses local .db dialogs and treats cancellation as no selected file", async () => {
+    assert.equal(await selectBackupDestination(), null);
+    assert.deepEqual(backupServiceState.saveOptions.filters, [
+      { name: "MY MEDICAL database backup", extensions: ["db"] },
+    ]);
+    assert.match(backupServiceState.saveOptions.defaultPath, /^my-medical-backup-.*\.db$/);
+
+    assert.equal(await selectRestoreSource(), null);
+    assert.equal(backupServiceState.openOptions.directory, false);
+    assert.equal(backupServiceState.openOptions.multiple, false);
+    assert.deepEqual(backupServiceState.openOptions.filters, [
+      { name: "MY MEDICAL database backup", extensions: ["db"] },
+    ]);
+    assert.deepEqual(backupServiceState.invocations, []);
+  });
+
+  it("normalizes a selected restore file and forwards native results", async () => {
+    backupServiceState.saveSelection = "/local/manual-backup.db";
+    const destination = await selectBackupDestination();
+    const backupResult = await createDatabaseBackup(destination);
+    assert.deepEqual(backupResult, { path: "/local/manual-backup.db" });
+
+    backupServiceState.openSelection = ["/local/restore-source.db"];
+    const selectedSource = await selectRestoreSource();
+    assert.equal(selectedSource, "/local/restore-source.db");
+    const restoreResult = await restoreDatabaseBackup(selectedSource);
+    assert.deepEqual(restoreResult, {
+      safetyBackupPath: "/local/backups/before-restore.db",
+    });
+    assert.deepEqual(backupServiceState.invocations, [
+      {
+        command: "create_database_backup",
+        args: { destinationPath: "/local/manual-backup.db" },
+      },
+      {
+        command: "restore_database_backup",
+        args: { sourcePath: "/local/restore-source.db" },
+      },
+    ]);
+  });
+
+  it("rejects empty paths instead of invoking native database commands", async () => {
+    await assert.rejects(createDatabaseBackup("  "), /Choose a destination/);
+    await assert.rejects(restoreDatabaseBackup("  "), /Choose a database backup/);
+    assert.deepEqual(backupServiceState.invocations, []);
+  });
 });
 
 function isoDate(date) {

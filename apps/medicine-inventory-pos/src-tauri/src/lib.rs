@@ -332,6 +332,12 @@ struct DatabaseBackupResult {
     path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseRestoreResult {
+    safety_backup_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 enum OrderListMutation {
@@ -432,7 +438,11 @@ fn pharmacy_database_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn open_pharmacy_connection(app: &AppHandle) -> Result<Connection, String> {
-    let connection = Connection::open(pharmacy_database_path(app)?)
+    open_pharmacy_connection_at(&pharmacy_database_path(app)?)
+}
+
+fn open_pharmacy_connection_at(database_path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(database_path)
         .map_err(|error| format!("Could not open the local pharmacy database: {error}"))?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -858,18 +868,16 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
             return Err("The selected backup has an incomplete migration history.".to_owned());
         }
     }
-    let version = *versions.last().expect("validated non-empty migration history");
+    let version = *versions
+        .last()
+        .expect("validated non-empty migration history");
     if version > LATEST_DATABASE_VERSION {
         return Err(format!(
             "This backup was created by a newer MY MEDICAL database version ({version})."
         ));
     }
 
-    require_backup_columns(
-        &connection,
-        "schema_migrations",
-        &["version", "applied_at"],
-    )?;
+    require_backup_columns(&connection, "schema_migrations", &["version", "applied_at"])?;
     require_backup_columns(
         &connection,
         "medicines",
@@ -906,7 +914,13 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
     require_backup_columns(
         &connection,
         "purchases",
-        &["id", "invoice_no", "supplier_id", "total_amount", "purchase_date"],
+        &[
+            "id",
+            "invoice_no",
+            "supplier_id",
+            "total_amount",
+            "purchase_date",
+        ],
     )?;
     require_backup_columns(
         &connection,
@@ -931,7 +945,14 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
     require_backup_columns(
         &connection,
         "sale_items",
-        &["id", "sale_id", "batch_id", "quantity", "unit_price", "total_price"],
+        &[
+            "id",
+            "sale_id",
+            "batch_id",
+            "quantity",
+            "unit_price",
+            "total_price",
+        ],
     )?;
     if version >= 2 {
         require_backup_columns(
@@ -1043,6 +1064,29 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
             ],
         )?;
     }
+    if version >= 7 {
+        require_backup_columns(
+            &connection,
+            "medicines",
+            &[
+                "product_type",
+                "strength",
+                "composition",
+                "barcode",
+                "uses",
+                "adult_dose",
+                "child_dose",
+                "photo_ref",
+            ],
+        )?;
+    }
+    if version >= 8 {
+        require_backup_columns(
+            &connection,
+            "stock_adjustments",
+            &["previous_quantity", "new_quantity"],
+        )?;
+    }
 
     Ok(())
 }
@@ -1103,11 +1147,15 @@ fn next_dated_backup_path(
     Err("Could not choose a unique internal backup filename.".to_owned())
 }
 
-fn create_internal_snapshot(
-    app: &AppHandle,
+fn create_internal_snapshot(app: &AppHandle, prefix: &str) -> Result<Option<PathBuf>, String> {
+    let database_path = pharmacy_database_path(app)?;
+    create_internal_snapshot_at(&database_path, prefix)
+}
+
+fn create_internal_snapshot_at(
+    database_path: &Path,
     prefix: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let database_path = pharmacy_database_path(app)?;
     if !database_path.is_file() {
         return Ok(None);
     }
@@ -1176,21 +1224,24 @@ fn mark_automatic_backup(backup_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn prune_automatic_backups(
-    directory: &Path,
-    active_database: &Path,
-) -> Result<usize, String> {
-    let active_database = fs::canonicalize(active_database)
-        .map_err(|error| format!("Could not identify the active database for backup cleanup: {error}"))?;
+fn prune_automatic_backups(directory: &Path, active_database: &Path) -> Result<usize, String> {
+    let active_database = fs::canonicalize(active_database).map_err(|error| {
+        format!("Could not identify the active database for backup cleanup: {error}")
+    })?;
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("Could not read the automatic backup folder: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "Could not read the automatic backup folder: {error}"
+            ))
+        }
     };
 
     let mut backups = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|error| format!("Could not inspect automatic backups: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("Could not inspect automatic backups: {error}"))?;
         let backup_path = entry.path();
         let Some(sort_key) = automatic_backup_sort_key(&backup_path) else {
             continue;
@@ -1240,6 +1291,20 @@ fn prune_automatic_backups_best_effort(directory: &Path, active_database: &Path)
     }
 }
 
+fn create_automatic_close_backup_at(database_path: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(backup_path) = create_internal_snapshot_at(database_path, "backup")? else {
+        return Ok(None);
+    };
+    if let Err(error) = mark_automatic_backup(&backup_path) {
+        let _ = fs::remove_file(&backup_path);
+        return Err(error);
+    }
+    if let Some(directory) = backup_path.parent() {
+        prune_automatic_backups_best_effort(directory, database_path);
+    }
+    Ok(Some(backup_path))
+}
+
 fn validate_database_extension(path: &Path) -> Result<(), String> {
     if !path
         .extension()
@@ -1259,10 +1324,7 @@ fn selected_backup_path(path: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|error| format!("Could not access the selected backup: {error}"))
 }
 
-fn backup_destination_path(
-    active_database: &Path,
-    destination: &Path,
-) -> Result<PathBuf, String> {
+fn backup_destination_path(active_database: &Path, destination: &Path) -> Result<PathBuf, String> {
     if !destination.is_absolute() {
         return Err("Choose an absolute path for the backup file.".to_owned());
     }
@@ -1285,7 +1347,9 @@ fn backup_destination_path(
     let active_database = fs::canonicalize(active_database)
         .map_err(|error| format!("Could not locate the local pharmacy database: {error}"))?;
     if normalized_destination == active_database {
-        return Err("The backup destination cannot replace the active pharmacy database.".to_owned());
+        return Err(
+            "The backup destination cannot replace the active pharmacy database.".to_owned(),
+        );
     }
     Ok(normalized_destination)
 }
@@ -1299,8 +1363,7 @@ fn create_database_backup(
     if !active_database.is_file() {
         return Err("The local pharmacy database does not exist yet.".to_owned());
     }
-    let destination =
-        backup_destination_path(&active_database, Path::new(&destination_path))?;
+    let destination = backup_destination_path(&active_database, Path::new(&destination_path))?;
     create_snapshot(&active_database, &destination)?;
     Ok(DatabaseBackupResult {
         path: destination.display().to_string(),
@@ -1313,31 +1376,151 @@ fn rollback_database_replacement(
     moved_sidecars: &[(PathBuf, PathBuf)],
     previous_database_moved: bool,
     replacement_installed: bool,
-) {
+) -> Result<(), String> {
+    let mut failures = Vec::new();
     if replacement_installed {
-        let _ = fs::remove_file(active_database);
+        if let Err(error) = remove_file_if_present(active_database) {
+            failures.push(error);
+        }
         for suffix in ["-wal", "-shm"] {
-            let _ = fs::remove_file(sqlite_sidecar_path(active_database, suffix));
+            if let Err(error) =
+                remove_file_if_present(&sqlite_sidecar_path(active_database, suffix))
+            {
+                failures.push(error);
+            }
         }
     }
     for (original_sidecar, previous_sidecar) in moved_sidecars.iter().rev() {
         if previous_sidecar.exists() {
-            let _ = fs::rename(previous_sidecar, original_sidecar);
+            if let Err(error) = remove_file_if_present(original_sidecar) {
+                failures.push(error);
+                continue;
+            }
+            if let Err(error) = fs::rename(previous_sidecar, original_sidecar) {
+                failures.push(format!(
+                    "Could not restore database sidecar {}: {error}",
+                    original_sidecar.display()
+                ));
+            }
         }
     }
     if previous_database_moved && previous_database.exists() {
-        let _ = fs::rename(previous_database, active_database);
+        if let Err(error) = remove_file_if_present(active_database) {
+            failures.push(error);
+        } else if let Err(error) = fs::rename(previous_database, active_database) {
+            failures.push(format!(
+                "Could not restore the original database; its copy remains at {}: {error}",
+                previous_database.display()
+            ));
+        }
+    } else if previous_database_moved {
+        failures.push("The original database copy could not be found during rollback.".to_owned());
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Rollback was incomplete: {}", failures.join("; ")))
     }
 }
 
-#[tauri::command]
-fn restore_database_backup(app: AppHandle, source_path: String) -> Result<(), String> {
-    let active_database = pharmacy_database_path(&app)?;
+fn remove_file_if_present(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not remove {}: {error}", path.display())),
+    }
+}
+
+fn database_replacement_error(error: String, rollback: Result<(), String>) -> String {
+    match rollback {
+        Ok(()) => format!("{error} The original database was restored."),
+        Err(rollback_error) => format!("{error} {rollback_error}"),
+    }
+}
+
+fn install_staged_database<F>(
+    active_database: &Path,
+    staged_database: &Path,
+    verify_installed: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
+    let config_directory = active_database
+        .parent()
+        .ok_or_else(|| "Could not locate the local pharmacy database folder.".to_owned())?;
+    let previous_database = unique_internal_path(config_directory, "restore-previous", "db");
+    fs::rename(active_database, &previous_database)
+        .map_err(|error| format!("Could not prepare the current database for restore: {error}"))?;
+
+    let mut moved_sidecars = Vec::new();
+    for suffix in ["-wal", "-shm"] {
+        let original_sidecar = sqlite_sidecar_path(active_database, suffix);
+        if !original_sidecar.exists() {
+            continue;
+        }
+        let previous_sidecar = sqlite_sidecar_path(&previous_database, suffix);
+        if let Err(error) = fs::rename(&original_sidecar, &previous_sidecar) {
+            let rollback = rollback_database_replacement(
+                active_database,
+                &previous_database,
+                &moved_sidecars,
+                true,
+                false,
+            );
+            return Err(database_replacement_error(
+                format!("Could not safely move the current database files: {error}"),
+                rollback,
+            ));
+        }
+        moved_sidecars.push((original_sidecar, previous_sidecar));
+    }
+
+    if let Err(error) = fs::rename(staged_database, active_database) {
+        let rollback = rollback_database_replacement(
+            active_database,
+            &previous_database,
+            &moved_sidecars,
+            true,
+            false,
+        );
+        return Err(database_replacement_error(
+            format!("Could not install the selected database backup: {error}"),
+            rollback,
+        ));
+    }
+
+    if let Err(error) = verify_installed(active_database) {
+        let rollback = rollback_database_replacement(
+            active_database,
+            &previous_database,
+            &moved_sidecars,
+            true,
+            true,
+        );
+        return Err(database_replacement_error(
+            format!("The restored database could not be opened: {error}"),
+            rollback,
+        ));
+    }
+
+    let _ = fs::remove_file(&previous_database);
+    for (_, previous_sidecar) in moved_sidecars {
+        let _ = fs::remove_file(previous_sidecar);
+    }
+    Ok(())
+}
+
+fn restore_database_backup_at(
+    active_database: &Path,
+    source_path: &Path,
+) -> Result<DatabaseRestoreResult, String> {
     if !active_database.is_file() {
         return Err("The local pharmacy database is not available to restore.".to_owned());
     }
 
-    let source = selected_backup_path(Path::new(&source_path))?;
+    let source = selected_backup_path(source_path)?;
     let active_canonical = fs::canonicalize(&active_database)
         .map_err(|error| format!("Could not locate the local pharmacy database: {error}"))?;
     if source == active_canonical {
@@ -1350,102 +1533,100 @@ fn restore_database_backup(app: AppHandle, source_path: String) -> Result<(), St
         .ok_or_else(|| "Could not locate the local pharmacy database folder.".to_owned())?;
     let staged_database = unique_internal_path(config_directory, "restore-stage", "db");
     create_snapshot(&source, &staged_database)?;
-    if let Err(error) = validate_backup_database(&staged_database) {
+
+    let migration_result = (|| {
+        validate_backup_database(&staged_database)?;
+        let mut staged_connection = Connection::open(&staged_database)
+            .map_err(|error| format!("Could not open the staged backup for upgrade: {error}"))?;
+        migrate_connection(&mut staged_connection).map_err(|error| {
+            format!("The selected backup could not be upgraded safely: {error}")
+        })?;
+        drop(staged_connection);
+        validate_backup_database(&staged_database)
+    })();
+    if let Err(error) = migration_result {
         let _ = fs::remove_file(&staged_database);
         return Err(error);
     }
 
-    if create_internal_snapshot(&app, "before-restore")?.is_none() {
-        let _ = fs::remove_file(&staged_database);
-        return Err("A safety backup could not be created before restore.".to_owned());
-    }
+    let safety_backup = match create_internal_snapshot_at(active_database, "before-restore") {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            let _ = fs::remove_file(&staged_database);
+            return Err("A safety backup could not be created before restore.".to_owned());
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&staged_database);
+            return Err(format!(
+                "A safety backup could not be created, so restore was stopped: {error}"
+            ));
+        }
+    };
 
-    let current_connection = open_pharmacy_connection(&app)?;
+    let current_connection = match open_pharmacy_connection_at(active_database) {
+        Ok(connection) => connection,
+        Err(error) => {
+            let _ = fs::remove_file(&staged_database);
+            return Err(format!(
+                "{error} Restore was stopped. Safety backup created at {}.",
+                safety_backup.display()
+            ));
+        }
+    };
     let (checkpoint_busy, _, _): (i64, i64, i64) = current_connection
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .map_err(|error| {
             let _ = fs::remove_file(&staged_database);
-            format!("Could not safely close the current database: {error}")
+            format!(
+                "Could not safely close the current database: {error}. Safety backup created at {}.",
+                safety_backup.display()
+            )
         })?;
     if checkpoint_busy != 0 {
         let _ = fs::remove_file(&staged_database);
-        return Err("The database is busy. Close other database activity and try again.".to_owned());
+        return Err(format!(
+            "The database is busy. Close other database activity and try again. Safety backup created at {}.",
+            safety_backup.display()
+        ));
     }
     drop(current_connection);
 
-    let previous_database = unique_internal_path(config_directory, "restore-previous", "db");
-    if let Err(error) = fs::rename(&active_database, &previous_database) {
+    let install_result =
+        install_staged_database(active_database, &staged_database, |installed_database| {
+            let restored_connection = open_pharmacy_connection_at(installed_database)?;
+            drop(restored_connection);
+            validate_backup_database(installed_database)
+        });
+    if let Err(error) = install_result {
         let _ = fs::remove_file(&staged_database);
-        return Err(format!("Could not prepare the current database for restore: {error}"));
+        return Err(format!(
+            "{error} Safety backup created at {}.",
+            safety_backup.display()
+        ));
     }
 
-    let mut moved_sidecars = Vec::new();
-    for suffix in ["-wal", "-shm"] {
-        let original_sidecar = sqlite_sidecar_path(&active_database, suffix);
-        if !original_sidecar.exists() {
-            continue;
-        }
-        let previous_sidecar = sqlite_sidecar_path(&previous_database, suffix);
-        if let Err(error) = fs::rename(&original_sidecar, &previous_sidecar) {
-            rollback_database_replacement(
-                &active_database,
-                &previous_database,
-                &moved_sidecars,
-                true,
-                false,
-            );
-            let _ = fs::remove_file(&staged_database);
-            return Err(format!("Could not safely move the current database files: {error}"));
-        }
-        moved_sidecars.push((original_sidecar, previous_sidecar));
-    }
-
-    if let Err(error) = fs::rename(&staged_database, &active_database) {
-        rollback_database_replacement(
-            &active_database,
-            &previous_database,
-            &moved_sidecars,
-            true,
-            false,
-        );
-        let _ = fs::remove_file(&staged_database);
-        return Err(format!("Could not install the selected database backup: {error}"));
-    }
-
-    let restored_connection = match open_pharmacy_connection(&app) {
-        Ok(connection) => connection,
-        Err(error) => {
-            rollback_database_replacement(
-                &active_database,
-                &previous_database,
-                &moved_sidecars,
-                true,
-                true,
-            );
-            return Err(format!(
-                "The restored database could not be opened; the original database was put back: {error}"
-            ));
-        }
-    };
-    drop(restored_connection);
-
-    let _ = fs::remove_file(&previous_database);
-    for (_, previous_sidecar) in moved_sidecars {
-        let _ = fs::remove_file(previous_sidecar);
-    }
-    Ok(())
+    Ok(DatabaseRestoreResult {
+        safety_backup_path: safety_backup.display().to_string(),
+    })
 }
 
-fn register_auto_backup_on_close(
-    app: &mut tauri::App,
-) -> Result<(), Box<dyn std::error::Error>> {
+#[tauri::command]
+fn restore_database_backup(
+    app: AppHandle,
+    source_path: String,
+) -> Result<DatabaseRestoreResult, String> {
+    let active_database = pharmacy_database_path(&app)?;
+    restore_database_backup_at(&active_database, Path::new(&source_path))
+}
+
+fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     migrate_pharmacy_database(app.handle())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found"))?;
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
     let app_handle = app.handle().clone();
     let backup_started = Arc::new(AtomicBool::new(false));
     let backup_complete = Arc::new(AtomicBool::new(false));
@@ -1471,16 +1652,10 @@ fn register_auto_backup_on_close(
         let started_state = Arc::clone(&started_state);
         let complete_state = Arc::clone(&complete_state);
         std::thread::spawn(move || {
-            match create_internal_snapshot(&app_handle, "backup") {
+            let backup_result = pharmacy_database_path(&app_handle)
+                .and_then(|database_path| create_automatic_close_backup_at(&database_path));
+            match backup_result {
                 Ok(Some(path)) => {
-                    if let Err(error) = mark_automatic_backup(&path) {
-                        eprintln!("{error}");
-                    }
-                    if let (Some(directory), Ok(active_database)) =
-                        (path.parent(), pharmacy_database_path(&app_handle))
-                    {
-                        prune_automatic_backups_best_effort(directory, &active_database);
-                    }
                     eprintln!("Automatic pharmacy backup saved to {}", path.display());
                 }
                 Ok(None) => {}
@@ -5474,11 +5649,8 @@ mod backup_tests {
     use super::*;
 
     fn create_test_backup_directory() -> PathBuf {
-        let directory = unique_internal_path(
-            &std::env::temp_dir(),
-            "pharmadesk-retention-test",
-            "dir",
-        );
+        let directory =
+            unique_internal_path(&std::env::temp_dir(), "pharmadesk-retention-test", "dir");
         fs::create_dir_all(&directory).expect("create temporary backup directory");
         directory
     }
@@ -5507,22 +5679,281 @@ mod backup_tests {
             .count()
     }
 
+    fn create_restore_fixture_database(path: &Path, version: i64) -> Connection {
+        let mut connection = Connection::open(path).expect("open restore fixture database");
+        connection
+            .execute_batch(
+                r#"PRAGMA foreign_keys = ON;
+                   CREATE TABLE schema_migrations (
+                       version INTEGER PRIMARY KEY,
+                       applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                   );"#,
+            )
+            .expect("create restore fixture migration history");
+        for migration_version in 1..=version {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin fixture migration");
+            for statement in
+                migration_statements(migration_version).expect("read fixture migration")
+            {
+                transaction
+                    .execute_batch(statement)
+                    .expect("apply fixture migration");
+            }
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?1)",
+                    [migration_version],
+                )
+                .expect("record fixture migration");
+            transaction.commit().expect("commit fixture migration");
+        }
+
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (
+                    id, name, generic_name, company, rack_location, min_stock_alert,
+                    gst_rate_basis_points, product_type, strength, composition, barcode,
+                    uses, adult_dose, child_dose, photo_ref
+                ) VALUES (
+                    1, 'Backup Medicine', 'Backup Generic', 'Backup Labs', 'Rack R4', 3,
+                    1800, 'Tablet', '500 mg', 'Test composition', 'MED-BACKUP-001',
+                    'Test use', 'One tablet daily', 'Half tablet daily', NULL
+                );
+                INSERT INTO medicine_batches (
+                    id, medicine_id, batch_no, expiry_date, purchase_rate, mrp,
+                    sale_rate, current_stock, barcode
+                ) VALUES
+                    (1, 1, 'LOT-FEFO', '2027-03-01', 25, 60, 55, 8, 'LOT-CODE-001'),
+                    (2, 1, 'LOT-LATER', '2028-05-01', 27, 62, 58, 14, 'LOT-CODE-002');
+                INSERT INTO suppliers (
+                    id, name, phone, address, balance_due, contact_person,
+                    whatsapp_phone, notes
+                ) VALUES (
+                    1, 'Backup Supplier', '1112223333', 'Supplier address', 12.5,
+                    'Supplier Contact', '1112223333', 'Supplier notes'
+                );
+                INSERT INTO purchases (id, invoice_no, supplier_id, total_amount, purchase_date)
+                    VALUES (1, 'PUR-BACKUP-001', 1, 50, '2026-10-03');
+                INSERT INTO purchase_items (id, purchase_id, batch_id, quantity, rate, total)
+                    VALUES (1, 1, 1, 2, 25, 50);
+                INSERT INTO customers (
+                    id, name, phone, phone_normalized, address, notes, state_code, active
+                ) VALUES (
+                    1, 'Backup Customer', '9998887777', '9998887777',
+                    'Customer address', 'Customer notes', '29', 1
+                );
+                INSERT INTO sales (
+                    id, invoice_no, customer_name, customer_phone, subtotal, discount,
+                    grand_total, payment_mode, created_at, customer_id,
+                    customer_state_code, place_of_supply_state_code, gst_enabled,
+                    gst_pricing_mode, tax_type, taxable_amount, cgst_amount,
+                    sgst_amount, igst_amount, total_gst
+                ) VALUES (
+                    1, 'SALE-BACKUP-001', 'Backup Customer', '9998887777', 100, 0,
+                    118, 'CREDIT', '2026-10-03 10:00:00', 1, '29', '29', 1,
+                    'EXCLUSIVE', 'CGST_SGST', 100, 9, 9, 0, 18
+                );
+                INSERT INTO sale_items (
+                    id, sale_id, batch_id, quantity, unit_price, total_price,
+                    purchase_rate_at_sale, gst_rate_basis_points, taxable_amount,
+                    cgst_amount, sgst_amount, igst_amount, total_gst
+                ) VALUES (
+                    1, 1, 1, 2, 50, 100, 25, 1800, 100, 9, 9, 0, 18
+                );
+                INSERT INTO customer_ledger (
+                    id, customer_id, entry_type, invoice_no, debit_cents, credit_cents,
+                    payment_mode, note, created_at
+                ) VALUES
+                    (1, 1, 'CREDIT_SALE', 'SALE-BACKUP-001', 11800, 0, NULL,
+                     'Credit sale', '2026-10-03 10:00:00'),
+                    (2, 1, 'COLLECTION', NULL, 0, 2500, 'CASH',
+                     'Partial collection', '2026-10-03 11:00:00');
+                INSERT INTO order_list_items (
+                    id, order_date, medicine_id, supplier_id, quantity, note, ordered
+                ) VALUES (
+                    1, '2026-10-03', 1, 1, 4, 'Reorder after next sale', 0
+                );
+                INSERT INTO app_settings (setting_key, setting_value) VALUES
+                    ('pharmacy_name', 'Backup Pharmacy'),
+                    ('address', 'Pharmacy address'),
+                    ('contact_number', '1234567890'),
+                    ('drug_license_number', 'DL-TEST-001'),
+                    ('receipt_footer_note', 'Keep this receipt'),
+                    ('upi_id', 'backup@upi'),
+                    ('upi_display_name', 'Backup Pharmacy'),
+                    ('gst_enabled', 'true'),
+                    ('gst_default_rate_basis_points', '1800'),
+                    ('gst_pricing_mode', 'EXCLUSIVE'),
+                    ('gst_pharmacy_state_code', '29');
+                "#,
+            )
+            .expect("seed restore fixture");
+
+        if version >= 3 {
+            connection
+                .execute_batch(
+                    "INSERT INTO stock_adjustments (
+                        id, medicine_id, batch_id, quantity_change, reason
+                     ) VALUES (1, 1, 2, 1, 'Count correction');",
+                )
+                .expect("add fixture stock adjustment");
+        }
+        if version >= 8 {
+            connection
+                .execute_batch(
+                    "UPDATE stock_adjustments
+                     SET previous_quantity = 13, new_quantity = 14
+                     WHERE id = 1;",
+                )
+                .expect("add fixture adjustment snapshots");
+        }
+        connection
+    }
+
+    fn assert_restore_fixture(connection: &Connection) {
+        let medicine: (String, String, i64, String) = connection
+            .query_row(
+                "SELECT name, composition, gst_rate_basis_points, barcode
+                 FROM medicines WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read restored medicine metadata");
+        assert_eq!(
+            medicine,
+            (
+                "Backup Medicine".to_owned(),
+                "Test composition".to_owned(),
+                1800,
+                "MED-BACKUP-001".to_owned()
+            )
+        );
+
+        let fefo_batch: String = connection
+            .query_row(
+                "SELECT batch_no FROM medicine_batches
+                 WHERE medicine_id = 1 AND current_stock > 0
+                 ORDER BY expiry_date, id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored FEFO batch");
+        assert_eq!(fefo_batch, "LOT-FEFO");
+        let batch_state: (i64, String, i64) = connection
+            .query_row(
+                "SELECT current_stock, barcode, id FROM medicine_batches
+                 WHERE batch_no = 'LOT-LATER'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read restored batch");
+        assert_eq!(batch_state, (14, "LOT-CODE-002".to_owned(), 2));
+
+        let customer_balance_cents: i64 = connection
+            .query_row(
+                "SELECT SUM(debit_cents - credit_cents)
+                 FROM customer_ledger WHERE customer_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored customer balance");
+        assert_eq!(customer_balance_cents, 9_300);
+
+        let gst_snapshot: (String, String, String, f64, f64, f64) = connection
+            .query_row(
+                "SELECT tax_type, customer_state_code, place_of_supply_state_code,
+                        taxable_amount, total_gst, grand_total
+                 FROM sales WHERE invoice_no = 'SALE-BACKUP-001'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("read restored historical GST snapshot");
+        assert_eq!(
+            gst_snapshot,
+            (
+                "CGST_SGST".to_owned(),
+                "29".to_owned(),
+                "29".to_owned(),
+                100.0,
+                18.0,
+                118.0
+            )
+        );
+
+        let sale_item_snapshot: (f64, i64, f64, f64) = connection
+            .query_row(
+                "SELECT purchase_rate_at_sale, gst_rate_basis_points,
+                        taxable_amount, total_gst
+                 FROM sale_items WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read restored sale-item snapshots");
+        assert_eq!(sale_item_snapshot, (25.0, 1800, 100.0, 18.0));
+
+        let order_state: (i64, String) = connection
+            .query_row(
+                "SELECT quantity, note FROM order_list_items WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read restored order list");
+        assert_eq!(order_state, (4, "Reorder after next sale".to_owned()));
+
+        let pharmacy_name: String = connection
+            .query_row(
+                "SELECT setting_value FROM app_settings
+                 WHERE setting_key = 'pharmacy_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored pharmacy setting");
+        let upi_id: String = connection
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'upi_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read restored UPI setting");
+        assert_eq!(pharmacy_name, "Backup Pharmacy");
+        assert_eq!(upi_id, "backup@upi");
+
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("check restored relationships");
+        assert_eq!(foreign_key_errors, 0);
+    }
+
     #[test]
     fn backup_retention_keeps_fewer_than_the_limit() {
         let directory = create_test_backup_directory();
         let active_database = create_active_database(&directory);
         for second in 0..AUTO_BACKUP_RETENTION_COUNT - 1 {
-            create_automatic_backup(
-                &directory,
-                &format!("2026-10-02_00-00-{second:02}"),
-            );
+            create_automatic_backup(&directory, &format!("2026-10-02_00-00-{second:02}"));
         }
 
         assert_eq!(
             prune_automatic_backups(&directory, &active_database).expect("prune backups"),
             0
         );
-        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT - 1);
+        assert_eq!(
+            count_automatic_backups(&directory),
+            AUTO_BACKUP_RETENTION_COUNT - 1
+        );
         fs::remove_dir_all(directory).expect("remove temporary backup directory");
     }
 
@@ -5531,17 +5962,17 @@ mod backup_tests {
         let directory = create_test_backup_directory();
         let active_database = create_active_database(&directory);
         for second in 0..AUTO_BACKUP_RETENTION_COUNT {
-            create_automatic_backup(
-                &directory,
-                &format!("2026-10-02_00-00-{second:02}"),
-            );
+            create_automatic_backup(&directory, &format!("2026-10-02_00-00-{second:02}"));
         }
 
         assert_eq!(
             prune_automatic_backups(&directory, &active_database).expect("prune backups"),
             0
         );
-        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT);
+        assert_eq!(
+            count_automatic_backups(&directory),
+            AUTO_BACKUP_RETENTION_COUNT
+        );
         fs::remove_dir_all(directory).expect("remove temporary backup directory");
     }
 
@@ -5565,7 +5996,10 @@ mod backup_tests {
         assert!(!automatic_backup_marker_path(&paths[0]).exists());
         assert!(!paths[1].exists());
         assert!(paths[2..].iter().all(|path| path.exists()));
-        assert_eq!(count_automatic_backups(&directory), AUTO_BACKUP_RETENTION_COUNT);
+        assert_eq!(
+            count_automatic_backups(&directory),
+            AUTO_BACKUP_RETENTION_COUNT
+        );
         fs::remove_dir_all(directory).expect("remove temporary backup directory");
     }
 
@@ -5578,10 +6012,7 @@ mod backup_tests {
         fs::write(&manual_backup, b"manual backup").expect("create manual backup");
         fs::write(&unmarked_backup, b"unmarked backup").expect("create unmarked backup");
         for second in 0..AUTO_BACKUP_RETENTION_COUNT + 1 {
-            create_automatic_backup(
-                &directory,
-                &format!("2026-10-02_00-00-{second:02}"),
-            );
+            create_automatic_backup(&directory, &format!("2026-10-02_00-00-{second:02}"));
         }
 
         assert_eq!(
@@ -5600,10 +6031,7 @@ mod backup_tests {
         fs::write(&active_database, b"active database").expect("create active database");
         mark_automatic_backup(&active_database).expect("mark active database");
         for second in 0..AUTO_BACKUP_RETENTION_COUNT + 1 {
-            create_automatic_backup(
-                &directory,
-                &format!("2026-10-02_00-00-{second:02}"),
-            );
+            create_automatic_backup(&directory, &format!("2026-10-02_00-00-{second:02}"));
         }
 
         prune_automatic_backups(&directory, &active_database).expect("prune backups");
@@ -5639,7 +6067,8 @@ mod backup_tests {
 
     #[test]
     fn vacuum_snapshot_preserves_pharmacy_schema_and_data() {
-        let directory = unique_internal_path(&std::env::temp_dir(), "pharmadesk-backup-test", "dir");
+        let directory =
+            unique_internal_path(&std::env::temp_dir(), "pharmadesk-backup-test", "dir");
         fs::create_dir_all(&directory).expect("create temporary backup directory");
         let source = directory.join("pharmacy.db");
         let destination = directory.join("backup.db");
@@ -5710,6 +6139,257 @@ mod backup_tests {
 
         drop(backup);
         fs::remove_dir_all(directory).expect("remove temporary backup directory");
+    }
+
+    #[test]
+    fn full_database_backup_restore_round_trip_preserves_pharmacy_state_after_reopen() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let backup_path = directory.join("user-selected-backup.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+
+        let destination = backup_destination_path(&active_database, &backup_path)
+            .expect("resolve the manual backup destination");
+        create_snapshot(&active_database, &destination).expect("create manual database backup");
+        validate_backup_database(&destination).expect("validate manual database backup");
+
+        let active_connection = Connection::open(&active_database).expect("open active database");
+        active_connection
+            .execute_batch(
+                r#"
+                UPDATE medicines SET name = 'Changed medicine', composition = 'Changed';
+                UPDATE medicine_batches SET current_stock = 1 WHERE id = 1;
+                DELETE FROM sale_items;
+                DELETE FROM sales;
+                DELETE FROM purchase_items;
+                DELETE FROM purchases;
+                DELETE FROM order_list_items;
+                UPDATE app_settings SET setting_value = 'Changed pharmacy'
+                  WHERE setting_key = 'pharmacy_name';
+                "#,
+            )
+            .expect("change active records before restoring");
+        drop(active_connection);
+
+        let restore_result = restore_database_backup_at(&active_database, &backup_path)
+            .expect("restore the complete database backup");
+        let safety_backup = PathBuf::from(&restore_result.safety_backup_path);
+        assert!(safety_backup.is_file());
+        validate_backup_database(&safety_backup).expect("validate pre-restore safety backup");
+        let safety_connection =
+            Connection::open(&safety_backup).expect("open pre-restore safety backup");
+        let safety_medicine_name: String = safety_connection
+            .query_row("SELECT name FROM medicines WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read safety snapshot medicine");
+        let safety_sale_count: i64 = safety_connection
+            .query_row("SELECT COUNT(*) FROM sales", [], |row| row.get(0))
+            .expect("read safety snapshot sales");
+        assert_eq!(safety_medicine_name, "Changed medicine");
+        assert_eq!(safety_sale_count, 0);
+        drop(safety_connection);
+
+        // Reopening through a new connection models the app reading the restored file after reload.
+        let reopened_database =
+            Connection::open(&active_database).expect("reopen restored pharmacy database");
+        assert_restore_fixture(&reopened_database);
+        let restored_version: i64 = reopened_database
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("read restored schema version");
+        assert_eq!(restored_version, LATEST_DATABASE_VERSION);
+        drop(reopened_database);
+        fs::remove_dir_all(directory).expect("remove isolated restore database");
+    }
+
+    #[test]
+    fn restore_migrates_a_valid_older_backup_before_installing_it() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let older_database = directory.join("older-source.db");
+        let older_backup = directory.join("older-backup.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+        let older_connection = create_restore_fixture_database(&older_database, 7);
+        drop(older_connection);
+        create_snapshot(&older_database, &older_backup).expect("snapshot version-seven database");
+        validate_backup_database(&older_backup).expect("validate older compatible backup");
+
+        restore_database_backup_at(&active_database, &older_backup)
+            .expect("restore and migrate older backup");
+
+        let reopened_database =
+            Connection::open(&active_database).expect("reopen migrated restored database");
+        assert_restore_fixture(&reopened_database);
+        let restored_version: i64 = reopened_database
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("read migrated schema version");
+        let adjustment_snapshot: (Option<i64>, Option<i64>) = reopened_database
+            .query_row(
+                "SELECT previous_quantity, new_quantity FROM stock_adjustments WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated adjustment snapshot columns");
+        assert_eq!(restored_version, LATEST_DATABASE_VERSION);
+        assert_eq!(adjustment_snapshot, (None, None));
+        drop(reopened_database);
+        fs::remove_dir_all(directory).expect("remove isolated legacy restore database");
+    }
+
+    #[test]
+    fn invalid_corrupt_and_incompatible_backups_leave_the_active_database_unchanged() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let future_backup = directory.join("future-backup.db");
+        let incomplete_backup = directory.join("incomplete-backup.db");
+        let corrupt_backup = directory.join("corrupt-backup.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+
+        fs::copy(&active_database, &future_backup).expect("copy future-schema fixture");
+        let future_connection =
+            Connection::open(&future_backup).expect("open future-schema fixture");
+        future_connection
+            .execute("INSERT INTO schema_migrations (version) VALUES (9)", [])
+            .expect("mark fixture as a future schema");
+        drop(future_connection);
+
+        let incomplete_connection = create_restore_fixture_database(&incomplete_backup, 7);
+        drop(incomplete_connection);
+        let incomplete_connection =
+            Connection::open(&incomplete_backup).expect("open incomplete-schema fixture");
+        incomplete_connection
+            .execute("INSERT INTO schema_migrations (version) VALUES (8)", [])
+            .expect("mark incomplete fixture as version eight");
+        drop(incomplete_connection);
+        fs::write(&corrupt_backup, b"not a SQLite database").expect("create corrupt backup file");
+
+        let corrupt_error =
+            restore_database_backup_at(&active_database, &corrupt_backup).unwrap_err();
+        let future_error =
+            restore_database_backup_at(&active_database, &future_backup).unwrap_err();
+        let incomplete_error =
+            restore_database_backup_at(&active_database, &incomplete_backup).unwrap_err();
+        assert!(!corrupt_error.is_empty());
+        assert!(future_error.contains("newer MY MEDICAL database version"));
+        assert!(incomplete_error.contains("stock_adjustments.previous_quantity"));
+        assert!(!directory.join("backups").exists());
+
+        let active_connection =
+            Connection::open(&active_database).expect("reopen unchanged database");
+        let active_medicine_name: String = active_connection
+            .query_row("SELECT name FROM medicines WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read unchanged active medicine");
+        assert_eq!(active_medicine_name, "Backup Medicine");
+        drop(active_connection);
+        fs::remove_dir_all(directory).expect("remove isolated validation database");
+    }
+
+    #[test]
+    fn restore_stops_without_replacing_data_when_safety_backup_creation_fails() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let source_database = directory.join("source.db");
+        let source_backup = directory.join("source-backup.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+        let source_connection = create_restore_fixture_database(&source_database, 8);
+        drop(source_connection);
+        create_snapshot(&source_database, &source_backup).expect("create selected backup");
+        fs::write(directory.join("backups"), b"blocking file")
+            .expect("block safety backup directory creation");
+
+        let error = restore_database_backup_at(&active_database, &source_backup)
+            .expect_err("restore must stop when it cannot create a safety backup");
+        assert!(error.contains("safety backup could not be created"));
+        let active_connection = Connection::open(&active_database).expect("reopen active database");
+        let active_medicine_name: String = active_connection
+            .query_row("SELECT name FROM medicines WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read active medicine after failed restore");
+        assert_eq!(active_medicine_name, "Backup Medicine");
+        drop(active_connection);
+        assert!(fs::read_dir(&directory)
+            .expect("read staging directory")
+            .all(|entry| !entry
+                .expect("read staging entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with("restore-stage-")));
+        fs::remove_dir_all(directory).expect("remove isolated safety-backup failure database");
+    }
+
+    #[test]
+    fn failed_restore_installation_rolls_back_to_the_original_database() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let incoming_source = directory.join("incoming-source.db");
+        let staged_database = directory.join("restore-stage-test.db");
+        let active_connection = create_restore_fixture_database(&active_database, 8);
+        drop(active_connection);
+        let incoming_connection = create_restore_fixture_database(&incoming_source, 8);
+        incoming_connection
+            .execute(
+                "UPDATE app_settings SET setting_value = 'Replacement Pharmacy'
+                 WHERE setting_key = 'pharmacy_name'",
+                [],
+            )
+            .expect("change incoming fixture");
+        drop(incoming_connection);
+        create_snapshot(&incoming_source, &staged_database).expect("stage replacement database");
+
+        let error = install_staged_database(&active_database, &staged_database, |_| {
+            Err("simulated reopen failure".to_owned())
+        })
+        .expect_err("installation check should fail");
+        assert!(error.contains("simulated reopen failure"));
+        assert!(error.contains("The original database was restored."));
+        assert!(!staged_database.exists());
+
+        let reopened_database =
+            Connection::open(&active_database).expect("reopen rolled-back database");
+        let pharmacy_name: String = reopened_database
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'pharmacy_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read original pharmacy setting");
+        assert_eq!(pharmacy_name, "Backup Pharmacy");
+        drop(reopened_database);
+        fs::remove_dir_all(directory).expect("remove isolated rollback database");
+    }
+
+    #[test]
+    fn automatic_close_backup_is_valid_and_contains_current_pharmacy_data() {
+        let directory = create_test_backup_directory();
+        let active_database = directory.join("pharmacy.db");
+        let connection = create_restore_fixture_database(&active_database, 8);
+        drop(connection);
+
+        let backup_path = create_automatic_close_backup_at(&active_database)
+            .expect("create close-time automatic backup")
+            .expect("active database should produce a backup");
+        assert!(automatic_backup_marker_path(&backup_path).is_file());
+        validate_backup_database(&backup_path).expect("validate automatic backup");
+        let backup = Connection::open(&backup_path).expect("open automatic backup");
+        assert_restore_fixture(&backup);
+        drop(backup);
+        assert_eq!(
+            count_automatic_backups(backup_path.parent().expect("backup directory")),
+            1
+        );
+
+        fs::remove_dir_all(directory).expect("remove isolated automatic backup database");
     }
 }
 
