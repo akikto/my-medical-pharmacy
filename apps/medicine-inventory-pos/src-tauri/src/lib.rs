@@ -24,13 +24,13 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 mod reads;
 use reads::{
     get_dashboard_inventory_summary, get_dashboard_purchase_summary, get_expiry_alerts,
-    get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
+    get_customer_ledger, get_customers, get_fefo_batch, get_inventory_medicines, get_low_stock_alerts, get_medicine_batches,
     get_recent_purchases, get_recent_sales, get_sale_details, get_sales_report_rows,
     get_sales_report_summary, get_sellable_batches, get_store_settings, get_suppliers,
     get_top_selling_medicines, get_weekly_sales, get_order_list, search_medicines,
 };
 
-const LATEST_DATABASE_VERSION: i64 = 5;
+const LATEST_DATABASE_VERSION: i64 = 6;
 /// Keep the 30 newest automatically-created close-time database snapshots.
 const AUTO_BACKUP_RETENTION_COUNT: usize = 30;
 const AUTO_BACKUP_MARKER_CONTENT: &[u8] = b"MY_MEDICAL_AUTO_CLOSE_BACKUP_V1\n";
@@ -62,6 +62,7 @@ enum PharmacyMutation {
         company: Option<String>,
         rack_location: Option<String>,
         min_stock_alert: i64,
+        gst_rate_basis_points: Option<i64>,
     },
     UpdateMedicine {
         medicine_id: i64,
@@ -70,6 +71,7 @@ enum PharmacyMutation {
         company: Option<String>,
         rack_location: Option<String>,
         min_stock_alert: i64,
+        gst_rate_basis_points: Option<i64>,
     },
     DeleteMedicine {
         medicine_id: i64,
@@ -114,6 +116,25 @@ enum PharmacyMutation {
     DeleteSupplier {
         supplier_id: i64,
     },
+    CreateCustomer {
+        name: String,
+        phone: Option<String>,
+        address: Option<String>,
+        notes: Option<String>,
+        state_code: Option<String>,
+    },
+    UpdateCustomer {
+        customer_id: i64,
+        name: String,
+        phone: Option<String>,
+        address: Option<String>,
+        notes: Option<String>,
+        state_code: Option<String>,
+    },
+    SetCustomerActive {
+        customer_id: i64,
+        active: bool,
+    },
     SaveSettings {
         settings: StoreSettingsMutation,
     },
@@ -132,6 +153,12 @@ struct StoreSettingsMutation {
     contact_number: String,
     drug_license_number: String,
     receipt_footer_note: String,
+    upi_id: String,
+    upi_display_name: String,
+    gst_enabled: bool,
+    gst_default_rate_basis_points: Option<i64>,
+    gst_pricing_mode: String,
+    gst_pharmacy_state_code: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,17 +175,38 @@ struct SaleCheckoutItem {
     quantity: i64,
     unit_price_cents: i64,
     item_discount_cents: i64,
+    gst_rate_override_basis_points: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaleCheckoutRequest {
+    customer_id: Option<i64>,
     customer_name: Option<String>,
     customer_phone: Option<String>,
     payment_mode: String,
     flat_discount_cents: i64,
     cash_tendered_cents: i64,
+    gst_pricing_mode: Option<String>,
+    upi_transaction_id: Option<String>,
     items: Vec<SaleCheckoutItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomerPaymentRequest {
+    customer_id: i64,
+    amount_cents: i64,
+    payment_mode: String,
+    upi_transaction_id: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomerPaymentResult {
+    ledger_entry_id: i64,
+    balance_due_cents: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -446,6 +494,59 @@ fn migration_statements(version: i64) -> Result<&'static [&'static str], String>
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )"#,
             "CREATE INDEX idx_order_list_items_date ON order_list_items(order_date, ordered, id)",
+        ]),
+        6 => Ok(&[
+            "ALTER TABLE medicines ADD COLUMN gst_rate_basis_points INTEGER CHECK (gst_rate_basis_points IS NULL OR (gst_rate_basis_points >= 0 AND gst_rate_basis_points <= 10000))",
+            r#"CREATE TABLE customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT,
+                phone_normalized TEXT,
+                address TEXT,
+                notes TEXT,
+                state_code TEXT,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+            "CREATE UNIQUE INDEX idx_customers_phone_normalized ON customers(phone_normalized) WHERE phone_normalized IS NOT NULL AND phone_normalized <> ''",
+            "CREATE INDEX idx_customers_name ON customers(name COLLATE NOCASE)",
+            "ALTER TABLE sales ADD COLUMN customer_id INTEGER REFERENCES customers(id) ON DELETE RESTRICT",
+            "ALTER TABLE sales ADD COLUMN upi_transaction_id TEXT",
+            "ALTER TABLE sales ADD COLUMN upi_payment_verified INTEGER NOT NULL DEFAULT 0 CHECK (upi_payment_verified IN (0, 1))",
+            "ALTER TABLE sales ADD COLUMN customer_state_code TEXT",
+            "ALTER TABLE sales ADD COLUMN place_of_supply_state_code TEXT",
+            "ALTER TABLE sales ADD COLUMN gst_enabled INTEGER NOT NULL DEFAULT 0 CHECK (gst_enabled IN (0, 1))",
+            "ALTER TABLE sales ADD COLUMN gst_pricing_mode TEXT NOT NULL DEFAULT 'EXCLUSIVE' CHECK (gst_pricing_mode IN ('INCLUSIVE', 'EXCLUSIVE'))",
+            "ALTER TABLE sales ADD COLUMN tax_type TEXT NOT NULL DEFAULT 'NONE' CHECK (tax_type IN ('NONE', 'CGST_SGST', 'IGST'))",
+            "ALTER TABLE sales ADD COLUMN taxable_amount REAL NOT NULL DEFAULT 0 CHECK (taxable_amount >= 0)",
+            "ALTER TABLE sales ADD COLUMN cgst_amount REAL NOT NULL DEFAULT 0 CHECK (cgst_amount >= 0)",
+            "ALTER TABLE sales ADD COLUMN sgst_amount REAL NOT NULL DEFAULT 0 CHECK (sgst_amount >= 0)",
+            "ALTER TABLE sales ADD COLUMN igst_amount REAL NOT NULL DEFAULT 0 CHECK (igst_amount >= 0)",
+            "ALTER TABLE sales ADD COLUMN total_gst REAL NOT NULL DEFAULT 0 CHECK (total_gst >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN gst_rate_basis_points INTEGER NOT NULL DEFAULT 0 CHECK (gst_rate_basis_points >= 0 AND gst_rate_basis_points <= 10000)",
+            "ALTER TABLE sale_items ADD COLUMN taxable_amount REAL NOT NULL DEFAULT 0 CHECK (taxable_amount >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN cgst_amount REAL NOT NULL DEFAULT 0 CHECK (cgst_amount >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN sgst_amount REAL NOT NULL DEFAULT 0 CHECK (sgst_amount >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN igst_amount REAL NOT NULL DEFAULT 0 CHECK (igst_amount >= 0)",
+            "ALTER TABLE sale_items ADD COLUMN total_gst REAL NOT NULL DEFAULT 0 CHECK (total_gst >= 0)",
+            r#"CREATE TABLE customer_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+                entry_type TEXT NOT NULL CHECK (entry_type IN ('CREDIT_SALE', 'COLLECTION')),
+                invoice_no TEXT,
+                debit_cents INTEGER NOT NULL DEFAULT 0 CHECK (debit_cents >= 0),
+                credit_cents INTEGER NOT NULL DEFAULT 0 CHECK (credit_cents >= 0),
+                payment_mode TEXT,
+                upi_transaction_id TEXT,
+                note TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (
+                  (entry_type = 'CREDIT_SALE' AND debit_cents > 0 AND credit_cents = 0 AND invoice_no IS NOT NULL)
+                  OR
+                  (entry_type = 'COLLECTION' AND credit_cents > 0 AND debit_cents = 0 AND payment_mode IS NOT NULL)
+                )
+            )"#,
+            "CREATE INDEX idx_customer_ledger_customer_date ON customer_ledger(customer_id, created_at, id)",
         ]),
         _ => Err(format!("No migration is available for database version {version}.")),
     }
@@ -789,6 +890,72 @@ fn validate_backup_database(database_path: &Path) -> Result<(), String> {
                 "note",
                 "ordered",
                 "created_at",
+            ],
+        )?;
+    }
+
+    if version >= 6 {
+        require_backup_columns(&connection, "medicines", &["gst_rate_basis_points"])?;
+        require_backup_columns(
+            &connection,
+            "customers",
+            &[
+                "id",
+                "name",
+                "phone",
+                "phone_normalized",
+                "address",
+                "notes",
+                "state_code",
+                "active",
+                "created_at",
+            ],
+        )?;
+        require_backup_columns(
+            &connection,
+            "customer_ledger",
+            &[
+                "id",
+                "customer_id",
+                "entry_type",
+                "invoice_no",
+                "debit_cents",
+                "credit_cents",
+                "payment_mode",
+                "upi_transaction_id",
+                "note",
+                "created_at",
+            ],
+        )?;
+        require_backup_columns(
+            &connection,
+            "sales",
+            &[
+                "customer_id",
+                "upi_transaction_id",
+                "upi_payment_verified",
+                "customer_state_code",
+                "place_of_supply_state_code",
+                "gst_enabled",
+                "gst_pricing_mode",
+                "tax_type",
+                "taxable_amount",
+                "cgst_amount",
+                "sgst_amount",
+                "igst_amount",
+                "total_gst",
+            ],
+        )?;
+        require_backup_columns(
+            &connection,
+            "sale_items",
+            &[
+                "gst_rate_basis_points",
+                "taxable_amount",
+                "cgst_amount",
+                "sgst_amount",
+                "igst_amount",
+                "total_gst",
             ],
         )?;
     }
@@ -1334,6 +1501,43 @@ fn require_one_changed_row(rows_affected: usize, label: &str) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_optional_gst_rate(rate: Option<i64>) -> Result<Option<i64>, String> {
+    if rate.is_some_and(|value| !(0..=10_000).contains(&value)) {
+        return Err("GST rate must be between 0% and 100%, in 0.01% increments.".to_owned());
+    }
+    Ok(rate)
+}
+
+fn normalized_customer_phone(
+    value: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let phone = normalized_optional_text(value, 40, "Customer phone")?;
+    let normalized = phone.as_ref().map(|value| {
+        value
+            .chars()
+            .filter(|character| character.is_ascii_digit())
+            .collect::<String>()
+    });
+    if normalized
+        .as_ref()
+        .is_some_and(|digits| !(7..=15).contains(&digits.len()))
+    {
+        return Err("Customer phone must contain 7 to 15 digits.".to_owned());
+    }
+    Ok((phone, normalized))
+}
+
+fn normalized_state_code(value: Option<String>) -> Result<Option<String>, String> {
+    let state_code = normalized_optional_text(value, 2, "State / Union territory code")?
+        .map(|value| value.to_ascii_uppercase());
+    if state_code.as_ref().is_some_and(|code| {
+        code.len() != 2 || !code.chars().all(|character| character.is_ascii_digit())
+    }) {
+        return Err("Select a valid two-digit GST state code.".to_owned());
+    }
+    Ok(state_code)
+}
+
 pub(crate) fn validate_iso_date(
     connection: &Connection,
     value: &str,
@@ -1365,6 +1569,7 @@ fn apply_pharmacy_mutation_to_connection(
             company,
             rack_location,
             min_stock_alert,
+            gst_rate_basis_points,
         } => {
             let name = normalized_required_text(name, 120, "Medicine name")?;
             let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
@@ -1373,12 +1578,21 @@ fn apply_pharmacy_mutation_to_connection(
             if !(0..=1_000_000_000).contains(&min_stock_alert) {
                 return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
             }
+            let gst_rate_basis_points = validate_optional_gst_rate(gst_rate_basis_points)?;
             let rows_affected = transaction
                 .execute(
                     r#"INSERT INTO medicines (
-                         name, generic_name, company, rack_location, min_stock_alert
-                       ) VALUES (?1, ?2, ?3, ?4, ?5)"#,
-                    params![name, generic_name, company, rack_location, min_stock_alert],
+                         name, generic_name, company, rack_location, min_stock_alert,
+                         gst_rate_basis_points
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                    params![
+                        name,
+                        generic_name,
+                        company,
+                        rack_location,
+                        min_stock_alert,
+                        gst_rate_basis_points
+                    ],
                 )
                 .map_err(|error| format!("Could not create the medicine: {error}"))?;
             require_one_changed_row(rows_affected, "Medicine")?;
@@ -1391,6 +1605,7 @@ fn apply_pharmacy_mutation_to_connection(
             company,
             rack_location,
             min_stock_alert,
+            gst_rate_basis_points,
         } => {
             if medicine_id <= 0 {
                 return Err("Medicine id must be a positive whole number.".to_owned());
@@ -1402,18 +1617,21 @@ fn apply_pharmacy_mutation_to_connection(
             if !(0..=1_000_000_000).contains(&min_stock_alert) {
                 return Err("Minimum stock alert must be between 0 and 1,000,000,000.".to_owned());
             }
+            let gst_rate_basis_points = validate_optional_gst_rate(gst_rate_basis_points)?;
             let rows_affected = transaction
                 .execute(
                     r#"UPDATE medicines
                        SET name = ?1, generic_name = ?2, company = ?3,
-                           rack_location = ?4, min_stock_alert = ?5
-                       WHERE id = ?6"#,
+                           rack_location = ?4, min_stock_alert = ?5,
+                           gst_rate_basis_points = ?6
+                       WHERE id = ?7"#,
                     params![
                         name,
                         generic_name,
                         company,
                         rack_location,
                         min_stock_alert,
+                        gst_rate_basis_points,
                         medicine_id
                     ],
                 )
@@ -1620,13 +1838,138 @@ fn apply_pharmacy_mutation_to_connection(
             require_one_changed_row(rows_affected, "Supplier")?;
             None
         }
+        PharmacyMutation::CreateCustomer {
+            name,
+            phone,
+            address,
+            notes,
+            state_code,
+        } => {
+            let name = normalized_required_text(name, 120, "Customer name")?;
+            let (phone, phone_normalized) = normalized_customer_phone(phone)?;
+            let address = normalized_optional_text(address, 500, "Customer address")?;
+            let notes = normalized_optional_text(notes, 1000, "Customer notes")?;
+            let state_code = normalized_state_code(state_code)?;
+            let rows_affected = transaction
+                .execute(
+                    r#"INSERT INTO customers (
+                         name, phone, phone_normalized, address, notes, state_code
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                    params![name, phone, phone_normalized, address, notes, state_code],
+                )
+                .map_err(|error| {
+                    if error.to_string().contains("idx_customers_phone_normalized") {
+                        "A customer with this phone number already exists.".to_owned()
+                    } else {
+                        format!("Could not create the customer: {error}")
+                    }
+                })?;
+            require_one_changed_row(rows_affected, "Customer")?;
+            Some(transaction.last_insert_rowid())
+        }
+        PharmacyMutation::UpdateCustomer {
+            customer_id,
+            name,
+            phone,
+            address,
+            notes,
+            state_code,
+        } => {
+            if customer_id <= 0 {
+                return Err("Customer id must be a positive whole number.".to_owned());
+            }
+            let name = normalized_required_text(name, 120, "Customer name")?;
+            let (phone, phone_normalized) = normalized_customer_phone(phone)?;
+            let address = normalized_optional_text(address, 500, "Customer address")?;
+            let notes = normalized_optional_text(notes, 1000, "Customer notes")?;
+            let state_code = normalized_state_code(state_code)?;
+            let rows_affected = transaction
+                .execute(
+                    r#"UPDATE customers
+                       SET name = ?1, phone = ?2, phone_normalized = ?3,
+                           address = ?4, notes = ?5, state_code = ?6
+                       WHERE id = ?7"#,
+                    params![
+                        name,
+                        phone,
+                        phone_normalized,
+                        address,
+                        notes,
+                        state_code,
+                        customer_id
+                    ],
+                )
+                .map_err(|error| {
+                    if error.to_string().contains("idx_customers_phone_normalized") {
+                        "A customer with this phone number already exists.".to_owned()
+                    } else {
+                        format!("Could not update the customer: {error}")
+                    }
+                })?;
+            require_one_changed_row(rows_affected, "Customer")?;
+            None
+        }
+        PharmacyMutation::SetCustomerActive {
+            customer_id,
+            active,
+        } => {
+            if customer_id <= 0 {
+                return Err("Customer id must be a positive whole number.".to_owned());
+            }
+            let rows_affected = transaction
+                .execute(
+                    "UPDATE customers SET active = ?1 WHERE id = ?2",
+                    params![active, customer_id],
+                )
+                .map_err(|error| format!("Could not update customer status: {error}"))?;
+            require_one_changed_row(rows_affected, "Customer")?;
+            None
+        }
         PharmacyMutation::SaveSettings { settings } => {
+            let gst_default_rate_basis_points =
+                validate_optional_gst_rate(settings.gst_default_rate_basis_points)?;
+            let gst_pricing_mode = settings.gst_pricing_mode.trim().to_ascii_uppercase();
+            if !matches!(gst_pricing_mode.as_str(), "INCLUSIVE" | "EXCLUSIVE") {
+                return Err("GST pricing mode must be inclusive or exclusive.".to_owned());
+            }
+            let gst_pharmacy_state_code =
+                normalized_state_code(Some(settings.gst_pharmacy_state_code))?.unwrap_or_default();
+            if settings.gst_enabled && gst_pharmacy_state_code.is_empty() {
+                return Err("Set the pharmacy state before enabling GST.".to_owned());
+            }
+            let upi_id = settings.upi_id.trim().to_owned();
+            if upi_id.encode_utf16().count() > 100
+                || (!upi_id.is_empty()
+                    && (upi_id.chars().any(char::is_whitespace)
+                        || !upi_id.contains('@')
+                        || upi_id.starts_with('@')
+                        || upi_id.ends_with('@')))
+            {
+                return Err("Enter a valid UPI ID, or leave it blank.".to_owned());
+            }
+            let gst_default_rate_basis_points = gst_default_rate_basis_points
+                .map(|value| value.to_string())
+                .unwrap_or_default();
             let values = [
                 ("pharmacy_name", settings.pharmacy_name, 160_usize),
                 ("address", settings.address, 500),
                 ("contact_number", settings.contact_number, 40),
                 ("drug_license_number", settings.drug_license_number, 100),
                 ("receipt_footer_note", settings.receipt_footer_note, 300),
+                ("upi_id", upi_id, 100),
+                (
+                    "upi_display_name",
+                    settings.upi_display_name,
+                    120,
+                ),
+                ("gst_enabled", settings.gst_enabled.to_string(), 5),
+                (
+                    "gst_default_rate_basis_points",
+                    gst_default_rate_basis_points,
+                    5,
+                ),
+                ("gst_pricing_mode", gst_pricing_mode, 9),
+                ("gst_pharmacy_state_code", gst_pharmacy_state_code, 2),
             ];
             for (key, value, maximum_length) in values {
                 let value = value.trim();
@@ -1991,6 +2334,127 @@ fn complete_sale(
     complete_sale_in_connection(&mut connection, checkout)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GstAmounts {
+    taxable_cents: i64,
+    cgst_cents: i64,
+    sgst_cents: i64,
+    igst_cents: i64,
+    total_gst_cents: i64,
+}
+
+fn allocate_cents_proportionally(total: i64, weights: &[i64]) -> Result<Vec<i64>, String> {
+    if total < 0 || weights.iter().any(|weight| *weight < 0) {
+        return Err("Discount and tax allocations must be non-negative.".to_owned());
+    }
+    if weights.is_empty() {
+        return if total == 0 {
+            Ok(Vec::new())
+        } else {
+            Err("The amount could not be allocated to an empty sale.".to_owned())
+        };
+    }
+    let weight_total = weights.iter().try_fold(0_i64, |sum, weight| {
+        sum.checked_add(*weight)
+            .ok_or_else(|| "Sale allocation weights exceed the supported amount.".to_owned())
+    })?;
+    if total == 0 {
+        return Ok(vec![0; weights.len()]);
+    }
+    if weight_total <= 0 {
+        return Err("The amount cannot be allocated because all sale lines are zero.".to_owned());
+    }
+
+    let mut remaining = total;
+    let mut result = Vec::with_capacity(weights.len());
+    for (index, weight) in weights.iter().enumerate() {
+        let share = if index + 1 == weights.len() {
+            remaining
+        } else {
+            ((total as i128 * *weight as i128) / weight_total as i128) as i64
+        };
+        remaining -= share;
+        result.push(share);
+    }
+    Ok(result)
+}
+
+fn rounded_ratio_to_cents(numerator: i128, denominator: i128) -> Result<i64, String> {
+    if numerator < 0 || denominator <= 0 {
+        return Err("GST calculation received an invalid amount or rate.".to_owned());
+    }
+    i64::try_from((numerator + denominator / 2) / denominator)
+        .map_err(|_| "GST amount exceeds the supported amount.".to_owned())
+}
+
+fn resolve_gst_rate(
+    gst_enabled: bool,
+    override_rate: Option<i64>,
+    product_rate: Option<i64>,
+    default_rate: Option<i64>,
+) -> Result<i64, String> {
+    if !gst_enabled {
+        return Ok(0);
+    }
+    let rate = override_rate
+        .or(product_rate)
+        .or(default_rate)
+        .ok_or_else(|| {
+            "GST is enabled, but this medicine has no product or default rate. Set a rate before checkout."
+                .to_owned()
+        })?;
+    validate_optional_gst_rate(Some(rate))?;
+    Ok(rate)
+}
+
+fn calculate_gst_amounts(
+    amount_cents: i64,
+    rate_basis_points: i64,
+    pricing_mode: &str,
+    interstate: bool,
+    gst_enabled: bool,
+) -> Result<GstAmounts, String> {
+    if amount_cents < 0 || !(0..=10_000).contains(&rate_basis_points) {
+        return Err("GST amount or rate is outside the supported range.".to_owned());
+    }
+    if !gst_enabled {
+        return Ok(GstAmounts::default());
+    }
+
+    let (taxable_cents, total_gst_cents) = if pricing_mode == "INCLUSIVE" {
+        let denominator = 10_000_i128 + rate_basis_points as i128;
+        let taxable = rounded_ratio_to_cents(
+            amount_cents as i128 * 10_000_i128,
+            denominator,
+        )?;
+        (taxable, amount_cents - taxable)
+    } else {
+        let gst = rounded_ratio_to_cents(
+            amount_cents as i128 * rate_basis_points as i128,
+            10_000_i128,
+        )?;
+        (amount_cents, gst)
+    };
+    if interstate {
+        Ok(GstAmounts {
+            taxable_cents,
+            cgst_cents: 0,
+            sgst_cents: 0,
+            igst_cents: total_gst_cents,
+            total_gst_cents,
+        })
+    } else {
+        let cgst_cents = total_gst_cents / 2;
+        Ok(GstAmounts {
+            taxable_cents,
+            cgst_cents,
+            sgst_cents: total_gst_cents - cgst_cents,
+            igst_cents: 0,
+            total_gst_cents,
+        })
+    }
+}
+
 fn complete_sale_in_connection(
     connection: &mut Connection,
     checkout: SaleCheckoutRequest,
@@ -2011,8 +2475,24 @@ fn complete_sale_in_connection(
         return Err("Cash tendered is only used for cash payments.".to_owned());
     }
 
+    if checkout.payment_mode == "CREDIT" && checkout.customer_id.is_none() {
+        return Err("Select a saved customer before recording a credit sale.".to_owned());
+    }
+    if checkout.customer_id.is_some_and(|customer_id| customer_id <= 0) {
+        return Err("Customer id must be a positive whole number.".to_owned());
+    }
+    let upi_transaction_id = normalized_optional_text(
+        checkout.upi_transaction_id.clone(),
+        120,
+        "UPI transaction ID",
+    )?;
+    if checkout.payment_mode != "UPI" && upi_transaction_id.is_some() {
+        return Err("A UPI transaction ID can only be saved for a UPI payment.".to_owned());
+    }
+
     let mut subtotal_cents = 0_i64;
     let mut item_discount_cents = 0_i64;
+    let mut line_net_cents = Vec::with_capacity(checkout.items.len());
     for item in &checkout.items {
         if item.medicine_id <= 0
             || item.batch_id <= 0
@@ -2032,21 +2512,192 @@ fn complete_sale_in_connection(
         if item.item_discount_cents > line_gross_cents {
             return Err("An item discount cannot exceed that item's total.".to_owned());
         }
+        validate_optional_gst_rate(item.gst_rate_override_basis_points)?;
         subtotal_cents = subtotal_cents
             .checked_add(line_gross_cents)
             .ok_or_else(|| "Sale subtotal exceeds the supported amount.".to_owned())?;
         item_discount_cents = item_discount_cents
             .checked_add(item.item_discount_cents)
             .ok_or_else(|| "Item discounts exceed the supported amount.".to_owned())?;
+        line_net_cents.push(line_gross_cents - item.item_discount_cents);
     }
 
     let total_discount_cents = item_discount_cents
         .checked_add(checkout.flat_discount_cents)
         .ok_or_else(|| "Total discount exceeds the supported amount.".to_owned())?;
-    if total_discount_cents > subtotal_cents {
+    let net_before_bill_discount_cents = subtotal_cents - item_discount_cents;
+    if checkout.flat_discount_cents > net_before_bill_discount_cents {
         return Err("The combined discounts cannot exceed the sale subtotal.".to_owned());
     }
-    let grand_total_cents = subtotal_cents - total_discount_cents;
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the sale transaction: {error}"))?;
+
+    let setting_value = |key: &str| -> Result<Option<String>, String> {
+        transaction
+            .query_row(
+                "SELECT setting_value FROM app_settings WHERE setting_key = ?1",
+                [key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not read the {key} setting: {error}"))
+    };
+    let gst_enabled = setting_value("gst_enabled")?
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    let default_rate = setting_value("gst_default_rate_basis_points")?
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .map_err(|_| "The configured default GST rate is invalid.".to_owned())
+        })
+        .transpose()?;
+    validate_optional_gst_rate(default_rate)?;
+    let configured_mode = setting_value("gst_pricing_mode")?
+        .unwrap_or_else(|| "EXCLUSIVE".to_owned())
+        .to_ascii_uppercase();
+    if !matches!(configured_mode.as_str(), "INCLUSIVE" | "EXCLUSIVE") {
+        return Err("The configured GST pricing mode is invalid.".to_owned());
+    }
+    let gst_pricing_mode = checkout
+        .gst_pricing_mode
+        .as_deref()
+        .unwrap_or(&configured_mode)
+        .trim()
+        .to_ascii_uppercase();
+    if !matches!(gst_pricing_mode.as_str(), "INCLUSIVE" | "EXCLUSIVE") {
+        return Err("GST pricing mode must be inclusive or exclusive.".to_owned());
+    }
+    let pharmacy_state_code = normalized_state_code(setting_value(
+        "gst_pharmacy_state_code",
+    )?)?;
+    if gst_enabled && pharmacy_state_code.is_none() {
+        return Err("Set the pharmacy state in Settings before completing a GST sale.".to_owned());
+    }
+
+    let saved_customer = if let Some(customer_id) = checkout.customer_id {
+        Some(
+            transaction
+                .query_row(
+                    r#"SELECT name, phone, state_code, active
+                       FROM customers
+                       WHERE id = ?1"#,
+                    [customer_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, bool>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| format!("Could not load the selected customer: {error}"))?
+                .ok_or_else(|| "The selected customer no longer exists.".to_owned())?,
+        )
+    } else {
+        None
+    };
+    if saved_customer
+        .as_ref()
+        .is_some_and(|(_, _, _, active)| !active)
+    {
+        return Err("The selected customer is inactive. Choose an active customer.".to_owned());
+    }
+    let manual_name = normalized_optional_text(checkout.customer_name.clone(), 120, "Customer name")?;
+    let manual_phone = normalized_optional_text(checkout.customer_phone.clone(), 40, "Customer phone")?;
+    let customer_name = saved_customer
+        .as_ref()
+        .map(|(name, _, _, _)| name.clone())
+        .or(manual_name);
+    let customer_phone = saved_customer
+        .as_ref()
+        .and_then(|(_, phone, _, _)| phone.clone())
+        .or(manual_phone);
+    let customer_state_code = saved_customer
+        .as_ref()
+        .and_then(|(_, _, state_code, _)| state_code.clone());
+    let place_of_supply_state_code = customer_state_code
+        .clone()
+        .or_else(|| pharmacy_state_code.clone());
+    let interstate = gst_enabled
+        && place_of_supply_state_code.as_deref() != pharmacy_state_code.as_deref();
+    let tax_type = if !gst_enabled {
+        "NONE"
+    } else if interstate {
+        "IGST"
+    } else {
+        "CGST_SGST"
+    };
+
+    let mut gst_rates = Vec::with_capacity(checkout.items.len());
+    for item in &checkout.items {
+        let product_rate = transaction
+            .query_row(
+                "SELECT gst_rate_basis_points FROM medicines WHERE id = ?1",
+                [item.medicine_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not read the medicine GST rate: {error}"))?
+            .flatten();
+        let rate = resolve_gst_rate(
+            gst_enabled,
+            item.gst_rate_override_basis_points,
+            product_rate,
+            default_rate,
+        )?;
+        gst_rates.push(rate);
+    }
+
+    let bill_discount_allocations =
+        allocate_cents_proportionally(checkout.flat_discount_cents, &line_net_cents)?;
+    let mut line_tax = Vec::with_capacity(checkout.items.len());
+    let mut taxable_total_cents = 0_i64;
+    let mut cgst_total_cents = 0_i64;
+    let mut sgst_total_cents = 0_i64;
+    let mut igst_total_cents = 0_i64;
+    let mut total_gst_cents = 0_i64;
+    let mut grand_total_cents = 0_i64;
+    for index in 0..checkout.items.len() {
+        let after_discounts = line_net_cents[index] - bill_discount_allocations[index];
+        let amounts = calculate_gst_amounts(
+            after_discounts,
+            gst_rates[index],
+            &gst_pricing_mode,
+            interstate,
+            gst_enabled,
+        )?;
+        let line_grand_total = if gst_enabled && gst_pricing_mode == "EXCLUSIVE" {
+            after_discounts
+                .checked_add(amounts.total_gst_cents)
+                .ok_or_else(|| "Sale total exceeds the supported amount.".to_owned())?
+        } else {
+            after_discounts
+        };
+        grand_total_cents = grand_total_cents
+            .checked_add(line_grand_total)
+            .ok_or_else(|| "Sale total exceeds the supported amount.".to_owned())?;
+        taxable_total_cents = taxable_total_cents
+            .checked_add(amounts.taxable_cents)
+            .ok_or_else(|| "Taxable amount exceeds the supported amount.".to_owned())?;
+        cgst_total_cents = cgst_total_cents
+            .checked_add(amounts.cgst_cents)
+            .ok_or_else(|| "CGST exceeds the supported amount.".to_owned())?;
+        sgst_total_cents = sgst_total_cents
+            .checked_add(amounts.sgst_cents)
+            .ok_or_else(|| "SGST exceeds the supported amount.".to_owned())?;
+        igst_total_cents = igst_total_cents
+            .checked_add(amounts.igst_cents)
+            .ok_or_else(|| "IGST exceeds the supported amount.".to_owned())?;
+        total_gst_cents = total_gst_cents
+            .checked_add(amounts.total_gst_cents)
+            .ok_or_else(|| "GST total exceeds the supported amount.".to_owned())?;
+        line_tax.push(amounts);
+    }
     if checkout.payment_mode == "CASH" && checkout.cash_tendered_cents < grand_total_cents {
         return Err("Cash tendered must cover the final amount due.".to_owned());
     }
@@ -2055,10 +2706,6 @@ fn complete_sale_in_connection(
     } else {
         0
     };
-
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("Could not begin the sale transaction: {error}"))?;
 
     let mut reserved_stock = HashMap::new();
     let allocations = checkout
@@ -2083,27 +2730,26 @@ fn complete_sale_in_connection(
         )
         .map_err(|error| format!("Could not generate the sale invoice number: {error}"))?;
 
-    let customer_name = checkout
-        .customer_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let customer_phone = checkout
-        .customer_phone
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
     transaction
         .execute(
             r#"INSERT INTO sales (
-                 invoice_no, customer_name, customer_phone, subtotal, discount,
-                 flat_discount, grand_total, payment_mode, cash_tendered, change_due
-               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+                 invoice_no, customer_id, customer_name, customer_phone,
+                 customer_state_code, place_of_supply_state_code, subtotal, discount,
+                 flat_discount, grand_total, payment_mode, cash_tendered, change_due,
+                 upi_transaction_id, upi_payment_verified, gst_enabled,
+                 gst_pricing_mode, tax_type, taxable_amount, cgst_amount,
+                 sgst_amount, igst_amount, total_gst
+               ) VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 ?13, ?14, 0, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+               )"#,
             params![
                 invoice_no,
+                checkout.customer_id,
                 customer_name,
                 customer_phone,
+                customer_state_code,
+                place_of_supply_state_code,
                 subtotal_cents as f64 / 100.0,
                 total_discount_cents as f64 / 100.0,
                 checkout.flat_discount_cents as f64 / 100.0,
@@ -2111,13 +2757,34 @@ fn complete_sale_in_connection(
                 checkout.payment_mode,
                 checkout.cash_tendered_cents as f64 / 100.0,
                 change_due_cents as f64 / 100.0,
+                upi_transaction_id,
+                gst_enabled,
+                gst_pricing_mode,
+                tax_type,
+                taxable_total_cents as f64 / 100.0,
+                cgst_total_cents as f64 / 100.0,
+                sgst_total_cents as f64 / 100.0,
+                igst_total_cents as f64 / 100.0,
+                total_gst_cents as f64 / 100.0,
             ],
         )
         .map_err(|error| format!("Could not create the sale invoice: {error}"))?;
     let sale_id = transaction.last_insert_rowid();
 
-    for (item, item_allocations) in checkout.items.into_iter().zip(allocations) {
-        for allocation in item_allocations {
+    for (item_index, (item, item_allocations)) in
+        checkout.items.into_iter().zip(allocations).enumerate()
+    {
+        let quantities = item_allocations
+            .iter()
+            .map(|allocation| allocation.quantity)
+            .collect::<Vec<_>>();
+        let tax = line_tax[item_index];
+        let taxable_shares = allocate_cents_proportionally(tax.taxable_cents, &quantities)?;
+        let cgst_shares = allocate_cents_proportionally(tax.cgst_cents, &quantities)?;
+        let sgst_shares = allocate_cents_proportionally(tax.sgst_cents, &quantities)?;
+        let igst_shares = allocate_cents_proportionally(tax.igst_cents, &quantities)?;
+        let gst_shares = allocate_cents_proportionally(tax.total_gst_cents, &quantities)?;
+        for (allocation_index, allocation) in item_allocations.into_iter().enumerate() {
             let rows_affected = transaction
                 .execute(
                     r#"UPDATE medicine_batches
@@ -2155,8 +2822,9 @@ fn complete_sale_in_connection(
                 .execute(
                     r#"INSERT INTO sale_items (
                          sale_id, batch_id, quantity, unit_price, item_discount, total_price,
-                         purchase_rate_at_sale
-                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                         purchase_rate_at_sale, gst_rate_basis_points, taxable_amount,
+                         cgst_amount, sgst_amount, igst_amount, total_gst
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
                     params![
                         sale_id,
                         allocation.batch_id,
@@ -2165,10 +2833,30 @@ fn complete_sale_in_connection(
                         allocation.item_discount_cents as f64 / 100.0,
                         line_total_cents as f64 / 100.0,
                         purchase_rate_cents as f64 / 100.0,
+                        gst_rates[item_index],
+                        taxable_shares[allocation_index] as f64 / 100.0,
+                        cgst_shares[allocation_index] as f64 / 100.0,
+                        sgst_shares[allocation_index] as f64 / 100.0,
+                        igst_shares[allocation_index] as f64 / 100.0,
+                        gst_shares[allocation_index] as f64 / 100.0,
                     ],
                 )
                 .map_err(|error| format!("Could not add a sale item: {error}"))?;
         }
+    }
+
+    if checkout.payment_mode == "CREDIT" {
+        let customer_id = checkout
+            .customer_id
+            .ok_or_else(|| "Select a saved customer before recording a credit sale.".to_owned())?;
+        transaction
+            .execute(
+                r#"INSERT INTO customer_ledger (
+                     customer_id, entry_type, invoice_no, debit_cents, note
+                   ) VALUES (?1, 'CREDIT_SALE', ?2, ?3, 'Credit sale')"#,
+                params![customer_id, invoice_no, grand_total_cents],
+            )
+            .map_err(|error| format!("Could not add the credit sale to the customer ledger: {error}"))?;
     }
 
     transaction
@@ -2178,6 +2866,88 @@ fn complete_sale_in_connection(
         sale_id,
         invoice_no,
     })
+}
+
+fn collect_customer_payment_in_connection(
+    connection: &mut Connection,
+    payment: CustomerPaymentRequest,
+) -> Result<CustomerPaymentResult, String> {
+    if payment.customer_id <= 0 {
+        return Err("Customer id must be a positive whole number.".to_owned());
+    }
+    if payment.amount_cents <= 0 {
+        return Err("Collection amount must be greater than zero.".to_owned());
+    }
+    if !matches!(
+        payment.payment_mode.as_str(),
+        "CASH" | "CARD" | "UPI" | "OTHER"
+    ) {
+        return Err("Choose a valid collection payment method.".to_owned());
+    }
+    let upi_transaction_id =
+        normalized_optional_text(payment.upi_transaction_id, 120, "UPI transaction ID")?;
+    if payment.payment_mode != "UPI" && upi_transaction_id.is_some() {
+        return Err("A UPI transaction ID can only be saved for a UPI collection.".to_owned());
+    }
+    let note = normalized_optional_text(payment.note, 250, "Collection note")?;
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not begin the customer collection: {error}"))?;
+    let balance_cents = transaction
+        .query_row(
+            r#"SELECT COALESCE((
+                 SELECT SUM(debit_cents - credit_cents)
+                 FROM customer_ledger
+                 WHERE customer_id = ?1
+               ), 0)
+               FROM customers
+               WHERE id = ?1"#,
+            [payment.customer_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the customer balance: {error}"))?
+        .ok_or_else(|| "The selected customer no longer exists.".to_owned())?;
+    if balance_cents <= 0 {
+        return Err("This customer has no outstanding balance.".to_owned());
+    }
+    if payment.amount_cents > balance_cents {
+        return Err("Collection amount cannot exceed the customer's outstanding balance.".to_owned());
+    }
+    let rows_affected = transaction
+        .execute(
+            r#"INSERT INTO customer_ledger (
+                 customer_id, entry_type, credit_cents, payment_mode,
+                 upi_transaction_id, note
+               ) VALUES (?1, 'COLLECTION', ?2, ?3, ?4, ?5)"#,
+            params![
+                payment.customer_id,
+                payment.amount_cents,
+                payment.payment_mode,
+                upi_transaction_id,
+                note
+            ],
+        )
+        .map_err(|error| format!("Could not record the customer collection: {error}"))?;
+    require_one_changed_row(rows_affected, "Customer collection")?;
+    let ledger_entry_id = transaction.last_insert_rowid();
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the customer collection: {error}"))?;
+    Ok(CustomerPaymentResult {
+        ledger_entry_id,
+        balance_due_cents: balance_cents - payment.amount_cents,
+    })
+}
+
+#[tauri::command]
+fn collect_customer_payment(
+    app: AppHandle,
+    payment: CustomerPaymentRequest,
+) -> Result<CustomerPaymentResult, String> {
+    let mut connection = open_pharmacy_connection(&app)?;
+    collect_customer_payment_in_connection(&mut connection, payment)
 }
 
 fn record_purchase(
@@ -2410,6 +3180,8 @@ pub fn run() {
             get_low_stock_alerts,
             get_expiry_alerts,
             get_suppliers,
+            get_customers,
+            get_customer_ledger,
             get_store_settings,
             get_recent_purchases,
             get_recent_sales,
@@ -2426,6 +3198,7 @@ pub fn run() {
             mutate_order_list,
             reset_business_data,
             complete_sale,
+            collect_customer_payment,
             complete_purchase,
             create_database_backup,
             restore_database_backup
@@ -2441,6 +3214,8 @@ pub fn run() {
         get_low_stock_alerts,
         get_expiry_alerts,
         get_suppliers,
+        get_customers,
+        get_customer_ledger,
         get_store_settings,
         get_recent_purchases,
         get_recent_sales,
@@ -2456,6 +3231,7 @@ pub fn run() {
         mutate_order_list,
         reset_business_data,
         complete_sale,
+        collect_customer_payment,
         complete_purchase,
         create_database_backup,
         restore_database_backup
@@ -2512,6 +3288,7 @@ mod fefo_tests {
             quantity,
             unit_price_cents: 1_000,
             item_discount_cents: discount_cents,
+            gst_rate_override_basis_points: None,
         }
     }
 
@@ -2679,17 +3456,21 @@ mod sale_tests {
 
     fn checkout(batch_id: i64, quantity: i64, item_discount_cents: i64) -> SaleCheckoutRequest {
         SaleCheckoutRequest {
+            customer_id: None,
             customer_name: Some("Test customer".to_owned()),
             customer_phone: Some("12345".to_owned()),
             payment_mode: "CASH".to_owned(),
             flat_discount_cents: 50,
             cash_tendered_cents: 4_000,
+            gst_pricing_mode: None,
+            upi_transaction_id: None,
             items: vec![SaleCheckoutItem {
                 medicine_id: 1,
                 batch_id,
                 quantity,
                 unit_price_cents: 1_000,
                 item_discount_cents,
+                gst_rate_override_basis_points: None,
             }],
         }
     }
@@ -2986,6 +3767,7 @@ mod pharmacy_mutation_tests {
                 company: Some("Test company".to_owned()),
                 rack_location: Some("A-1".to_owned()),
                 min_stock_alert: 5,
+                gst_rate_basis_points: None,
             },
         )
         .expect("create medicine")
@@ -3018,6 +3800,12 @@ mod pharmacy_mutation_tests {
                     contact_number: "12345".to_owned(),
                     drug_license_number: "DL-1".to_owned(),
                     receipt_footer_note: "Thank you".to_owned(),
+                    upi_id: String::new(),
+                    upi_display_name: String::new(),
+                    gst_enabled: false,
+                    gst_default_rate_basis_points: None,
+                    gst_pricing_mode: "EXCLUSIVE".to_owned(),
+                    gst_pharmacy_state_code: String::new(),
                 },
             },
         )
@@ -3031,6 +3819,7 @@ mod pharmacy_mutation_tests {
                 company: Some("New company".to_owned()),
                 rack_location: Some("B-2".to_owned()),
                 min_stock_alert: 9,
+                gst_rate_basis_points: None,
             },
         )
         .expect("update medicine");
@@ -3940,5 +4729,309 @@ mod business_history_tests {
         assert_eq!(stock(&backup), 9);
         drop(backup);
         fs::remove_dir_all(directory).expect("remove isolated database");
+    }
+}
+
+#[cfg(test)]
+mod gst_calculation_tests {
+    use super::{calculate_gst_amounts, resolve_gst_rate};
+
+    #[test]
+    fn gst_rate_resolution_prefers_pos_override_then_product_then_default() {
+        assert_eq!(
+            resolve_gst_rate(true, Some(1_200), Some(500), Some(900)).unwrap(),
+            1_200
+        );
+        assert_eq!(
+            resolve_gst_rate(true, None, Some(500), Some(900)).unwrap(),
+            500
+        );
+        assert_eq!(
+            resolve_gst_rate(true, None, None, Some(900)).unwrap(),
+            900
+        );
+        assert_eq!(resolve_gst_rate(false, None, None, None).unwrap(), 0);
+        assert!(resolve_gst_rate(true, None, None, None).is_err());
+    }
+
+    #[test]
+    fn inclusive_gst_is_extracted_from_the_listed_price_in_cents() {
+        let amounts =
+            calculate_gst_amounts(10_500, 500, "INCLUSIVE", false, true).unwrap();
+        assert_eq!(amounts.taxable_cents, 10_000);
+        assert_eq!(amounts.total_gst_cents, 500);
+        assert_eq!(amounts.cgst_cents, 250);
+        assert_eq!(amounts.sgst_cents, 250);
+        assert_eq!(amounts.igst_cents, 0);
+    }
+
+    #[test]
+    fn exclusive_local_gst_splits_to_cgst_and_sgst() {
+        let amounts =
+            calculate_gst_amounts(10_000, 500, "EXCLUSIVE", false, true).unwrap();
+        assert_eq!(amounts.taxable_cents, 10_000);
+        assert_eq!(amounts.total_gst_cents, 500);
+        assert_eq!(amounts.cgst_cents, 250);
+        assert_eq!(amounts.sgst_cents, 250);
+        assert_eq!(amounts.igst_cents, 0);
+    }
+
+    #[test]
+    fn interstate_gst_is_recorded_as_igst_only() {
+        let amounts =
+            calculate_gst_amounts(10_000, 250, "EXCLUSIVE", true, true).unwrap();
+        assert_eq!(amounts.taxable_cents, 10_000);
+        assert_eq!(amounts.total_gst_cents, 250);
+        assert_eq!(amounts.cgst_cents, 0);
+        assert_eq!(amounts.sgst_cents, 0);
+        assert_eq!(amounts.igst_cents, 250);
+    }
+}
+
+#[cfg(test)]
+mod gst_checkout_tests {
+    use super::*;
+
+    fn gst_connection(
+        product_rate_basis_points: Option<i64>,
+        default_rate_basis_points: i64,
+    ) -> Connection {
+        let mut connection = Connection::open_in_memory().expect("open GST checkout database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .expect("enable GST checkout foreign keys");
+        migrate_connection(&mut connection).expect("migrate GST checkout database");
+        connection
+            .execute(
+                "INSERT INTO medicines (id, name, gst_rate_basis_points) VALUES (1, 'GST test medicine', ?1)",
+                [product_rate_basis_points],
+            )
+            .expect("create GST test medicine");
+        apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::SaveSettings {
+                settings: StoreSettingsMutation {
+                    pharmacy_name: "GST Test Pharmacy".to_owned(),
+                    address: String::new(),
+                    contact_number: String::new(),
+                    drug_license_number: String::new(),
+                    receipt_footer_note: String::new(),
+                    upi_id: String::new(),
+                    upi_display_name: String::new(),
+                    gst_enabled: true,
+                    gst_default_rate_basis_points: Some(default_rate_basis_points),
+                    gst_pricing_mode: "EXCLUSIVE".to_owned(),
+                    gst_pharmacy_state_code: "29".to_owned(),
+                },
+            },
+        )
+        .expect("save GST settings");
+        connection
+    }
+
+    fn create_customer(connection: &mut Connection, state_code: &str) -> i64 {
+        apply_pharmacy_mutation_to_connection(
+            connection,
+            PharmacyMutation::CreateCustomer {
+                name: "GST Test Customer".to_owned(),
+                phone: None,
+                address: None,
+                notes: None,
+                state_code: Some(state_code.to_owned()),
+            },
+        )
+        .expect("create GST test customer")
+        .expect("customer id")
+    }
+
+    fn add_batch(connection: &Connection, batch_id: i64, sale_rate: f64) {
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate,
+                     mrp, sale_rate, current_stock
+                   ) VALUES (
+                     ?1, 1, ?2, date('now', 'localtime', '+365 days'), 50,
+                     ?3, ?3, 10
+                   )"#,
+                params![batch_id, format!("GST-{batch_id}"), sale_rate],
+            )
+            .expect("create GST sale batch");
+    }
+
+    fn sale_request(
+        customer_id: i64,
+        batch_id: i64,
+        payment_mode: &str,
+        pricing_mode: &str,
+        unit_price_cents: i64,
+        upi_transaction_id: Option<&str>,
+    ) -> SaleCheckoutRequest {
+        SaleCheckoutRequest {
+            customer_id: Some(customer_id),
+            customer_name: None,
+            customer_phone: None,
+            payment_mode: payment_mode.to_owned(),
+            flat_discount_cents: 0,
+            cash_tendered_cents: 0,
+            gst_pricing_mode: Some(pricing_mode.to_owned()),
+            upi_transaction_id: upi_transaction_id.map(str::to_owned),
+            items: vec![SaleCheckoutItem {
+                medicine_id: 1,
+                batch_id,
+                quantity: 1,
+                unit_price_cents,
+                item_discount_cents: 0,
+                gst_rate_override_basis_points: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn sale_snapshots_product_rate_interstate_tax_and_unverified_upi() {
+        let mut connection = gst_connection(Some(500), 1_200);
+        let customer_id = create_customer(&mut connection, "07");
+        add_batch(&connection, 301, 105.0);
+
+        complete_sale_in_connection(
+            &mut connection,
+            sale_request(
+                customer_id,
+                301,
+                "UPI",
+                "INCLUSIVE",
+                10_500,
+                Some("UPI-TEST-301"),
+            ),
+        )
+        .expect("complete interstate UPI sale");
+
+        let sale: (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            i64,
+            Option<String>,
+        ) = connection
+            .query_row(
+                r#"SELECT gst_enabled, tax_type, customer_state_code,
+                          place_of_supply_state_code, gst_pricing_mode,
+                          taxable_amount, cgst_amount, sgst_amount,
+                          igst_amount, grand_total, upi_payment_verified,
+                          upi_transaction_id
+                   FROM sales ORDER BY id DESC LIMIT 1"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                    ))
+                },
+            )
+            .expect("read saved GST sale");
+        assert_eq!(sale.0, 1);
+        assert_eq!(sale.1, "IGST");
+        assert_eq!(sale.2.as_deref(), Some("07"));
+        assert_eq!(sale.3.as_deref(), Some("07"));
+        assert_eq!(sale.4, "INCLUSIVE");
+        assert_eq!(sale.5, 100.0);
+        assert_eq!(sale.6, 0.0);
+        assert_eq!(sale.7, 0.0);
+        assert_eq!(sale.8, 5.0);
+        assert_eq!(sale.9, 105.0);
+        assert_eq!(sale.10, 0);
+        assert_eq!(sale.11.as_deref(), Some("UPI-TEST-301"));
+
+        let line: (i64, f64, f64) = connection
+            .query_row(
+                "SELECT gst_rate_basis_points, taxable_amount, igst_amount FROM sale_items",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read saved GST sale line");
+        assert_eq!(line, (500, 100.0, 5.0));
+    }
+
+    #[test]
+    fn credit_sale_records_local_ledger_and_collection_reduces_balance() {
+        let mut connection = gst_connection(None, 500);
+        let customer_id = create_customer(&mut connection, "29");
+        add_batch(&connection, 302, 100.0);
+
+        complete_sale_in_connection(
+            &mut connection,
+            sale_request(customer_id, 302, "CREDIT", "EXCLUSIVE", 10_000, None),
+        )
+        .expect("complete customer credit sale");
+
+        let sale: (String, f64, f64, f64, f64) = connection
+            .query_row(
+                r#"SELECT tax_type, cgst_amount, sgst_amount, igst_amount, grand_total
+                   FROM sales ORDER BY id DESC LIMIT 1"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read local credit sale");
+        assert_eq!(sale, ("CGST_SGST".to_owned(), 2.5, 2.5, 0.0, 105.0));
+
+        let before_collection: (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT COALESCE(SUM(debit_cents), 0),
+                          COALESCE(SUM(credit_cents), 0), COUNT(*)
+                   FROM customer_ledger WHERE customer_id = ?1"#,
+                [customer_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read customer credit ledger");
+        assert_eq!(before_collection, (10_500, 0, 1));
+
+        let collection = collect_customer_payment_in_connection(
+            &mut connection,
+            CustomerPaymentRequest {
+                customer_id,
+                amount_cents: 5_000,
+                payment_mode: "CASH".to_owned(),
+                upi_transaction_id: None,
+                note: Some("Part payment".to_owned()),
+            },
+        )
+        .expect("record customer collection");
+        assert_eq!(collection.balance_due_cents, 5_500);
+
+        let after_collection: (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT COALESCE(SUM(debit_cents), 0),
+                          COALESCE(SUM(credit_cents), 0), COUNT(*)
+                   FROM customer_ledger WHERE customer_id = ?1"#,
+                [customer_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read collected customer balance");
+        assert_eq!(after_collection, (10_500, 5_000, 2));
     }
 }

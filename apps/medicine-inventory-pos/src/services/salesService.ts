@@ -70,6 +70,15 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
     throw new SalesError("Add at least one medicine before completing checkout.");
   }
   assertPaymentMode(input.payment_mode);
+  if (
+    input.customer_id !== null &&
+    (!Number.isSafeInteger(input.customer_id) || input.customer_id <= 0)
+  ) {
+    throw new SalesError("Choose a valid saved customer.");
+  }
+  if (!["INCLUSIVE", "EXCLUSIVE"].includes(input.gst_pricing_mode)) {
+    throw new SalesError("Choose inclusive or exclusive GST pricing.");
+  }
 
   const flatDiscountCents = toCents(input.flat_discount, "Flat discount");
   let subtotalCents = 0;
@@ -89,6 +98,14 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
 
     const unitPriceCents = toCents(item.unit_price, "Unit price");
     const lineDiscountCents = toCents(item.item_discount, "Item discount");
+    if (
+      item.gst_rate_override_basis_points !== null &&
+      (!Number.isSafeInteger(item.gst_rate_override_basis_points) ||
+        item.gst_rate_override_basis_points < 0 ||
+        item.gst_rate_override_basis_points > 10_000)
+    ) {
+      throw new SalesError("GST rate must be between 0% and 100%, in 0.01% increments.");
+    }
     const lineGrossCents = unitPriceCents * item.quantity;
     if (!Number.isSafeInteger(lineGrossCents)) {
       throw new SalesError("A cart line total is larger than the supported amount.");
@@ -110,19 +127,18 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
     throw new SalesError("The combined discounts cannot exceed the sale subtotal.");
   }
 
-  const grandTotalCents = subtotalCents - totalDiscountCents;
   const cashTenderedCents = toCents(input.cash_tendered, "Cash tendered");
-  if (input.payment_mode === "CASH" && cashTenderedCents < grandTotalCents) {
-    throw new SalesError("Cash tendered must cover the final amount due.");
-  }
   if (input.payment_mode !== "CASH" && cashTenderedCents !== 0) {
     throw new SalesError("Cash tendered is only used for cash payments.");
   }
 
   const checkout: {
+    customerId: number | null;
     customerName: string | null;
     customerPhone: string | null;
     paymentMode: PaymentMode;
+    gstPricingMode: "INCLUSIVE" | "EXCLUSIVE";
+    upiTransactionId: string | null;
     flatDiscountCents: number;
     cashTenderedCents: number;
     items: Array<{
@@ -131,11 +147,15 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
       quantity: number;
       unitPriceCents: number;
       itemDiscountCents: number;
+      gstRateOverrideBasisPoints: number | null;
     }>;
   } = {
+    customerId: input.customer_id,
     customerName: normalizeOptionalText(input.customer_name),
     customerPhone: normalizeOptionalText(input.customer_phone),
     paymentMode: input.payment_mode,
+    gstPricingMode: input.gst_pricing_mode,
+    upiTransactionId: normalizeOptionalText(input.upi_transaction_id),
     flatDiscountCents,
     cashTenderedCents,
     items: input.items.map((item) => ({
@@ -144,6 +164,7 @@ export async function checkoutSale(input: CheckoutSaleInput): Promise<SaleDetail
       quantity: item.quantity,
       unitPriceCents: toCents(item.unit_price, "Unit price"),
       itemDiscountCents: toCents(item.item_discount, "Item discount"),
+      gstRateOverrideBasisPoints: item.gst_rate_override_basis_points,
     })),
   };
 

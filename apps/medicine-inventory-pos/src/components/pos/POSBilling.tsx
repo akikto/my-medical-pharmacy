@@ -25,6 +25,7 @@ import {
   useState,
 } from "react";
 import { searchMedicines, getSellableBatches } from "../../services/inventoryService";
+import { getStoreSettings } from "../../services/settingsService";
 import {
   checkoutSale,
   getRecentSales,
@@ -33,14 +34,18 @@ import {
 } from "../../services/salesService";
 import type {
   CartItem,
+  Customer,
   MedicineSearchResult,
   PaymentMode,
   RecentSale,
   SaleDetails,
+  StoreSettings,
 } from "../../types";
+import { calculateGstInvoiceTotals, type GstPricingMode } from "../../utils/gst";
 import { formatDate, formatDateTime, formatMoney, fromCents, toCents } from "../../utils/money";
 import { CheckoutDialog } from "./CheckoutDialog";
 import { ReceiptPrint } from "./ReceiptPrint";
+import "./gst.css";
 
 type Notice = { kind: "success" | "error" | "info"; message: string };
 
@@ -80,11 +85,17 @@ export function POSBilling({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedResultIndex, setSelectedResultIndex] = useState(0);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [settings, setSettings] = useState<StoreSettings | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [gstPricingMode, setGstPricingMode] = useState<GstPricingMode>("EXCLUSIVE");
   const [flatDiscountInput, setFlatDiscountInput] = useState("0");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("CASH");
   const [cashTenderedInput, setCashTenderedInput] = useState("0");
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [customerStateCode, setCustomerStateCode] = useState<string | null>(null);
+  const [upiTransactionId, setUpiTransactionId] = useState("");
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -105,43 +116,81 @@ export function POSBilling({
     setCart(next);
   }, []);
 
+  const gstEnabled = settings?.gst_enabled ?? false;
+  const gstTotals = useMemo(
+    () =>
+      calculateGstInvoiceTotals(
+        cart.map((item) => ({
+          quantity: item.quantity,
+          unit_price_cents: toCents(item.unit_price),
+          item_discount_cents: toCents(item.item_discount),
+          gst_rate_basis_points: item.gst_rate_basis_points,
+          gst_rate_override_basis_points: item.gst_rate_override_basis_points,
+        })),
+        Math.max(toCents(Number(flatDiscountInput) || 0), 0),
+        gstEnabled,
+        settings?.gst_default_rate_basis_points ?? null,
+        gstPricingMode,
+        settings?.gst_pharmacy_state_code ?? "",
+        customerStateCode,
+      ),
+    [
+      cart,
+      customerStateCode,
+      flatDiscountInput,
+      gstEnabled,
+      gstPricingMode,
+      settings?.gst_default_rate_basis_points,
+      settings?.gst_pharmacy_state_code,
+    ],
+  );
   const totals = useMemo(() => {
-    const subtotalCents = cart.reduce(
-      (total, item) => total + toCents(item.unit_price) * item.quantity,
-      0,
-    );
-    const itemDiscountCents = cart.reduce(
-      (total, item) => total + toCents(item.item_discount),
-      0,
-    );
-    const maxFlatDiscountCents = Math.max(subtotalCents - itemDiscountCents, 0);
-    const requestedFlatDiscountCents = Math.max(
-      toCents(Number(flatDiscountInput) || 0),
-      0,
-    );
-    const flatDiscountCents = Math.min(
-      requestedFlatDiscountCents,
-      maxFlatDiscountCents,
-    );
-    const grandTotalCents = Math.max(
-      subtotalCents - itemDiscountCents - flatDiscountCents,
-      0,
-    );
     const cashCents = Math.max(toCents(Number(cashTenderedInput) || 0), 0);
     return {
-      subtotal: fromCents(subtotalCents),
-      itemDiscount: fromCents(itemDiscountCents),
-      flatDiscount: fromCents(flatDiscountCents),
-      maxFlatDiscount: fromCents(maxFlatDiscountCents),
-      grandTotal: fromCents(grandTotalCents),
+      subtotal: fromCents(gstTotals.subtotal_cents),
+      itemDiscount: fromCents(gstTotals.item_discount_cents),
+      flatDiscount: fromCents(gstTotals.flat_discount_cents),
+      maxFlatDiscount: fromCents(
+        gstTotals.subtotal_cents - gstTotals.item_discount_cents,
+      ),
+      taxable: fromCents(gstTotals.taxable_cents),
+      cgst: fromCents(gstTotals.cgst_cents),
+      sgst: fromCents(gstTotals.sgst_cents),
+      igst: fromCents(gstTotals.igst_cents),
+      totalGst: fromCents(gstTotals.total_gst_cents),
+      taxType: gstTotals.tax_type,
+      missingGstRate: gstTotals.missing_rate,
+      grandTotal: fromCents(gstTotals.grand_total_cents),
       cashTendered: paymentMode === "CASH" ? fromCents(cashCents) : 0,
       changeDue:
         paymentMode === "CASH"
-          ? fromCents(Math.max(cashCents - grandTotalCents, 0))
+          ? fromCents(Math.max(cashCents - gstTotals.grand_total_cents, 0))
           : 0,
       itemCount: cart.reduce((total, item) => total + item.quantity, 0),
     };
-  }, [cart, cashTenderedInput, flatDiscountInput, paymentMode]);
+  }, [cart, cashTenderedInput, gstTotals, paymentMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getStoreSettings()
+      .then((currentSettings) => {
+        if (cancelled) return;
+        setSettings(currentSettings);
+        setGstPricingMode(currentSettings.gst_pricing_mode);
+        setSettingsError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSettingsError(getErrorMessage(error));
+        setNotice({
+          kind: "error",
+          message: "GST settings could not be loaded. Checkout is disabled until settings are available.",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const query = searchQuery.trim();
@@ -280,6 +329,8 @@ export function POSBilling({
                   item_discount: 0,
                   available_in_batch: batch.current_stock,
                   line_total: batch.sale_rate,
+                  gst_rate_basis_points: result.medicine.gst_rate_basis_points,
+                  gst_rate_override_basis_points: null,
                 },
               ];
           replaceCart(() => next);
@@ -387,6 +438,27 @@ export function POSBilling({
       searchInputRef.current?.focus();
       return;
     }
+    if (!settings || settingsError) {
+      setNotice({
+        kind: "error",
+        message: "Local GST and payment settings are not available. Checkout is blocked.",
+      });
+      return;
+    }
+    if (gstEnabled && !settings.gst_pharmacy_state_code) {
+      setNotice({
+        kind: "error",
+        message: "Set the pharmacy GST state in Settings before checkout.",
+      });
+      return;
+    }
+    if (totals.missingGstRate) {
+      setNotice({
+        kind: "error",
+        message: "Set a medicine or default GST rate before checkout.",
+      });
+      return;
+    }
     if (paymentMode === "CASH") {
       const currentTendered = Number(cashTenderedInput) || 0;
       if (currentTendered < totals.grandTotal) {
@@ -396,7 +468,15 @@ export function POSBilling({
       setCashTenderedInput("0");
     }
     setCheckoutOpen(true);
-  }, [cashTenderedInput, paymentMode, totals.grandTotal]);
+  }, [
+    cashTenderedInput,
+    gstEnabled,
+    paymentMode,
+    settings,
+    settingsError,
+    totals.grandTotal,
+    totals.missingGstRate,
+  ]);
 
   useEffect(() => {
     const handleShortcuts = (event: KeyboardEvent) => {
@@ -503,6 +583,35 @@ export function POSBilling({
     );
   }
 
+  function changeGstRateOverride(batchId: number, value: string) {
+    const normalized = value.trim();
+    let rateBasisPoints: number | null = null;
+    if (normalized) {
+      const ratePercent = Number(normalized);
+      const basisPoints = Math.round(ratePercent * 100);
+      if (
+        !Number.isFinite(ratePercent) ||
+        ratePercent < 0 ||
+        ratePercent > 100 ||
+        Math.abs(ratePercent * 100 - basisPoints) > 0.000001
+      ) {
+        setNotice({
+          kind: "error",
+          message: "GST rate must be between 0% and 100%, in 0.01% increments.",
+        });
+        return;
+      }
+      rateBasisPoints = basisPoints;
+    }
+    replaceCart((current) =>
+      current.map((entry) =>
+        entry.batch_id === batchId
+          ? { ...entry, gst_rate_override_basis_points: rateBasisPoints }
+          : entry,
+      ),
+    );
+  }
+
   function removeFromCart(batchId: number) {
     const item = cartRef.current.find((entry) => entry.batch_id === batchId);
     replaceCart((current) => current.filter((entry) => entry.batch_id !== batchId));
@@ -520,9 +629,13 @@ export function POSBilling({
     setNotice(null);
     try {
       const completed = await checkoutSale({
+        customer_id: customerId,
         customer_name: customerName.trim() || null,
         customer_phone: customerPhone.trim() || null,
         payment_mode: paymentMode,
+        gst_pricing_mode: gstPricingMode,
+        upi_transaction_id:
+          paymentMode === "UPI" ? upiTransactionId.trim() || null : null,
         flat_discount: totals.flatDiscount,
         cash_tendered:
           paymentMode === "CASH" ? Number(cashTenderedInput) || 0 : 0,
@@ -532,6 +645,7 @@ export function POSBilling({
           quantity: item.quantity,
           unit_price: item.unit_price,
           item_discount: item.item_discount,
+          gst_rate_override_basis_points: item.gst_rate_override_basis_points,
         })),
       });
       setReceiptSale(completed);
@@ -541,7 +655,11 @@ export function POSBilling({
       setCashTenderedInput("0");
       setCustomerName("");
       setCustomerPhone("");
+      setCustomerId(null);
+      setCustomerStateCode(null);
+      setUpiTransactionId("");
       setPaymentMode("CASH");
+      setGstPricingMode(settings?.gst_pricing_mode ?? "EXCLUSIVE");
       setCheckoutOpen(false);
       setNotice({
         kind: "success",
@@ -555,7 +673,11 @@ export function POSBilling({
         setCashTenderedInput("0");
         setCustomerName("");
         setCustomerPhone("");
+        setCustomerId(null);
+        setCustomerStateCode(null);
+        setUpiTransactionId("");
         setPaymentMode("CASH");
+        setGstPricingMode(settings?.gst_pricing_mode ?? "EXCLUSIVE");
         setCheckoutOpen(false);
         setNotice({ kind: "error", message: error.message });
         await refreshRecentSales();
@@ -797,6 +919,7 @@ export function POSBilling({
                       <th scope="col">Unit price</th>
                       <th scope="col">Quantity</th>
                       <th scope="col">Discount</th>
+                      {gstEnabled && <th scope="col">GST rate</th>}
                       <th scope="col">Line total</th>
                       <th scope="col"><span className="sr-only">Remove item</span></th>
                     </tr>
@@ -888,6 +1011,51 @@ export function POSBilling({
                               />
                             </label>
                           </td>
+                          {gstEnabled && (
+                            <td className="gst-rate-cell">
+                              <span>
+                                {item.gst_rate_override_basis_points !== null
+                                  ? `Applied ${(item.gst_rate_override_basis_points / 100).toFixed(2)}%`
+                                  : item.gst_rate_basis_points !== null
+                                    ? `Medicine ${(item.gst_rate_basis_points / 100).toFixed(2)}%`
+                                    : settings?.gst_default_rate_basis_points !== null &&
+                                        settings?.gst_default_rate_basis_points !== undefined
+                                      ? `Default ${(settings.gst_default_rate_basis_points / 100).toFixed(2)}%`
+                                      : "Rate required"}
+                              </span>
+                              <label className="gst-rate-input">
+                                <span className="sr-only">
+                                  {item.medicine_name} GST rate override in percent
+                                </span>
+                                <input
+                                  aria-label={`${item.medicine_name} GST rate override in percent`}
+                                  data-testid={`input-gst-rate-${item.batch_id}`}
+                                  inputMode="decimal"
+                                  max="100"
+                                  min="0"
+                                  onChange={(event) =>
+                                    changeGstRateOverride(item.batch_id, event.target.value)
+                                  }
+                                  placeholder={
+                                    item.gst_rate_basis_points !== null
+                                      ? (item.gst_rate_basis_points / 100).toFixed(2)
+                                      : settings?.gst_default_rate_basis_points !== null &&
+                                          settings?.gst_default_rate_basis_points !== undefined
+                                        ? (settings.gst_default_rate_basis_points / 100).toFixed(2)
+                                        : "Required"
+                                  }
+                                  step="0.01"
+                                  type="number"
+                                  value={
+                                    item.gst_rate_override_basis_points === null
+                                      ? ""
+                                      : (item.gst_rate_override_basis_points / 100).toString()
+                                  }
+                                />
+                                <span>%</span>
+                              </label>
+                            </td>
+                          )}
                           <td className="table-money table-money--strong">
                             {formatMoney(item.line_total)}
                           </td>
@@ -930,6 +1098,31 @@ export function POSBilling({
             </header>
 
             <div className="summary-lines">
+              {gstEnabled && (
+                <div className="gst-mode-control">
+                  <span>GST pricing mode</span>
+                  <div role="group" aria-label="GST pricing mode">
+                    <button
+                      aria-pressed={gstPricingMode === "INCLUSIVE"}
+                      className={gstPricingMode === "INCLUSIVE" ? "is-selected" : ""}
+                      data-testid="button-gst-inclusive"
+                      onClick={() => setGstPricingMode("INCLUSIVE")}
+                      type="button"
+                    >
+                      Inclusive
+                    </button>
+                    <button
+                      aria-pressed={gstPricingMode === "EXCLUSIVE"}
+                      className={gstPricingMode === "EXCLUSIVE" ? "is-selected" : ""}
+                      data-testid="button-gst-exclusive"
+                      onClick={() => setGstPricingMode("EXCLUSIVE")}
+                      type="button"
+                    >
+                      Exclusive
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="summary-row">
                 <span>Subtotal <small>({totals.itemCount} units)</small></span>
                 <strong data-testid="text-subtotal">{formatMoney(totals.subtotal)}</strong>
@@ -958,12 +1151,59 @@ export function POSBilling({
                   <ChevronDown aria-hidden="true" size={14} />
                 </span>
               </label>
+              {gstEnabled && (
+                <div className="gst-breakdown" data-testid="panel-gst-breakdown">
+                  {totals.missingGstRate ? (
+                    <p className="gst-rate-required" role="alert">
+                      Set a medicine or default GST rate before checkout.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="summary-row">
+                        <span>Taxable amount</span>
+                        <strong>{formatMoney(totals.taxable)}</strong>
+                      </div>
+                      <div className="summary-row">
+                        <span>Tax type</span>
+                        <strong>{totals.taxType === "IGST" ? "IGST" : "CGST + SGST"}</strong>
+                      </div>
+                      {totals.taxType === "IGST" ? (
+                        <div className="summary-row">
+                          <span>IGST</span>
+                          <strong>{formatMoney(totals.igst)}</strong>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="summary-row">
+                            <span>CGST</span>
+                            <strong>{formatMoney(totals.cgst)}</strong>
+                          </div>
+                          <div className="summary-row">
+                            <span>SGST</span>
+                            <strong>{formatMoney(totals.sgst)}</strong>
+                          </div>
+                        </>
+                      )}
+                      <div className="summary-row summary-row--gst-total">
+                        <span>Total GST</span>
+                        <strong>{formatMoney(totals.totalGst)}</strong>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="payable-block">
               <span>Final payable</span>
               <strong data-testid="text-final-payable">{formatMoney(totals.grandTotal)}</strong>
-              <small>Discounts included</small>
+              <small>
+                {gstEnabled
+                  ? gstPricingMode === "INCLUSIVE"
+                    ? "Discounts and GST included"
+                    : "GST added after discounts"
+                  : "Discounts included"}
+              </small>
             </div>
 
             <div className="payment-summary">
@@ -985,10 +1225,31 @@ export function POSBilling({
               </div>
             </div>
 
+            {settingsError && (
+              <p className="gst-rate-required" role="alert">
+                GST settings could not be loaded. Restart the app or retry before checkout.
+              </p>
+            )}
+            {settings === null && !settingsError && (
+              <p className="gst-inline-note">Loading local tax and payment settings…</p>
+            )}
+            {gstEnabled && !settings?.gst_pharmacy_state_code && (
+              <p className="gst-rate-required" role="alert">
+                Set the pharmacy GST state in Settings before checkout.
+              </p>
+            )}
+
             <button
               className="button button-checkout"
               data-testid="button-open-checkout"
-              disabled={cart.length === 0 || isSaving}
+              disabled={
+                cart.length === 0 ||
+                isSaving ||
+                settings === null ||
+                settingsError !== null ||
+                totals.missingGstRate ||
+                (gstEnabled && !settings?.gst_pharmacy_state_code)
+              }
               onClick={openCheckout}
               type="button"
             >
@@ -1104,10 +1365,30 @@ export function POSBilling({
       {checkoutOpen && (
         <CheckoutDialog
           cashTendered={cashTenderedInput}
+          canConfirm={
+            settings !== null &&
+            settingsError === null &&
+            !totals.missingGstRate &&
+            (!gstEnabled || Boolean(settings.gst_pharmacy_state_code))
+          }
+          cgstAmount={totals.cgst}
+          customerId={customerId}
           customerName={customerName}
           customerPhone={customerPhone}
+          customerStateCode={customerStateCode}
+          gstEnabled={gstEnabled}
+          gstPricingMode={gstPricingMode}
           grandTotal={totals.grandTotal}
+          igstAmount={totals.igst}
           isSaving={isSaving}
+          onCustomerSelect={(customer: Customer | null) => {
+            setCustomerId(customer?.id ?? null);
+            setCustomerStateCode(customer?.state_code ?? null);
+            if (customer) {
+              setCustomerName(customer.name);
+              setCustomerPhone(customer.phone ?? "");
+            }
+          }}
           onCashTenderedChange={setCashTenderedInput}
           onClose={() => setCheckoutOpen(false)}
           onConfirm={() => void completeCheckout()}
@@ -1121,7 +1402,15 @@ export function POSBilling({
               setCashTenderedInput(totals.grandTotal.toFixed(2));
             }
           }}
+          onUpiTransactionIdChange={setUpiTransactionId}
           paymentMode={paymentMode}
+          sgstAmount={totals.sgst}
+          taxType={totals.taxType}
+          taxableAmount={totals.taxable}
+          totalGst={totals.totalGst}
+          upiDisplayName={settings?.upi_display_name ?? ""}
+          upiId={settings?.upi_id ?? ""}
+          upiTransactionId={upiTransactionId}
         />
       )}
 

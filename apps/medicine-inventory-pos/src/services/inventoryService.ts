@@ -48,7 +48,7 @@ function assertPositiveInteger(value: number, label: string): void {
 
 function normalizeMedicineInput(
   input: MedicineFormValues,
-): [string, string | null, string | null, string | null, number] {
+): [string, string | null, string | null, string | null, number, number | null] {
   const name = input.name.trim();
   const genericName = input.generic_name.trim();
   const company = input.company.trim();
@@ -62,12 +62,21 @@ function normalizeMedicineInput(
   if (!Number.isSafeInteger(input.min_stock_alert) || input.min_stock_alert < 0 || input.min_stock_alert > 1_000_000_000) {
     throw new InventoryError("Low-stock alert must be a whole number from 0 to 1,000,000,000.");
   }
+  if (
+    input.gst_rate_basis_points !== null &&
+    (!Number.isSafeInteger(input.gst_rate_basis_points) ||
+      input.gst_rate_basis_points < 0 ||
+      input.gst_rate_basis_points > 10_000)
+  ) {
+    throw new InventoryError("GST rate must be between 0% and 100%, in 0.01% increments.");
+  }
   return [
     name,
     genericName || null,
     company || null,
     rackLocation || null,
     input.min_stock_alert,
+    input.gst_rate_basis_points,
   ];
 }
 
@@ -92,7 +101,7 @@ export async function getInventoryMedicines(
 }
 
 export async function createMedicine(input: MedicineFormValues): Promise<EntityId> {
-  const [name, genericName, company, rackLocation, minStockAlert] =
+  const [name, genericName, company, rackLocation, minStockAlert, gstRate] =
     normalizeMedicineInput(input);
   const result = await applyPharmacyMutation({
     kind: "create_medicine",
@@ -101,6 +110,7 @@ export async function createMedicine(input: MedicineFormValues): Promise<EntityI
     company,
     rack_location: rackLocation,
     min_stock_alert: minStockAlert,
+    gst_rate_basis_points: gstRate,
   });
   const medicineId = result.entityId;
   if (medicineId === null || !Number.isSafeInteger(medicineId) || medicineId <= 0) {
@@ -114,7 +124,7 @@ export async function updateMedicine(
   input: MedicineFormValues,
 ): Promise<void> {
   assertPositiveInteger(medicineId, "Medicine id");
-  const [name, genericName, company, rackLocation, minStockAlert] =
+  const [name, genericName, company, rackLocation, minStockAlert, gstRate] =
     normalizeMedicineInput(input);
   await applyPharmacyMutation({
     kind: "update_medicine",
@@ -124,6 +134,7 @@ export async function updateMedicine(
     company,
     rack_location: rackLocation,
     min_stock_alert: minStockAlert,
+    gst_rate_basis_points: gstRate,
   });
 }
 
@@ -243,6 +254,7 @@ export async function searchMedicines(
       company: row.company,
       rack_location: row.rack_location,
       min_stock_alert: row.min_stock_alert,
+      gst_rate_basis_points: row.gst_rate_basis_points,
       created_at: row.created_at,
     },
     available_stock: row.available_stock,

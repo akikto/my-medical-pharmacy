@@ -181,6 +181,7 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       "company",
       "rack_location",
       "min_stock_alert",
+      "gst_rate_basis_points",
       "created_at",
     ]);
     assert.deepEqual(await searchMedicines("no such medicine"), []);
@@ -386,6 +387,12 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       drug_license_number: "",
       receipt_footer_note:
         "Thank you for choosing us. Please retain this receipt for your records.",
+      upi_id: "",
+      upi_display_name: "",
+      gst_enabled: false,
+      gst_default_rate_basis_points: null,
+      gst_pricing_mode: "EXCLUSIVE",
+      gst_pharmacy_state_code: "",
     });
     fixture.insertSetting("pharmacy_name", "Fixture Pharmacy");
     fixture.insertSetting("unrecognized_key", "ignored");

@@ -525,7 +525,7 @@ export function OrderListPage({ onNavigateToSuppliers }: OrderListPageProps) {
                       <button aria-label={`Increase ${item.medicine_name} quantity`} className="order-quantity-button" data-testid={`button-increase-quantity-${item.id}`} disabled={busy} onClick={() => void updateQuantity(item, item.quantity + 1)} type="button"><Plus size={13} /></button>
                     </div>
                     <div className="order-item-actions">
-                      <button aria-label={`Edit ${item.medicine_name}`} className="order-icon-button" data-testid={`button-edit-order-item-${item.id}`} disabled={busy} onClick={() => openDraft({ id: item.medicine_id, name: item.medicine_name, generic_name: item.generic_name, company: item.company, rack_location: null, min_stock_alert: 0, created_at: "" }, item)} type="button">Edit</button>
+                      <button aria-label={`Edit ${item.medicine_name}`} className="order-icon-button" data-testid={`button-edit-order-item-${item.id}`} disabled={busy} onClick={() => openDraft({ id: item.medicine_id, name: item.medicine_name, generic_name: item.generic_name, company: item.company, rack_location: null, min_stock_alert: 0, gst_rate_basis_points: null, created_at: "" }, item)} type="button">Edit</button>
                       <button aria-label={`Remove ${item.medicine_name}`} className="order-icon-button order-icon-button--remove" data-testid={`button-remove-order-item-${item.id}`} disabled={busy} onClick={() => void removeItem(item)} type="button"><Trash2 size={15} /></button>
                     </div>
                   </article>

@@ -67,6 +67,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs A",
     rack_location: "DEMO-A01",
     min_stock_alert: 20,
+    gst_rate_basis_points: null,
   },
   amoxicillin: {
     name: "DEV DEMO · Amoxicillin 500 mg",
@@ -74,6 +75,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs B",
     rack_location: "DEMO-A02",
     min_stock_alert: 12,
+    gst_rate_basis_points: null,
   },
   cetirizine: {
     name: "DEV DEMO · Cetirizine 10 mg",
@@ -81,6 +83,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs C",
     rack_location: "DEMO-B01",
     min_stock_alert: 10,
+    gst_rate_basis_points: null,
   },
   ors: {
     name: "DEV DEMO · ORS Lemon 21 g",
@@ -88,6 +91,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs A",
     rack_location: "DEMO-B02",
     min_stock_alert: 8,
+    gst_rate_basis_points: null,
   },
   metformin: {
     name: "DEV DEMO · Metformin 500 mg",
@@ -95,6 +99,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs B",
     rack_location: "DEMO-C01",
     min_stock_alert: 15,
+    gst_rate_basis_points: null,
   },
   amlodipine: {
     name: "DEV DEMO · Amlodipine 5 mg",
@@ -102,6 +107,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs C",
     rack_location: "DEMO-C02",
     min_stock_alert: 5,
+    gst_rate_basis_points: null,
   },
   omeprazole: {
     name: "DEV DEMO · Omeprazole 20 mg",
@@ -109,6 +115,7 @@ const medicineFixtures: Record<DemoMedicineKey, MedicineFormValues> = {
     company: "Development Demo Labs A",
     rack_location: "DEMO-D01",
     min_stock_alert: 5,
+    gst_rate_basis_points: null,
   },
 };
 
@@ -318,6 +325,7 @@ async function createSeedSale(
         quantity: item.quantity,
         unit_price: batch.sale_rate,
         item_discount: 0,
+        gst_rate_override_basis_points: null,
       };
     }),
   );
@@ -330,9 +338,12 @@ async function createSeedSale(
   let sale: Awaited<ReturnType<typeof checkoutSale>>;
   try {
     sale = await checkoutSale({
+      customer_id: null,
       customer_name: options.customerName,
       customer_phone: null,
       payment_mode: options.paymentMode,
+      gst_pricing_mode: "EXCLUSIVE",
+      upi_transaction_id: null,
       flat_discount: options.flatDiscount ?? 0,
       cash_tendered:
         options.paymentMode === "CASH" ? amountDueCents / 100 : 0,
