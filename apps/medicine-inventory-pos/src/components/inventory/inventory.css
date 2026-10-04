@@ -76,6 +76,49 @@
   grid-column: 1 / -1;
 }
 
+.medicine-opening-stock {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: #f8fbf8;
+  border: 1px solid #e0e9e3;
+  border-radius: 10px;
+}
+
+.medicine-opening-stock-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.medicine-opening-stock-heading h3 {
+  margin: 0;
+  color: #355344;
+  font-size: 13px;
+}
+
+.medicine-opening-stock-heading p {
+  margin: 4px 0 0;
+  color: #718077;
+  font-size: 11px;
+}
+
+.medicine-opening-stock-toggle {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  color: #355344;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.medicine-opening-stock-toggle input {
+  margin: 0;
+}
+
 .medicine-form-textarea {
   min-height: 54px;
   resize: vertical;

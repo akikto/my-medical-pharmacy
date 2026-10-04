@@ -22,6 +22,7 @@ import {
   deleteMedicine,
   getInventoryMedicines,
   importMedicines,
+  MedicineSavedWithPhotoError,
   updateBatchDetails,
   updateBulkReorderThresholds,
   updateMedicine,
@@ -144,12 +145,24 @@ export function InventoryPage() {
         setNotice({ kind: "success", message: `${values.name.trim()} was updated.` });
       } else {
         await createMedicine(values);
-        setNotice({ kind: "success", message: `${values.name.trim()} was added to inventory.` });
+        const openingQuantity = values.opening_stock?.quantity;
+        setNotice({
+          kind: "success",
+          message: openingQuantity
+            ? `${values.name.trim()} was added with ${openingQuantity} opening unit${openingQuantity === 1 ? "" : "s"}.`
+            : `${values.name.trim()} was added to inventory.`,
+        });
       }
       setMedicineDialog(undefined);
       setRefreshKey((current) => current + 1);
     } catch (error) {
-      setDialogError(getErrorMessage(error));
+      if (error instanceof MedicineSavedWithPhotoError) {
+        setNotice({ kind: "error", message: error.message });
+        setMedicineDialog(undefined);
+        setRefreshKey((current) => current + 1);
+      } else {
+        setDialogError(getErrorMessage(error));
+      }
     } finally {
       setIsSaving(false);
     }

@@ -18,6 +18,7 @@ export type PharmacyMutation =
       rack_location: string | null;
       min_stock_alert: number;
       gst_rate_basis_points: number | null;
+      opening_batch: ImportedMedicineRecord["opening_batch"];
     }
   | {
       kind: "update_medicine";

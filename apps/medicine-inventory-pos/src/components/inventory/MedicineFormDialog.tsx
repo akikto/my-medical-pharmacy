@@ -44,6 +44,13 @@ export function MedicineFormDialog({
   const [localMedicines, setLocalMedicines] = useState<MedicineInventoryRow[]>([]);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [showNameSuggestions, setShowNameSuggestions] = useState(false);
+  const [openingStockEnabled, setOpeningStockEnabled] = useState(false);
+  const [openingBatchNo, setOpeningBatchNo] = useState("");
+  const [openingExpiryDate, setOpeningExpiryDate] = useState("");
+  const [openingPurchaseRate, setOpeningPurchaseRate] = useState("");
+  const [openingMrp, setOpeningMrp] = useState("");
+  const [openingSaleRate, setOpeningSaleRate] = useState("");
+  const [openingQuantity, setOpeningQuantity] = useState("");
   const [rackLocation, setRackLocation] = useState(medicine?.rack_location ?? "");
   const [minStockAlert, setMinStockAlert] = useState(
     String(medicine?.min_stock_alert ?? 10),
@@ -158,6 +165,16 @@ export function MedicineFormDialog({
       min_stock_alert: Number(minStockAlert),
       gst_rate_basis_points:
         gstRate.trim() === "" ? null : Math.round(Number(gstRate) * 100),
+      opening_stock: !medicine && openingStockEnabled
+        ? {
+            batch_no: openingBatchNo,
+            expiry_date: openingExpiryDate,
+            purchase_rate: Number(openingPurchaseRate),
+            mrp: Number(openingMrp),
+            sale_rate: Number(openingSaleRate),
+            quantity: Number(openingQuantity),
+          }
+        : null,
     });
   }
 
@@ -213,7 +230,11 @@ export function MedicineFormDialog({
             <h2 id="medicine-dialog-title">
               {medicine ? "Edit medicine" : "Add medicine"}
             </h2>
-            <p>Keep the medicine record and low-stock threshold up to date.</p>
+            <p>
+              {medicine
+                ? "Keep the medicine record and low-stock warning threshold up to date."
+                : "Add medicine details and optionally record a starting stock batch."}
+            </p>
           </div>
           <button
             aria-label="Close medicine form"
@@ -448,6 +469,114 @@ export function MedicineFormDialog({
                 Images are resized and kept on this device. Maximum saved size: 2 MB.
               </span>
             </div>
+            {!medicine && (
+              <section
+                aria-labelledby="medicine-opening-stock-title"
+                className="medicine-opening-stock medicine-form-field--wide"
+              >
+                <div className="medicine-opening-stock-heading">
+                  <div>
+                    <h3 id="medicine-opening-stock-title">Opening stock</h3>
+                    <p>Optional. Add the starting quantity as a batch now, or use Purchases later.</p>
+                  </div>
+                  <label className="medicine-opening-stock-toggle">
+                    <input
+                      checked={openingStockEnabled}
+                      disabled={isSaving}
+                      onChange={(event) => setOpeningStockEnabled(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Add opening stock
+                  </label>
+                </div>
+                {openingStockEnabled && (
+                  <div className="workspace-form-grid medicine-opening-stock-grid">
+                    <label className="field-label">
+                      Batch number
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-batch"
+                        maxLength={120}
+                        onChange={(event) => setOpeningBatchNo(event.target.value)}
+                        required
+                        value={openingBatchNo}
+                      />
+                    </label>
+                    <label className="field-label">
+                      Expiry date
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-expiry"
+                        onChange={(event) => setOpeningExpiryDate(event.target.value)}
+                        required
+                        type="date"
+                        value={openingExpiryDate}
+                      />
+                    </label>
+                    <label className="field-label">
+                      Purchase rate per unit
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-purchase-rate"
+                        inputMode="decimal"
+                        max={1_000_000_000}
+                        min={0}
+                        onChange={(event) => setOpeningPurchaseRate(event.target.value)}
+                        required
+                        step="0.01"
+                        type="number"
+                        value={openingPurchaseRate}
+                      />
+                    </label>
+                    <label className="field-label">
+                      MRP per unit
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-mrp"
+                        inputMode="decimal"
+                        max={1_000_000_000}
+                        min={0}
+                        onChange={(event) => setOpeningMrp(event.target.value)}
+                        required
+                        step="0.01"
+                        type="number"
+                        value={openingMrp}
+                      />
+                    </label>
+                    <label className="field-label">
+                      Sale rate per unit
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-sale-rate"
+                        inputMode="decimal"
+                        max={1_000_000_000}
+                        min={0}
+                        onChange={(event) => setOpeningSaleRate(event.target.value)}
+                        required
+                        step="0.01"
+                        type="number"
+                        value={openingSaleRate}
+                      />
+                    </label>
+                    <label className="field-label">
+                      Opening quantity
+                      <input
+                        className="workspace-input"
+                        data-testid="input-opening-stock-quantity"
+                        inputMode="numeric"
+                        max={1_000_000_000}
+                        min={1}
+                        onChange={(event) => setOpeningQuantity(event.target.value)}
+                        required
+                        step={1}
+                        type="number"
+                        value={openingQuantity}
+                      />
+                    </label>
+                  </div>
+                )}
+              </section>
+            )}
             <label className="field-label">
               Low-stock alert level
               <input
@@ -461,6 +590,9 @@ export function MedicineFormDialog({
                 type="number"
                 value={minStockAlert}
               />
+              <span className="field-hint">
+                This is the warning threshold, not the current quantity.
+              </span>
             </label>
             <label className="field-label">
               Product GST rate (%) <span className="field-optional">Optional</span>
