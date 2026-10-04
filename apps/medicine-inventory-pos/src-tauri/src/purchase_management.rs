@@ -1078,6 +1078,33 @@ fn supported_attachment(path: &Path) -> Result<(&'static str, &'static str), Str
     }
 }
 
+fn valid_purchase_attachment_ref(file_ref: &str) -> bool {
+    if file_ref.len() > 255
+        || !file_ref.is_ascii()
+        || !file_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return false;
+    }
+
+    let Some((stem, extension)) = file_ref.rsplit_once('.') else {
+        return false;
+    };
+    if stem.contains('.') || !matches!(extension, "pdf" | "jpg" | "png") {
+        return false;
+    }
+    let Some(identifier) = stem.strip_prefix("purchase-") else {
+        return false;
+    };
+    let Some((purchase_id, timestamp)) = identifier.split_once('-') else {
+        return false;
+    };
+    purchase_id.parse::<i64>().is_ok_and(|id| id > 0)
+        && !timestamp.is_empty()
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 #[tauri::command]
 pub(crate) fn add_purchase_attachment(
     app: AppHandle,
@@ -1115,8 +1142,7 @@ pub(crate) fn add_purchase_attachment(
         .ok_or_else(|| "The attachment filename is invalid.".to_owned())?
         .to_owned();
     let directory = attachment_directory(&app)?;
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("Could not create local purchase attachment storage: {error}"))?;
+    crate::ensure_local_storage_directory(&directory)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "The local clock is invalid; the attachment was not saved.".to_owned())?
@@ -1184,19 +1210,23 @@ pub(crate) fn get_purchase_attachment_path(
         return Err("Attachment id must be a positive whole number.".to_owned());
     }
     let connection = open_pharmacy_connection(&app)?;
-    let file_ref: String = connection
+    let (purchase_id, file_ref): (i64, String) = connection
         .query_row(
-            "SELECT file_ref FROM purchase_attachments WHERE id = ?1",
+            "SELECT purchase_id, file_ref FROM purchase_attachments WHERE id = ?1",
             [attachment_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|error| format!("Could not read the purchase attachment: {error}"))?
         .ok_or_else(|| "The purchase attachment no longer exists.".to_owned())?;
-    if file_ref.contains('/') || file_ref.contains('\\') || file_ref.starts_with('.') {
+    if !valid_purchase_attachment_ref(&file_ref)
+        || !file_ref.starts_with(&format!("purchase-{purchase_id}-"))
+    {
         return Err("The saved attachment reference is invalid.".to_owned());
     }
-    let path = attachment_directory(&app)?.join(file_ref);
+    let directory = attachment_directory(&app)?;
+    crate::ensure_local_storage_directory(&directory)?;
+    let path = directory.join(file_ref);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("The saved invoice attachment is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_ATTACHMENT_BYTES {
@@ -1464,5 +1494,55 @@ mod tests {
             )
             .expect("read saved purchase GST snapshot");
         assert_eq!(snapshot, (true, "EXCLUSIVE".to_owned(), "CGST_SGST".to_owned(), 10_000, 900, 900, 1_800));
+    }
+
+    #[test]
+    fn saved_attachment_references_cannot_escape_local_storage() {
+        for safe in [
+            "purchase-1-1728000000000000000.pdf",
+            "purchase-21-1728000000000000001.jpg",
+            "purchase-7-1728000000000000002.png",
+        ] {
+            assert!(valid_purchase_attachment_ref(safe), "{safe}");
+        }
+
+        for unsafe_ref in [
+            "../purchase-1-1.pdf",
+            r"..\purchase-1-1.pdf",
+            "C:purchase-1-1.pdf",
+            "purchase-1-1.pdf:stream",
+            ".purchase-1-1.pdf",
+            "purchase-1-1.exe",
+            "purchase--1.pdf",
+            "purchase-1-no-timestamp.pdf",
+        ] {
+            assert!(
+                !valid_purchase_attachment_ref(unsafe_ref),
+                "{unsafe_ref}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn local_storage_rejects_a_symlink_outside_the_app_data_folder() {
+        use std::os::unix::fs::symlink;
+
+        let test_root = std::env::temp_dir().join(format!(
+            "my-medical-local-storage-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after Unix epoch")
+                .as_nanos()
+        ));
+        let app_data = test_root.join("app-data");
+        let outside = test_root.join("outside");
+        fs::create_dir_all(&app_data).expect("create app-data fixture");
+        fs::create_dir_all(&outside).expect("create outside fixture");
+        let storage = app_data.join("purchase-attachments");
+        symlink(&outside, &storage).expect("create storage symlink");
+
+        assert!(crate::ensure_local_storage_directory(&storage).is_err());
+        fs::remove_dir_all(&test_root).expect("remove local storage fixture");
     }
 }

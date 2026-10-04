@@ -2738,4 +2738,251 @@ mod tests {
             (REPORT_MAX_ROWS, REPORT_MAX_PAGE_SIZE)
         );
     }
+
+    #[test]
+    fn report_queries_handle_thousands_of_isolated_transactions_and_batches() {
+        const DOCUMENTS: i64 = 2_000;
+        const MEDICINES: i64 = 250;
+
+        let mut connection = test_connection();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO suppliers (id, name, state_code)
+                VALUES (1, 'Load Test Supplier', '27');
+                INSERT INTO customers (id, name, phone, active)
+                VALUES (1, 'Load Test Customer', '9000000000', 1);
+                "#,
+            )
+            .expect("insert load-test accounts");
+
+        let transaction = connection
+            .transaction()
+            .expect("begin load-test fixture transaction");
+        {
+            let mut insert_medicine = transaction
+                .prepare(
+                    "INSERT INTO medicines (id, name, company, min_stock_alert) VALUES (?1, ?2, 'Load Labs', 5)",
+                )
+                .expect("prepare medicine insert");
+            for medicine_id in 1..=MEDICINES {
+                insert_medicine
+                    .execute(params![
+                        medicine_id,
+                        format!("Load medicine {medicine_id}")
+                    ])
+                    .expect("insert load-test medicine");
+            }
+        }
+        {
+            let mut insert_batch = transaction
+                .prepare(
+                    r#"INSERT INTO medicine_batches
+                       (id, medicine_id, batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock)
+                       VALUES (?1, ?2, ?3, '2099-12-31', 100, 150, 118, 5)"#,
+                )
+                .expect("prepare batch insert");
+            for batch_id in 1..=DOCUMENTS {
+                let medicine_id = (batch_id - 1) % MEDICINES + 1;
+                insert_batch
+                    .execute(params![
+                        batch_id,
+                        medicine_id,
+                        format!("LOAD-{batch_id}")
+                    ])
+                    .expect("insert load-test batch");
+            }
+        }
+        {
+            let mut insert_purchase = transaction
+                .prepare(
+                    r#"INSERT INTO purchases
+                       (id, invoice_no, supplier_id, total_amount, purchase_date, status, gst_enabled,
+                        gst_pricing_mode, tax_type, taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst)
+                       VALUES (?1, ?2, 1, 118, '2025-03-10', 'ACTIVE', 1,
+                               'EXCLUSIVE', 'CGST_SGST', 100, 9, 9, 0, 18)"#,
+                )
+                .expect("prepare purchase insert");
+            let mut insert_purchase_item = transaction
+                .prepare(
+                    r#"INSERT INTO purchase_items
+                       (purchase_id, batch_id, quantity, rate, total, gst_rate_basis_points,
+                        taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst)
+                       VALUES (?1, ?2, 1, 100, 100, 1800, 100, 9, 9, 0, 18)"#,
+                )
+                .expect("prepare purchase item insert");
+            let mut insert_supplier_ledger = transaction
+                .prepare(
+                    r#"INSERT INTO supplier_ledger
+                       (supplier_id, entry_type, purchase_id, reference, debit_cents, credit_cents, created_at)
+                       VALUES (1, 'PURCHASE', ?1, ?2, 11800, 0, '2025-03-10 12:00:00')"#,
+                )
+                .expect("prepare supplier ledger insert");
+            let mut insert_supplier_payment = transaction
+                .prepare(
+                    r#"INSERT INTO supplier_ledger
+                       (supplier_id, entry_type, reference, debit_cents, credit_cents,
+                        payment_method, created_at)
+                       VALUES (1, 'PAYMENT', ?1, 0, 2000, 'UPI', '2025-03-10 12:00:00')"#,
+                )
+                .expect("prepare supplier payment insert");
+
+            for purchase_id in 1..=DOCUMENTS {
+                let invoice_no = format!("LOAD-PUR-{purchase_id:05}");
+                insert_purchase
+                    .execute(params![purchase_id, invoice_no])
+                    .expect("insert load-test purchase");
+                insert_purchase_item
+                    .execute(params![purchase_id, purchase_id])
+                    .expect("insert load-test purchase item");
+                insert_supplier_ledger
+                    .execute(params![purchase_id, invoice_no])
+                    .expect("insert load-test supplier ledger entry");
+                if purchase_id % 3 == 0 {
+                    insert_supplier_payment
+                        .execute([format!("LOAD-PAY-{purchase_id:05}")])
+                        .expect("insert load-test supplier payment");
+                }
+            }
+        }
+        {
+            let mut insert_sale = transaction
+                .prepare(
+                    r#"INSERT INTO sales
+                       (id, invoice_no, customer_name, customer_phone, subtotal, discount, grand_total,
+                        payment_mode, created_at, total_gst, customer_id, gst_enabled, gst_pricing_mode,
+                        tax_type, taxable_amount, cgst_amount, sgst_amount, igst_amount, status)
+                       VALUES (?1, ?2, 'Load Test Customer', '9000000000', 100, 0, 118,
+                               ?3, '2025-03-10 12:00:00', 18, ?4, 1, 'EXCLUSIVE',
+                               'CGST_SGST', 100, 9, 9, 0, 'ACTIVE')"#,
+                )
+                .expect("prepare sale insert");
+            let mut insert_sale_item = transaction
+                .prepare(
+                    r#"INSERT INTO sale_items
+                       (sale_id, batch_id, quantity, unit_price, total_price, purchase_rate_at_sale,
+                        gst_rate_basis_points, taxable_amount, cgst_amount, sgst_amount, igst_amount, total_gst)
+                       VALUES (?1, ?2, 1, 118, 118, 30, 1800, 100, 9, 9, 0, 18)"#,
+                )
+                .expect("prepare sale item insert");
+            let mut insert_customer_ledger = transaction
+                .prepare(
+                    r#"INSERT INTO customer_ledger
+                       (customer_id, entry_type, invoice_no, debit_cents, credit_cents, created_at)
+                       VALUES (1, 'CREDIT_SALE', ?1, 11800, 0, '2025-03-10 12:00:00')"#,
+                )
+                .expect("prepare customer ledger insert");
+
+            for sale_id in 1..=DOCUMENTS {
+                let invoice_no = format!("LOAD-SALE-{sale_id:05}");
+                let payment_mode = match sale_id % 3 {
+                    0 => "CREDIT",
+                    1 => "CASH",
+                    _ => "UPI",
+                };
+                let customer_id = (payment_mode == "CREDIT").then_some(1_i64);
+                insert_sale
+                    .execute(params![sale_id, invoice_no, payment_mode, customer_id])
+                    .expect("insert load-test sale");
+                insert_sale_item
+                    .execute(params![sale_id, sale_id])
+                    .expect("insert load-test sale item");
+                if payment_mode == "CREDIT" {
+                    insert_customer_ledger
+                        .execute([invoice_no])
+                        .expect("insert load-test customer ledger entry");
+                }
+            }
+        }
+        transaction.commit().expect("commit load-test fixture");
+
+        let report_range = range("2025-03-10", "2025-03-10");
+        let started = std::time::Instant::now();
+        let sales = query_sales_summary(&connection, &report_range).expect("large sales history");
+        assert_eq!(sales.invoice_count, DOCUMENTS);
+        assert_eq!(sales.total_rows, DOCUMENTS);
+        assert_money(sales.net_sales, 236_000.0);
+        assert_money(sales.taxable_sales, 200_000.0);
+
+        let purchases =
+            query_purchase_summary(&connection, &report_range, None).expect("large purchase history");
+        assert_eq!(purchases.total_rows, DOCUMENTS + DOCUMENTS / 3);
+        assert_money(purchases.net_purchases, 236_000.0);
+        assert_money(purchases.taxable_purchases, 200_000.0);
+
+        let profit = query_profit_and_loss(&connection, &report_range).expect("large P&L report");
+        assert_eq!(profit.cogs, Some(60_000.0));
+        assert_eq!(profit.gross_profit, Some(140_000.0));
+        assert_eq!(profit.net_profit, Some(140_000.0));
+
+        let products = query_product_sales(
+            &connection,
+            &report_range,
+            None,
+            None,
+            1,
+            REPORT_DEFAULT_PAGE_SIZE,
+        )
+        .expect("large product sales report");
+        assert_eq!(products.total_rows, MEDICINES);
+        assert!(!products.rows.is_empty());
+        let companies = query_company_sales(
+            &connection,
+            &report_range,
+            None,
+            None,
+            1,
+            REPORT_DEFAULT_PAGE_SIZE,
+        )
+        .expect("large company sales report");
+        assert_eq!(companies.total_rows, 1);
+
+        let customers = query_customer_due(
+            &connection,
+            &report_range,
+            None,
+            true,
+            None,
+            1,
+            REPORT_DEFAULT_PAGE_SIZE,
+        )
+        .expect("large customer due report");
+        assert_eq!(customers.total_rows, 1);
+        assert_money(customers.rows[0].outstanding_balance, 78_588.0);
+        let suppliers = query_supplier_due(
+            &connection,
+            &report_range,
+            None,
+            true,
+            None,
+            1,
+            REPORT_DEFAULT_PAGE_SIZE,
+        )
+        .expect("large supplier due report");
+        assert_eq!(suppliers.total_rows, 1);
+        assert_money(suppliers.rows[0].outstanding_balance, 222_680.0);
+
+        let gst = query_gst_report(&connection, &report_range).expect("large GST report");
+        assert_money(gst.total_output_gst, 36_000.0);
+        assert_money(gst.total_input_gst, 36_000.0);
+        assert_eq!(gst.sales_rows.len(), DOCUMENTS as usize);
+        assert_eq!(gst.purchase_rows.len(), DOCUMENTS as usize);
+
+        let stock = query_stock_valuation(&connection, 30).expect("large stock valuation");
+        assert_eq!(stock.total_stock_quantity, DOCUMENTS * 5);
+        assert_money(stock.total_stock_cost_value, 1_000_000.0);
+        assert_money(stock.sellable_cost_value, 1_000_000.0);
+
+        let summary =
+            query_financial_summary(&connection, &report_range).expect("large financial summary");
+        assert_money(summary.net_sales, 200_000.0);
+        assert_money(summary.customer_outstanding, 78_588.0);
+        assert_money(summary.supplier_outstanding, 222_680.0);
+        assert_money(summary.stock_valuation, 1_000_000.0);
+        assert_eq!(summary.stock_quantity, DOCUMENTS * 5);
+        eprintln!(
+            "Queried 2,000 sales, 2,000 purchases, 2,000 batches and related ledgers in {:?}",
+            started.elapsed()
+        );
+    }
 }
