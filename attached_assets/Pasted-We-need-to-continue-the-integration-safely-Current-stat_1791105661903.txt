@@ -1,0 +1,63 @@
+We need to continue the integration safely.
+
+Current state:
+- integration/all-work-2026-10-04 = 9a23dc74af168dcaa22e2be7218c588198d92660
+- origin/main = 8adb4606da396c2b7a288465b03769f5567508b
+- backup/all-work-2026-10-04 = 2d14e08bfe948de1017e239f25c91887cb4f81cb
+- working tree is clean
+- The previous merge was stopped and there is no active merge.
+
+The backup contains real application dependency changes:
+- @tauri-apps/plugin-opener
+- exceljs
+- jsbarcode
+- Orval ^8.39.0
+- exceljs>uuid override 11.1.1
+
+We need to integrate the COMPLETE backup application state with origin/main without losing either side.
+
+Do NOT:
+- push anything
+- modify main
+- force-push
+- reset
+- rebase
+- discard the backup
+- blindly copy only pnpm-lock.yaml
+
+Create a fresh temporary integration attempt from the current integration branch.
+
+Use the backup branch as the source for the application files and dependency manifests, while preserving the Windows x64 dependency changes already present in origin/main.
+
+Specifically inspect and reconcile:
+- package.json
+- pnpm-lock.yaml
+- workspace configuration
+- Tauri/Cargo dependency configuration
+- Windows x64 optional dependencies
+
+The goal is one internally consistent dependency state containing:
+1. all application dependencies required by the backup/current Replit application;
+2. the Windows x64 dependency changes already in origin/main;
+3. no accidental dependency removals or downgrades.
+
+After reconciliation:
+1. run pnpm install --lockfile-only if needed to regenerate a consistent lockfile;
+2. run pnpm install --frozen-lockfile;
+3. run frontend typecheck;
+4. run all 27 frontend/UI contract tests;
+5. run all native Rust tests;
+6. run cargo check --locked.
+
+Do not commit or push yet.
+
+If any dependency conflict or test failure occurs, STOP and report it instead of guessing.
+
+If everything passes, report:
+- exact files changed
+- final dependency versions relevant to the conflict
+- all test results
+- git diff/stat
+- git status
+
+Do not commit or push until I explicitly approve.
