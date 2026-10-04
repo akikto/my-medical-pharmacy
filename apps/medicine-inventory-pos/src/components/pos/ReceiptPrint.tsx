@@ -1,5 +1,6 @@
 import { Printer, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getStoreSettings } from "../../services/settingsService";
 import type { SaleDetails, StoreSettings } from "../../types";
 import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
@@ -11,7 +12,7 @@ interface ReceiptPrintProps {
   onClose: () => void;
 }
 
-type ReceiptWidth = "58" | "80";
+type ReceiptWidth = "58" | "80" | "A4" | "A5";
 
 export function ReceiptPrint({
   sale,
@@ -60,15 +61,31 @@ export function ReceiptPrint({
       return;
     }
     didAutoPrint.current = true;
-    const timer = window.setTimeout(() => window.print(), 350);
-    return () => window.clearTimeout(timer);
+    let disposed = false;
+    const printAfterLayout = () => {
+      if (disposed) return;
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (!disposed) window.print();
+        });
+      });
+    };
+    const timer = window.setTimeout(() => {
+      void document.fonts.ready.then(printAfterLayout, printAfterLayout);
+    }, 200);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
   }, [autoPrint, invoice.invoice_no, settingsLoaded]);
 
   const pharmacyName = storeSettings?.pharmacy_name.trim() || "PHARMACY";
   const pharmacyMark = pharmacyName.charAt(0).toUpperCase() || "P";
   const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
+  const isStandardPaper = width === "A4" || width === "A5";
+  const pageSize = isStandardPaper ? `${width} portrait` : "auto";
 
-  return (
+  return createPortal(
     <div
       aria-labelledby="receipt-dialog-title"
       aria-modal="true"
@@ -78,7 +95,7 @@ export function ReceiptPrint({
       role="dialog"
       tabIndex={-1}
     >
-      <style>{`@page { size: ${width}mm auto; margin: 0; }`}</style>
+      <style>{`@page { size: ${pageSize}; margin: ${isStandardPaper ? "10mm" : "0"}; }`}</style>
       <div className="receipt-actions">
         <div>
           <span className="eyebrow">{autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}</span>
@@ -92,16 +109,21 @@ export function ReceiptPrint({
         )}
         <div className="receipt-action-controls">
           <label className="receipt-width-select">
-            Paper width
+            Paper size
             <select
-              aria-label="Receipt paper width"
+              aria-label="Receipt paper size"
               data-testid="select-receipt-width"
               onChange={(event) => setWidth(event.target.value as ReceiptWidth)}
               value={width}
             >
-              <option value="58">58 mm</option>
-              <option value="80">80 mm</option>
+              <option value="58">58 mm roll</option>
+              <option value="80">80 mm roll</option>
+              <option value="A4">A4</option>
+              <option value="A5">A5</option>
             </select>
+            {!isStandardPaper && (
+              <small className="receipt-roll-hint">Match this width in printer settings.</small>
+            )}
           </label>
           <button
             className="button button-secondary"
@@ -125,7 +147,7 @@ export function ReceiptPrint({
       </div>
 
       <article
-        className={`receipt-paper receipt-paper--${width}`}
+        className={`receipt-paper receipt-paper--${width.toLowerCase()}`}
         data-testid="receipt-paper"
       >
         <header className="receipt-brand">
@@ -360,6 +382,7 @@ export function ReceiptPrint({
           ))}
         </section>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

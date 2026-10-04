@@ -27,6 +27,7 @@ import { SalesPage } from "./components/sales/SalesPage";
 import { ExpensesPage } from "./components/expenses/ExpensesPage";
 import { ReportsView } from "./components/reports/ReportsView";
 import { StoreSettings } from "./components/settings/StoreSettings";
+import { MedicineListPage, ExpiryManagementPage } from "./components/medicine-views/MedicineViews";
 import "./components/workspace/workspace.css";
 
 const navigation: Array<{
@@ -38,6 +39,8 @@ const navigation: Array<{
   { id: "pos", label: "POS Billing", icon: ClipboardList },
   { id: "orders", label: "Today's Order List", icon: ClipboardList },
   { id: "inventory", label: "Inventory & Batches", icon: Boxes },
+  { id: "medicine-list", label: "Medicine list", icon: Pill },
+  { id: "expiry", label: "Expiry management", icon: AlertCircle },
   { id: "purchases", label: "Purchases", icon: Pill },
   { id: "suppliers", label: "Suppliers", icon: UsersRound },
   { id: "customers", label: "Customers & credit", icon: UsersRound },
@@ -193,6 +196,10 @@ export default function App() {
           <OrderListPage onNavigateToSuppliers={() => navigateToSection("suppliers")} />
         ) : activeSection === "inventory" ? (
           <InventoryPage />
+        ) : activeSection === "medicine-list" ? (
+          <MedicineListPage />
+        ) : activeSection === "expiry" ? (
+          <ExpiryManagementPage />
         ) : activeSection === "purchases" ? (
           <PurchasesPage />
         ) : activeSection === "suppliers" ? (

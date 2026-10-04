@@ -53,13 +53,13 @@ const quickActions: Array<{
   tone: string;
 }> = [
   { id: "pos", label: "New sale", detail: "Open counter billing", section: "pos", icon: ShoppingCart, tone: "blue" },
-  { id: "inventory", label: "Add medicine", detail: "Update medicine list", section: "inventory", icon: PackagePlus, tone: "teal" },
+  { id: "inventory", label: "Add medicine", detail: "Open medicine list", section: "medicine-list", icon: PackagePlus, tone: "teal" },
   { id: "purchases", label: "Purchase entry", detail: "Receive stock", section: "purchases", icon: ShoppingBag, tone: "violet" },
   { id: "suppliers", label: "Suppliers", detail: "View supplier records", section: "suppliers", icon: Truck, tone: "amber" },
   { id: "settings", label: "Backup settings", detail: "Manage backups", section: "settings", icon: Database, tone: "slate" },
-  { id: "orders", label: "Today's order list", detail: "Prepare a wholesaler order", section: "orders", icon: ClipboardList, tone: "teal" },
-  { id: "supplier-contacts", label: "Wholesalers & contacts", detail: "Find supplier contact options", section: "suppliers", icon: Truck, tone: "amber" },
-  { id: "reset-data", label: "Reset accounts/data", detail: "Protected business-data reset", section: "settings", icon: ShieldCheck, tone: "slate" },
+  { id: "orders", label: "Today's order list", detail: "Prepare a wholesaler order", section: "orders", icon: ClipboardList, tone: "green" },
+  { id: "supplier-contacts", label: "Wholesalers & contacts", detail: "Find supplier contact options", section: "suppliers", icon: Truck, tone: "cyan" },
+  { id: "reset-data", label: "Reset accounts/data", detail: "Protected business-data reset", section: "settings", icon: ShieldCheck, tone: "rose" },
 ];
 
 function localDateLabel(value: string): string {
@@ -400,7 +400,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         </div>
         <div className="dash-action-row">
           {quickActions.map(({ id, label, detail, section, icon: Icon, tone }) => (
-            <button className="dash-action" data-testid={`button-quick-${id}`} key={id} onClick={() => onNavigate(section)} type="button">
+            <button className={`dash-action dash-action--${tone}`} data-testid={`button-quick-${id}`} key={id} onClick={() => onNavigate(section)} type="button">
               <span className={`dash-action-icon dash-action-icon--${tone}`}><Icon size={17} /></span>
               <span><strong>{label}</strong><small>{detail}</small></span>
               <ArrowRight className="dash-action-arrow" size={15} />
@@ -564,7 +564,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                     );
                   })}
                 </div>
-                <button className="dash-alert-action" data-testid="button-expiry-inventory" onClick={() => onNavigate("inventory")} type="button">{expiryAlerts.length > 5 ? `Review all ${expiryAlerts.length} batches` : "Review batches"} <ArrowRight size={14} /></button>
+                <button className="dash-alert-action" data-testid="button-expiry-inventory" onClick={() => onNavigate("expiry")} type="button">{expiryAlerts.length > 5 ? `Review all ${expiryAlerts.length} batches` : "Review batches"} <ArrowRight size={14} /></button>
               </>
             ) : <EmptyList title="No expiry alerts" detail="No in-stock batches are expired or due within 30 days." />}
           </section>

@@ -265,7 +265,7 @@ export function CheckoutDialog({
               {paymentModes.map((mode) => (
                 <button
                   aria-pressed={paymentMode === mode.value}
-                  className={`payment-mode-option ${paymentMode === mode.value ? "is-selected" : ""}`}
+                  className={`payment-mode-option payment-mode-option--${mode.value.toLowerCase()} ${paymentMode === mode.value ? "is-selected" : ""}`}
                   data-testid={`button-payment-${mode.value.toLowerCase()}`}
                   key={mode.value}
                   onClick={() => onPaymentModeChange(mode.value)}

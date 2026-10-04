@@ -4,6 +4,8 @@ import {
   ArrowUpRight,
   CircleDollarSign,
   LoaderCircle,
+  MessageCircle,
+  MessageSquare,
   Pencil,
   Plus,
   RotateCcw,
@@ -11,6 +13,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   collectCustomerPayment,
   getCustomerLedger,
@@ -46,6 +49,20 @@ function formatDateTime(value: string): string {
         dateStyle: "medium",
         timeStyle: "short",
       });
+}
+
+function getPhoneDigits(phone: string): string {
+  return phone.replace(/\D/g, "");
+}
+
+function getWhatsAppNumber(phone: string): string | null {
+  let digits = getPhoneDigits(phone);
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.length === 10) digits = `91${digits}`;
+  else if (digits.length === 11 && digits.startsWith("0")) {
+    digits = `91${digits.slice(1)}`;
+  }
+  return digits.length >= 7 && digits.length <= 15 ? digits : null;
 }
 
 interface CustomersPageProps {
@@ -278,6 +295,51 @@ export function CustomersPage({
     }
   }
 
+  async function openPaymentReminder(channel: "sms" | "whatsapp") {
+    if (!selectedCustomer?.phone) return;
+    const phone = selectedCustomer.phone.trim();
+    const digits = getPhoneDigits(phone);
+    if (digits.length < 7 || digits.length > 15) {
+      setNotice({
+        kind: "error",
+        message: "The saved phone number is not valid for messaging. Update the customer record first.",
+      });
+      return;
+    }
+    if (selectedCustomer.balance_due <= 0) {
+      setNotice({
+        kind: "error",
+        message: "There is no outstanding balance to include in a payment reminder.",
+      });
+      return;
+    }
+    const pharmacyName = settings?.pharmacy_name.trim() || "our pharmacy";
+    const message =
+      `Hello ${selectedCustomer.name}, your outstanding balance at ${pharmacyName} is ` +
+      `${formatMoney(selectedCustomer.balance_due)}. Please contact us if you have questions.`;
+    const number = channel === "whatsapp" ? getWhatsAppNumber(phone) : phone.replace(/[^\d+]/g, "");
+    if (!number) {
+      setNotice({ kind: "error", message: "The saved phone number could not be prepared for messaging." });
+      return;
+    }
+    const url =
+      channel === "whatsapp"
+        ? `https://wa.me/${number}?text=${encodeURIComponent(message)}`
+        : `sms:${number}?body=${encodeURIComponent(message)}`;
+    try {
+      await openUrl(url);
+      setNotice({
+        kind: "success",
+        message: `${channel === "sms" ? "SMS" : "WhatsApp"} opened with a payment reminder. Review it before sending.`,
+      });
+    } catch {
+      setNotice({
+        kind: "error",
+        message: `${channel === "sms" ? "SMS" : "WhatsApp"} could not be opened. Use the saved number: ${phone}`,
+      });
+    }
+  }
+
   return (
     <section className="workspace-page customer-page" data-testid="page-customers">
       <header className="workspace-page-header">
@@ -413,6 +475,35 @@ export function CustomersPage({
                   </div>
                 </div>
                 <div className="customer-actions">
+                  <button
+                    className="button button-secondary"
+                    data-testid="button-customer-sms-reminder"
+                    disabled={
+                      !selectedCustomer.phone ||
+                      getPhoneDigits(selectedCustomer.phone).length < 7 ||
+                      getPhoneDigits(selectedCustomer.phone).length > 15 ||
+                      selectedCustomer.balance_due <= 0
+                    }
+                    onClick={() => void openPaymentReminder("sms")}
+                    title={!selectedCustomer.phone ? "Add a phone number to this customer first." : undefined}
+                    type="button"
+                  >
+                    <MessageSquare size={15} /> SMS reminder
+                  </button>
+                  <button
+                    className="button button-secondary"
+                    data-testid="button-customer-whatsapp-reminder"
+                    disabled={
+                      !selectedCustomer.phone ||
+                      getWhatsAppNumber(selectedCustomer.phone) === null ||
+                      selectedCustomer.balance_due <= 0
+                    }
+                    onClick={() => void openPaymentReminder("whatsapp")}
+                    title={!selectedCustomer.phone ? "Add a phone number to this customer first." : undefined}
+                    type="button"
+                  >
+                    <MessageCircle size={15} /> WhatsApp
+                  </button>
                   <button
                     aria-label="Edit customer"
                     className="button button-secondary"

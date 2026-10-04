@@ -68,8 +68,14 @@ function downloadWorkbook(bytes: ExcelJS.Buffer, filename: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 }
 
 function styleHeader(row: ExcelJS.Row): void {

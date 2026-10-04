@@ -228,7 +228,7 @@ export function SalesPage() {
         <div>
           <div className="page-kicker"><span className="live-dot" /> SALES HISTORY</div>
           <h1>Sales</h1>
-          <p>Review and reprint the latest invoices recorded on this device.</p>
+          <p>Review invoice items and payment details, then reprint invoices recorded on this device.</p>
         </div>
         <button
           className="button button-secondary sales-refresh-button"
@@ -497,7 +497,7 @@ export function SalesPage() {
                       <td>
                         <div className="sales-row-actions">
                           <button
-                            aria-label={`View invoice ${sale.invoice_no}`}
+                            aria-label={`View item details and totals for invoice ${sale.invoice_no}`}
                             className="button button-secondary sales-view-button"
                             data-testid={`button-view-sales-invoice-${sale.id}`}
                             disabled={openingInvoice === sale.invoice_no}
@@ -509,7 +509,7 @@ export function SalesPage() {
                             ) : (
                               <ReceiptText size={14} />
                             )}
-                            View
+                            Details
                           </button>
                           {canReturn && (
                             <button

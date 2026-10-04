@@ -550,7 +550,7 @@ export interface LowStockAlert {
 }
 
 export type ExpiryAlertStatus = "expired" | "expiring";
-export type ExpiryHorizonDays = 30 | 60 | 90;
+export type ExpiryHorizonDays = 7 | 30 | 60 | 90 | 180 | 3650;
 
 export interface ExpiryAlert {
   batch: MedicineBatch;
@@ -706,6 +706,8 @@ export type AppSection =
   | "pos"
   | "orders"
   | "inventory"
+  | "medicine-list"
+  | "expiry"
   | "purchases"
   | "suppliers"
   | "customers"
