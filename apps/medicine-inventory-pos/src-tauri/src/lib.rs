@@ -7704,12 +7704,24 @@ mod purchase_tests {
 mod backup_tests {
     use super::*;
     use std::fs::File;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     fn create_test_backup_directory() -> PathBuf {
-        let directory =
-            unique_internal_path(&std::env::temp_dir(), "pharmadesk-retention-test", "dir");
-        fs::create_dir_all(&directory).expect("create temporary backup directory");
-        directory
+        let temp_directory = std::env::temp_dir();
+        loop {
+            let id = NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+            let directory = temp_directory.join(format!(
+                ".pharmadesk-retention-test-{}-{id}.dir",
+                std::process::id()
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => return directory,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create temporary backup directory: {error}"),
+            }
+        }
     }
 
     fn restore_database_backup_without_photos(
