@@ -1,4 +1,15 @@
 - [Tauri SQLite transactions](tauri-sqlite-transactions.md) — Use one native transaction command for atomic updates; the SQL plugin exposes pooled queries, not a transaction handle.
-- [Tauri Rust build environment](tauri-rust-build-environment.md) — Pin Rust 1.90, set Nix's zlib link path, merge GTK schemas for dialogs, and pass `.deb` flags directly to Tauri.
+- [Tauri Rust build environment](tauri-rust-build-environment.md) — Pin Rust 1.90, add rustfmt, set Nix's zlib link path, merge GTK schemas, and pass `.deb` flags directly to Tauri.
 - [Tauri browser preview](tauri-browser-preview.md) — Standard Chromium lacks the native bridge needed by local SQL; test data-backed screens inside Tauri.
+- [Tauri dialog reverse Tab](tauri-dialog-reverse-tab.md) — Linux WebKit may report reverse Tab as ISO_Left_Tab; dialog traps must recognize both event forms.
 - [Historical sales profit](historical-sales-profit.md) — Use sale-time purchase-cost snapshots; do not estimate old invoice profit from a batch's current replenishment cost.
+- [Business reset stock preservation](business-reset-stock-preservation.md) — History cleanup must not infer current quantity changes from removed transaction records.
+- [Nested Rust package installer](nested-rust-package-installer.md) — The Rust installer can initialize a root Cargo project instead of targeting the nested Tauri crate.
+- [GitHub workflow pushes](github-workflow-push.md) — Repo write access may not include workflow-file permission, and uploading Git objects does not update the branch ref.
+- [pnpm transitive security updates](pnpm-transitive-security-updates.md) — Update nested fixes at full depth, then sync all workspace installs before trusting pnpm why.
+- [GST calculation parity](gst-calculation-parity.md) — Keep live GST preview and Rust invoice totals consistent using paise arithmetic and matching precedence.
+- [Order suggestion policy](order-suggestion-policy.md) — Use deterministic restock targets, subtract sellable stock and pending orders, and flag sparse sales history.
+- [MY MEDICAL Phase 3 scope](phase3-scope.md) — Keep Home and completed Phase 1/2 behavior unchanged; access SQLite only through typed native commands.
+- [Supplier ledger migration](supplier-ledger-migration.md) — Backfill invoice debits, then reconcile to the legacy balance so migration does not change what suppliers are owed.
+- [Future-schema backup tests](future-schema-backup-tests.md) — Start from the current schema and mark exactly one higher migration when testing newer-backup rejection.
+- [Financial report SQL testing](financial-report-sql-testing.md) — SQLite fixtures catch report column-index errors that Rust compilation cannot.

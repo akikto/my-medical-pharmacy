@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Boxes,
   Bell,
+  ClipboardList,
   CalendarDays,
   Check,
   CircleAlert,
@@ -27,6 +28,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { getDashboardSnapshot } from "../../services/dashboardService";
 import type { DashboardSnapshot } from "../../services/dashboardService";
+import { WeeklySalesCard } from "./WeeklySalesCard";
 import { searchMedicines } from "../../services/inventoryService";
 import type {
   AppSection,
@@ -43,17 +45,21 @@ interface DashboardPageProps {
 }
 
 const quickActions: Array<{
+  id: string;
   label: string;
   detail: string;
   section: AppSection;
   icon: typeof ShoppingCart;
   tone: string;
 }> = [
-  { label: "New sale", detail: "Open counter billing", section: "pos", icon: ShoppingCart, tone: "blue" },
-  { label: "Add medicine", detail: "Update medicine list", section: "inventory", icon: PackagePlus, tone: "teal" },
-  { label: "Purchase entry", detail: "Receive stock", section: "purchases", icon: ShoppingBag, tone: "violet" },
-  { label: "Suppliers", detail: "View supplier records", section: "suppliers", icon: Truck, tone: "amber" },
-  { label: "Backup settings", detail: "Manage backups", section: "settings", icon: Database, tone: "slate" },
+  { id: "pos", label: "New sale", detail: "Open counter billing", section: "pos", icon: ShoppingCart, tone: "blue" },
+  { id: "inventory", label: "Add medicine", detail: "Update medicine list", section: "inventory", icon: PackagePlus, tone: "teal" },
+  { id: "purchases", label: "Purchase entry", detail: "Receive stock", section: "purchases", icon: ShoppingBag, tone: "violet" },
+  { id: "suppliers", label: "Suppliers", detail: "View supplier records", section: "suppliers", icon: Truck, tone: "amber" },
+  { id: "settings", label: "Backup settings", detail: "Manage backups", section: "settings", icon: Database, tone: "slate" },
+  { id: "orders", label: "Today's order list", detail: "Prepare a wholesaler order", section: "orders", icon: ClipboardList, tone: "teal" },
+  { id: "supplier-contacts", label: "Wholesalers & contacts", detail: "Find supplier contact options", section: "suppliers", icon: Truck, tone: "amber" },
+  { id: "reset-data", label: "Reset accounts/data", detail: "Protected business-data reset", section: "settings", icon: ShieldCheck, tone: "slate" },
 ];
 
 function localDateLabel(value: string): string {
@@ -393,8 +399,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           <div><span className="dash-heading-mark"><Activity size={16} /></span><div><h2 id="dash-quick-title">Quick actions</h2><p>Common counter tasks</p></div></div>
         </div>
         <div className="dash-action-row">
-          {quickActions.map(({ label, detail, section, icon: Icon, tone }) => (
-            <button className="dash-action" data-testid={`button-quick-${section}`} key={section} onClick={() => onNavigate(section)} type="button">
+          {quickActions.map(({ id, label, detail, section, icon: Icon, tone }) => (
+            <button className="dash-action" data-testid={`button-quick-${id}`} key={id} onClick={() => onNavigate(section)} type="button">
               <span className={`dash-action-icon dash-action-icon--${tone}`}><Icon size={17} /></span>
               <span><strong>{label}</strong><small>{detail}</small></span>
               <ArrowRight className="dash-action-arrow" size={15} />
@@ -402,6 +408,8 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           ))}
         </div>
       </section>
+
+      <WeeklySalesCard date={snapshot.date} onViewSales={() => onNavigate("sales")} />
 
       <div className="dash-main-grid">
         <div className="dash-column dash-column--activity">

@@ -1,0 +1,34 @@
+.dash-weekly-card { margin-bottom: 16px; overflow: hidden; }
+.dash-weekly-header { gap: 14px; }
+.dash-weekly-header .dash-section-heading { min-width: 0; }
+.dash-weekly-actions { display: flex; align-items: center; gap: 18px; }
+.dash-weekly-total { display: grid; gap: 2px; text-align: right; }
+.dash-weekly-total span { color: #8999a5; font-size: 9px; }
+.dash-weekly-total strong { color: #31546a; font-size: 15px; font-variant-numeric: tabular-nums; }
+.dash-weekly-chart-wrap { padding: 2px 15px 13px; }
+.dash-weekly-chart { display: block; width: 100%; height: auto; overflow: visible; }
+.dash-weekly-gridline { stroke: #e9eff3; stroke-width: 1; }
+.dash-weekly-axis-label { fill: #98a7b1; font: 9px Inter, system-ui, sans-serif; }
+.dash-weekly-bar { fill: #65b9a2; transition: height 180ms ease, y 180ms ease, fill 150ms ease; }
+.dash-weekly-bar:hover { fill: #318f7c; }
+.dash-weekly-bar--empty { fill: #dcebe7; }
+.dash-weekly-value-label { fill: #597787; font: 9px Inter, system-ui, sans-serif; }
+.dash-weekly-day-label { fill: #6f8796; font: 10px Inter, system-ui, sans-serif; font-weight: 650; }
+.dash-weekly-footnote { margin: 0 5px; color: #92a2ad; font-size: 9px; }
+.dash-weekly-status, .dash-weekly-error { display: flex; min-height: 130px; align-items: center; justify-content: center; gap: 12px; padding: 16px; color: #8a9ca7; font-size: 11px; }
+.dash-weekly-error { color: #9b5e51; }
+.dash-weekly-error .dash-text-link { flex: 0 0 auto; }
+.dash-weekly-card .dash-text-link { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+@media (max-width: 620px) {
+  .dash-weekly-header { align-items: flex-start; flex-direction: column; }
+  .dash-weekly-actions { width: 100%; justify-content: space-between; }
+  .dash-weekly-total { text-align: left; }
+  .dash-weekly-chart-wrap { padding: 3px 7px 12px; }
+  .dash-weekly-axis-label { font-size: 8px; }
+  .dash-weekly-value-label { font-size: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-weekly-bar { transition: none; }
+}

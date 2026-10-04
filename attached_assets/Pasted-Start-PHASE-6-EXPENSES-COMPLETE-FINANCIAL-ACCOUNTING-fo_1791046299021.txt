@@ -1,0 +1,229 @@
+Start PHASE 6 — EXPENSES & COMPLETE FINANCIAL ACCOUNTING for MY MEDICAL Pharmacy.
+
+IMPORTANT:
+- Preserve all existing Phase 1–5 functionality.
+- DO NOT modify or redesign Home/Dashboard. Home is FROZEN.
+- Do NOT reset or reseed the database.
+- Do NOT commit.
+- Do NOT push to GitHub.
+- Do NOT publish/release.
+- Do NOT use arbitrary renderer SQL.
+- Reuse the existing Tauri + SQLite architecture and typed native services.
+- Reuse existing GST, customer, supplier, sales, purchase and reporting architecture.
+- Historical transactions must remain unchanged.
+
+PHASE 6 FEATURES
+
+1. EXPENSE MASTER
+Create an Expenses workspace.
+
+Expense fields:
+- Date
+- Expense category
+- Description/notes
+- Amount
+- Payment method: Cash / Bank / UPI / Other
+- Reference number, optional
+- Attachment, optional if existing attachment architecture can safely support it
+- Created timestamp
+- Updated timestamp
+- Status: Active / Cancelled
+
+Expense categories should be configurable:
+- Rent
+- Electricity
+- Salary
+- Transport
+- Internet/Phone
+- Maintenance
+- Office Supplies
+- Other
+
+Allow:
+- Add
+- Edit
+- Cancel
+- Search
+- Filter
+- Date range
+- Category filter
+- Payment-method filter
+
+Do not permanently delete financial transactions unless the existing architecture explicitly supports safe audited deletion.
+
+2. EXPENSE LEDGER
+Create an expense history/ledger.
+
+Show:
+- Date
+- Category
+- Description
+- Amount
+- Payment method
+- Reference
+- Status
+
+Include:
+- totals
+- date filters
+- category filters
+- search
+- empty/loading/error states.
+
+3. EXPENSE REPORT
+Extend Reports with:
+- Total Expenses
+- Expense by Category
+- Expense by Payment Method
+- Daily/monthly expense totals
+- Date range filtering
+- PDF export
+- Excel export
+
+4. NET PROFIT / P&L
+Update the existing Profit & Loss report.
+
+Calculation:
+
+Net Sales
+- COGS
+= Gross Profit
+
+Gross Profit
+- Operating Expenses
+= Net Profit
+
+Show clearly:
+- Gross Sales
+- Sales Returns
+- Net Sales
+- COGS
+- Gross Profit
+- Operating Expenses
+- Net Profit
+- Gross Margin %
+- Net Margin %
+
+IMPORTANT:
+- Customer payments/collections are NOT revenue.
+- Supplier payments are NOT expenses.
+- Purchase returns must remain handled by the existing purchase reporting logic.
+- Sales returns/voids/corrections must continue to work exactly as Phase 4/5.
+- Historical cost/GST snapshots remain authoritative.
+
+If no expense records exist, show Expenses = ₹0 and Net Profit = Gross Profit.
+
+5. MONTHLY FINANCIAL SUMMARY
+Add a financial summary report with:
+- Sales
+- Purchases
+- Sales returns
+- Purchase returns
+- COGS
+- Gross profit
+- Expenses
+- Net profit
+- Customer outstanding
+- Supplier outstanding
+- Stock valuation
+
+Allow:
+- Today
+- This month
+- Last month
+- Custom range
+
+6. CASH/BANK/UPI EXPENSE BREAKDOWN
+Provide a clear payment-method summary for expenses.
+
+Do not treat this as a bank reconciliation system.
+
+7. BACKUP / RESTORE
+Expense records must be included in the existing backup/restore system.
+
+Backup/restore must preserve:
+- expenses
+- categories
+- status
+- dates
+- amounts
+- payment methods
+- references
+- attachments if implemented.
+
+Test restore integrity.
+
+8. UI
+Use the existing green workspace design.
+
+Add:
+Expenses
+
+Reports can contain:
+- Sales
+- Purchases
+- Profit & Loss
+- Expenses
+- Stock Valuation
+- Product Sales
+- Company Sales
+- Customer Due
+- Supplier Due
+- GST
+- Financial Summary
+
+Keep Home/Dashboard untouched.
+
+Ensure responsive layouts at:
+- 1366×768
+- 1440×900
+- 1920×1080
+
+No horizontal page overflow.
+
+9. TESTING
+
+Add tests for:
+- create expense
+- edit expense
+- cancel expense
+- category filtering
+- payment-method filtering
+- date filtering
+- expense totals
+- expense report
+- P&L with zero expenses
+- P&L with expenses
+- net profit calculation
+- cancelled expenses excluded
+- backup/restore
+- PDF/Excel export contracts
+- existing Phase 1–5 regression.
+
+Run:
+- Rust tests
+- renderer tests
+- TypeScript/typecheck
+- Vite build
+- Debian package build
+- git diff --check
+
+Do NOT reset/reseed the database.
+
+10. FINAL REPORT
+
+Report:
+- features implemented
+- files changed
+- migration number if any
+- Rust tests
+- frontend tests
+- typecheck
+- Vite build
+- Debian build
+- visual QA
+- native Tauri status
+- limitations
+- git status
+
+Do not commit, push, publish or release.

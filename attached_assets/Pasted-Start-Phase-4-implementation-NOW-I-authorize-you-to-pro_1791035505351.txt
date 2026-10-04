@@ -1,0 +1,81 @@
+Start Phase 4 implementation NOW.
+
+I authorize you to proceed with the implementation of Task #13:
+"Manage Sales Returns and Customer Dues".
+
+Do NOT wait for Task #2 to be resolved. Task #2 is an old sequencing/dependency task; the actual Phase 2 and Phase 3 work is already implemented and verified.
+
+Use the existing Phase 4 scope already defined for Task #13.
+
+Implement:
+
+1. Sales Return / Refund
+2. Invoice Void / Cancel
+3. Safe Invoice Edit/Correction
+4. Customer Due Collection
+5. Customer Ledger
+6. Sales History Filters
+7. Sales/Return UI
+8. Sales totals and report integrity
+9. Backup/restore regression
+
+IMPORTANT:
+- Preserve Home completely.
+- Preserve Phase 1, Phase 2 and Phase 3 functionality.
+- Use the existing Tauri + SQLite architecture.
+- Do not introduce arbitrary renderer SQL.
+- All stock, sales, returns, GST and customer-balance changes must be transactional.
+- Preserve audit history.
+- Do not reset or reseed data.
+- Do not create a second backup system.
+- Reuse the existing ZIP backup/restore system.
+- Do not commit.
+- Do not push.
+- Do not publish.
+- Do not create a release.
+- Do not run broad cargo fmt.
+
+Work in small sub-phases and test each part before continuing.
+
+Before changing anything, inspect the existing sales, customer ledger, stock/batch, GST and transaction architecture and reuse it.
+
+Required tests:
+- sales return partial/full
+- over-return rejection
+- duplicate return protection
+- stock restoration
+- invoice cancellation
+- cancellation rollback
+- customer due reversal
+- invoice edit/correction
+- customer payment
+- overpayment rejection
+- customer ledger running balance
+- sales history filters
+- GST snapshot integrity
+- backup/restore regression
+
+At the end run:
+- frontend tests
+- Rust tests
+- TypeScript typecheck
+- Vite production build
+- Linux Tauri .deb build
+- git diff --check
+- git status
+
+Do not stop merely because Task #13 is still shown as queued behind Task #2. Proceed with the requested Phase 4 implementation in the current Build session.
+
+At the end give me a complete report with:
+- features implemented
+- frontend test count
+- Rust test count
+- typecheck
+- Vite
+- .deb
+- backup/restore
+- git status
+- modified files
+- any limitations
+
+Do not commit or push.

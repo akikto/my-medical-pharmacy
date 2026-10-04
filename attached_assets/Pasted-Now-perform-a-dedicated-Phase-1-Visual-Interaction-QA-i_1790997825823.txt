@@ -1,0 +1,118 @@
+Now perform a dedicated Phase 1 Visual + Interaction QA in a real Tauri desktop test session.
+
+IMPORTANT:
+- Do NOT commit.
+- Do NOT push.
+- Do NOT publish.
+- Do NOT change Home/dashboard.
+- Do NOT change unrelated existing pages or business logic.
+- Do NOT run cargo fmt across the whole crate.
+- Use an isolated test database/session so existing pharmacy data cannot be modified.
+
+Check these Phase 1 areas visually and interactively:
+
+1. POS BILLING
+- Medicine search and selection
+- Customer search/autocomplete
+- New customer flow
+- Customer selection on a bill
+- Quantity, price and discount controls
+- GST display
+- GST-inclusive/exclusive behavior
+- POS GST override
+- Medicine GST rate vs pharmacy default precedence
+- Credit payment mode
+- Due amount shown clearly
+- Cash payment and change
+- UPI payment mode
+- UPI ID/payment link display
+- Transaction/reference ID field
+- Make sure UPI is clearly shown as UNVERIFIED
+- Checkout/confirmation/receipt flow
+
+2. CUSTOMER / DUE
+- Customer list
+- Search
+- Customer details
+- Current balance/due
+- Credit-sale history
+- Collection/payment entry
+- Partial payment
+- Full payment
+- Payment mode and note
+- Running balance
+- Empty states
+- Validation/error states
+
+3. SETTINGS
+- GST settings are easy to find
+- GST-inclusive/exclusive setting
+- Default GST rate editing
+- Any relevant place-of-supply/state settings
+- UPI ID/display name settings
+- Confirm settings clearly communicate that these are DEFAULTS and can be overridden where supported
+
+4. RECEIPT / INVOICE
+- GST details are readable
+- Taxable amount
+- GST rate
+- CGST/SGST or IGST
+- Total GST
+- Customer details
+- Credit/due information
+- UPI transaction reference where applicable
+- Historical invoice tax values remain understandable
+
+5. RESPONSIVE / DESKTOP LAYOUT
+Test at:
+- 1366x768
+- 1440x900
+- 1920x1080
+
+Check:
+- No horizontal page overflow
+- No clipped labels/buttons
+- No overlapping dialogs
+- Tables remain usable
+- Long medicine/customer names do not break the layout
+- GST controls remain readable
+- POS checkout remains usable at 1366x768
+- Keyboard focus and primary actions remain obvious
+
+6. DATA-SAFETY CHECK
+Use only isolated test data.
+Verify:
+- Creating a customer works
+- Credit sale creates the correct due
+- Collection reduces the due
+- Changing the pharmacy GST default does NOT change an already completed invoice
+- POS GST override affects only the current sale
+- No existing development pharmacy data is changed
+
+7. REPORT FINDINGS
+Return a concise table:
+
+Area | Status | Issue | Severity | Recommended fix
+
+Separate:
+- PASS
+- UI/UX issue
+- Functional issue
+- Data-integrity issue
+
+If you find issues, FIX ONLY Phase 1-related issues that are clearly necessary for usability/correctness, then rerun:
+- 46+ Rust tests as applicable
+- renderer tests
+- typecheck
+- Vite build
+- Tauri build
+- git diff --check
+
+Do not redesign the application. Preserve the existing visual system and Home page.
+
+At the end report:
+- exact files changed
+- exact tests run/results
+- screens/viewports checked
+- whether any existing data was modified
+- whether anything was committed/pushed (must be NO)

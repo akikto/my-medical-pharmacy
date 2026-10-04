@@ -2,6 +2,7 @@ import { Printer, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getStoreSettings } from "../../services/settingsService";
 import type { SaleDetails, StoreSettings } from "../../types";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { formatDateTime, formatMoney } from "../../utils/money";
 
 interface ReceiptPrintProps {
@@ -22,11 +23,14 @@ export function ReceiptPrint({
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
   const didAutoPrint = useRef(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const { sale: invoice, items } = sale;
   const itemDiscountTotal = items.reduce(
     (total, item) => total + item.item_discount,
     0,
   );
+
+  useDialogFocusTrap(dialogRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,12 +69,20 @@ export function ReceiptPrint({
   const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
 
   return (
-    <div className="receipt-overlay" data-testid="dialog-receipt">
+    <div
+      aria-labelledby="receipt-dialog-title"
+      aria-modal="true"
+      className="receipt-overlay"
+      data-testid="dialog-receipt"
+      ref={dialogRef}
+      role="dialog"
+      tabIndex={-1}
+    >
       <style>{`@page { size: ${width}mm auto; margin: 0; }`}</style>
       <div className="receipt-actions">
         <div>
           <span className="eyebrow">{autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}</span>
-          <h2>{autoPrint ? "Receipt ready" : "Invoice"}</h2>
+          <h2 id="receipt-dialog-title">{autoPrint ? "Receipt ready" : "Invoice"}</h2>
           <p>{invoice.invoice_no}</p>
         </div>
         {settingsLoadError && (
@@ -100,6 +112,7 @@ export function ReceiptPrint({
             <Printer size={16} /> Print again
           </button>
           <button
+            autoFocus
             aria-label="Close receipt"
             className="icon-button"
             data-testid="button-close-receipt"
@@ -147,6 +160,12 @@ export function ReceiptPrint({
               <strong>{invoice.customer_name || invoice.customer_phone}</strong>
             </div>
           )}
+          {invoice.customer_state_code && (
+            <div>
+              <span>Customer state</span>
+              <strong>{invoice.customer_state_code}</strong>
+            </div>
+          )}
           {invoice.customer_name && invoice.customer_phone && (
             <div>
               <span>Mobile</span>
@@ -174,6 +193,13 @@ export function ReceiptPrint({
               <div className="receipt-item-batch">
                 Batch {item.batch_no} · Exp {item.expiry_date}
               </div>
+              {invoice.gst_enabled && item.gst_rate_basis_points !== undefined && (
+                <div className="receipt-item-tax">
+                  GST {(item.gst_rate_basis_points / 100).toFixed(2)}% · Taxable{" "}
+                  {formatMoney(item.taxable_amount ?? 0)} · Tax{" "}
+                  {formatMoney(item.total_gst ?? 0)}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -196,6 +222,45 @@ export function ReceiptPrint({
               <span>−{formatMoney(invoice.flat_discount)}</span>
             </div>
           )}
+          {invoice.gst_enabled && (
+            <>
+              <div>
+                <span>GST pricing</span>
+                <span>{invoice.gst_pricing_mode === "INCLUSIVE" ? "Inclusive" : "Exclusive"}</span>
+              </div>
+              {invoice.place_of_supply_state_code && (
+                <div>
+                  <span>Place of supply</span>
+                  <span>{invoice.place_of_supply_state_code}</span>
+                </div>
+              )}
+              <div>
+                <span>Taxable amount</span>
+                <span>{formatMoney(invoice.taxable_amount ?? 0)}</span>
+              </div>
+              {invoice.tax_type === "IGST" ? (
+                <div>
+                  <span>IGST</span>
+                  <span>{formatMoney(invoice.igst_amount ?? 0)}</span>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <span>CGST</span>
+                    <span>{formatMoney(invoice.cgst_amount ?? 0)}</span>
+                  </div>
+                  <div>
+                    <span>SGST</span>
+                    <span>{formatMoney(invoice.sgst_amount ?? 0)}</span>
+                  </div>
+                </>
+              )}
+              <div className="receipt-gst-total">
+                <strong>Total GST</strong>
+                <strong>{formatMoney(invoice.total_gst ?? 0)}</strong>
+              </div>
+            </>
+          )}
           <div className="receipt-grand-total">
             <strong>Grand total</strong>
             <strong>{formatMoney(invoice.grand_total)}</strong>
@@ -216,6 +281,30 @@ export function ReceiptPrint({
               </div>
             </>
           )}
+          {invoice.payment_mode === "UPI" && (
+            <>
+              <div>
+                <span>UPI transaction ID</span>
+                <span>{invoice.upi_transaction_id || "Not provided"}</span>
+              </div>
+              <div className="receipt-upi-warning">
+                <strong>UPI payment unverified</strong>
+                <span>This app does not confirm payment status.</span>
+              </div>
+            </>
+          )}
+          {invoice.payment_reference && (
+            <div>
+              <span>Payment reference</span>
+              <span>{invoice.payment_reference}</span>
+            </div>
+          )}
+          {invoice.payment_mode === "CREDIT" && (
+            <div>
+              <span>Credit balance due</span>
+              <strong>{formatMoney(invoice.grand_total)}</strong>
+            </div>
+          )}
         </div>
 
         <div className="receipt-divider" />
@@ -225,6 +314,52 @@ export function ReceiptPrint({
           </footer>
         )}
       </article>
+      {!autoPrint && (sale.returns.length > 0 || sale.corrections.length > 0 || sale.void) && (
+        <section className="sale-receipt-activity" aria-labelledby="sale-receipt-activity-title">
+          <h3 id="sale-receipt-activity-title">Invoice activity</h3>
+          {sale.void && (
+            <article className="sale-receipt-activity-item" data-testid="receipt-invoice-void">
+              <strong>Cancelled · {formatMoney(sale.void.refund)}</strong>
+              <span>{sale.void.refund_mode} · {formatDateTime(sale.void.created_at)}</span>
+              {sale.void.payment_reference && <span>Reference: {sale.void.payment_reference}</span>}
+              {sale.void.upi_transaction_id && <span>UPI ID: {sale.void.upi_transaction_id}</span>}
+              {sale.void.note && <span>{sale.void.note}</span>}
+            </article>
+          )}
+          {sale.returns.map((record) => (
+            <article className="sale-receipt-activity-item" key={record.id} data-testid={`receipt-return-${record.id}`}>
+              <strong>{record.return_no} · {formatMoney(record.total)}</strong>
+              <span>{record.refund_mode} · {formatDateTime(record.created_at)}</span>
+              {record.payment_reference && <span>Reference: {record.payment_reference}</span>}
+              {record.upi_transaction_id && <span>UPI ID: {record.upi_transaction_id}</span>}
+              {record.note && <span>{record.note}</span>}
+              <ul>
+                {record.items.map((item) => (
+                  <li key={item.sale_item_id}>
+                    {item.medicine_name} · batch {item.batch_no} · {item.quantity} returned · {formatMoney(item.refund)}
+                  </li>
+                ))}
+              </ul>
+            </article>
+          ))}
+          {sale.corrections.map((record) => (
+            <article className="sale-receipt-activity-item" key={record.id} data-testid={`receipt-correction-${record.id}`}>
+              <strong>Invoice correction · {formatDateTime(record.created_at)}</strong>
+              {(record.adjustment_debit > 0 || record.adjustment_credit > 0) && (
+                <span>
+                  Account adjustment: {record.adjustment_debit > 0
+                    ? `+${formatMoney(record.adjustment_debit)}`
+                    : `−${formatMoney(record.adjustment_credit)}`}
+                </span>
+              )}
+              {record.adjustment_mode && <span>Settlement: {record.adjustment_mode}</span>}
+              {record.adjustment_reference && <span>Reference: {record.adjustment_reference}</span>}
+              {record.note && <span>{record.note}</span>}
+              <span>Original and corrected invoice snapshots are retained in the audit trail.</span>
+            </article>
+          ))}
+        </section>
+      )}
     </div>
   );
 }

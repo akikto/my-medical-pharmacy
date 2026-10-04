@@ -4,6 +4,7 @@ import type {
   RecentSale,
   SalesReportSummary,
   StoreSettings,
+  WeeklySalesDay,
 } from "../types";
 import { getLowStockAlerts, getExpiryAlerts } from "./inventoryService";
 import { getRecentSales } from "./salesService";
@@ -65,6 +66,12 @@ interface TopSellingMedicineRow {
   line_sales_before_invoice_discount: number | string | null;
 }
 
+interface WeeklySalesDayRow {
+  sale_date: string;
+  total_sales: number | string | null;
+  invoice_count: number | string | null;
+}
+
 function toFiniteNumber(value: number | string | null, label: string): number {
   const result = Number(value ?? 0);
   if (!Number.isFinite(result)) {
@@ -118,6 +125,33 @@ async function getTopSellingMedicines(): Promise<TopSellingMedicine[]> {
       "item sales value",
     ),
   }));
+}
+
+export async function getWeeklySales(
+  startDate: string,
+  endDate: string,
+): Promise<WeeklySalesDay[]> {
+  const rows = await invoke<WeeklySalesDayRow[]>("get_weekly_sales", {
+    startDate,
+    endDate,
+  });
+  return rows.map((row) => {
+    const invoiceCount = toFiniteNumber(row.invoice_count, "weekly invoice count");
+    const totalSales = toFiniteNumber(row.total_sales, "weekly sales total");
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(row.sale_date) ||
+      !Number.isSafeInteger(invoiceCount) ||
+      invoiceCount < 0 ||
+      totalSales < 0
+    ) {
+      throw new Error("The local database returned an invalid weekly sales row.");
+    }
+    return {
+      sale_date: row.sale_date,
+      total_sales: totalSales,
+      invoice_count: invoiceCount,
+    };
+  });
 }
 
 export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {

@@ -1,0 +1,175 @@
+Perform a FINAL RELEASE-CANDIDATE GAP CLOSURE for MY MEDICAL.
+
+Do NOT start a new feature phase.
+
+Do NOT redesign Home/Dashboard.
+Do NOT reset/reseed the database.
+Do NOT commit.
+Do NOT push.
+Do NOT publish/release/tag.
+
+Goal: close only the remaining actionable Phase 7–8 gaps without risky changes.
+
+1. DEPENDENCY FINDINGS
+
+Investigate the remaining findings:
+
+- braces@3.0.3 — HIGH, development-only mockup-sandbox / fast-glob chain, latest available version has no fix
+- 2 GLib advisories
+- proc-macro-error unmaintained advisory
+
+For each:
+
+- confirm whether it reaches the production MY MEDICAL runtime/package
+- confirm whether it is development/build/test only
+- identify the dependency path
+- determine whether a safe compatible fix exists
+
+Do NOT perform risky major upgrades.
+
+If no safe fix exists:
+- leave the dependency unchanged
+- document it as accepted/upstream/development-only
+- explain production impact clearly.
+
+Do NOT suppress advisories.
+
+2. MULTI-LINE SALES REGRESSION
+
+Add an isolated automated integration test covering:
+
+- at least 2 medicines
+- different quantities
+- FEFO allocation
+- different prices if supported
+- GST
+- cash/UPI/credit where appropriate
+- stock reduction
+- COGS
+- gross profit
+- final invoice total
+
+Verify all values are counted exactly once.
+
+Do not modify real database data.
+
+3. CUSTOMER PAYMENT PERMUTATIONS
+
+Add automated tests covering the existing supported collection methods:
+
+- cash
+- UPI
+- other supported methods
+
+Verify:
+
+- partial collection
+- full collection
+- overpayment rejection
+- ledger balance
+- report balance
+
+Do not change existing business rules.
+
+4. PDF / PRINT VERIFICATION
+
+Inspect the existing report PDF/print implementation.
+
+Verify programmatically where possible:
+
+- report title
+- pharmacy name
+- date range
+- totals
+- table headers
+- INR values
+- no UI-only buttons in print output
+
+If a real PDF can safely be generated in the existing environment, generate one in a temporary directory and inspect it.
+
+If native print rendering cannot be exercised in Linux, mark it UNVERIFIED rather than inventing a PASS.
+
+5. EXCEL MACRO SAFETY
+
+Inspect generated XLSX files.
+
+Verify they contain no VBA/macros and no unexpected external links.
+
+Use a temporary generated workbook only.
+
+6. WINDOWS READINESS
+
+Do not push or dispatch GitHub Actions.
+
+Static-audit the Windows workflow and Tauri configuration again.
+
+Verify:
+
+- Windows runner
+- pinned Node/pnpm/Rust
+- frozen dependency install
+- tests
+- typecheck
+- Rust check
+- Tauri Windows build
+- artifact upload
+- no signing requirement
+- no publishing/release step
+
+Clearly mark actual Windows execution as NOT RUN.
+
+7. FRONTEND QA LIMITATION
+
+Do not claim Chromium screenshots are valid native-Tauri UI QA.
+
+Instead:
+- keep renderer contract tests
+- verify route/component existence
+- verify report/expense/sales/inventory components compile
+- verify CSS has no obvious page-level overflow
+- mark native interaction as UNVERIFIED.
+
+8. RUSTFMT
+
+Do NOT run broad formatting changes.
+
+The existing purchase_management.rs rustfmt difference is not a blocker unless it was introduced by this task.
+
+9. FINAL TESTS
+
+Run:
+
+- all Rust tests
+- all frontend tests
+- cargo check
+- typecheck
+- Vite build
+- Debian package build
+- git diff --check
+
+Do not reset/reseed.
+
+10. FINAL STATUS
+
+Return a concise table:
+
+Area | Status | Evidence | Remaining Risk
+
+Use only:
+PASS
+PARTIAL
+UNVERIFIED
+ACCEPTED/UPSTREAM
+BLOCKED
+
+At the end provide:
+
+- exact remaining blockers
+- exact items that require Windows execution
+- exact dependency risks
+- whether the application is ready for Windows RC testing
+- git status
+
+Do NOT commit.
+Do NOT push.
+Do NOT publish.

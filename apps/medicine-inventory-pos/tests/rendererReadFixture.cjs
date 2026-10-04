@@ -12,8 +12,17 @@ const schema = `
     name TEXT NOT NULL,
     generic_name TEXT,
     company TEXT,
+    product_type TEXT,
+    strength TEXT,
+    composition TEXT,
+    barcode TEXT,
+    uses TEXT,
+    adult_dose TEXT,
+    child_dose TEXT,
+    photo_ref TEXT,
     rack_location TEXT,
     min_stock_alert INTEGER NOT NULL DEFAULT 10 CHECK (min_stock_alert >= 0),
+    gst_rate_basis_points INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE medicine_batches (
@@ -97,8 +106,10 @@ function invokeRead(command, args = {}) {
   switch (command) {
     case "get_inventory_medicines":
       return all(
-        `SELECT m.id, m.name, m.generic_name, m.company, m.rack_location,
-                m.min_stock_alert, m.created_at,
+        `SELECT m.id, m.name, m.generic_name, m.company, m.product_type,
+                m.strength, m.composition, m.barcode, m.uses, m.adult_dose,
+                m.child_dose, m.photo_ref, m.rack_location,
+                m.min_stock_alert, m.gst_rate_basis_points, m.created_at,
                 COALESCE(SUM(CASE WHEN b.expiry_date >= date('now', 'localtime')
                   THEN b.current_stock ELSE 0 END), 0) AS available_stock,
                 COALESCE(SUM(CASE WHEN b.expiry_date < date('now', 'localtime')
@@ -130,12 +141,19 @@ function invokeRead(command, args = {}) {
     case "search_medicines": {
       const pattern = `%${args.searchTerm.replace(/[!%_]/g, "!$&")}%`;
       return all(
-        `SELECT m.id, m.name, m.generic_name, m.company, m.rack_location,
-                m.min_stock_alert, m.created_at,
+        `SELECT m.id, m.name, m.generic_name, m.company, m.product_type,
+                m.strength, m.composition, m.barcode AS medicine_barcode,
+                m.uses, m.adult_dose, m.child_dose, m.photo_ref, m.rack_location,
+                m.min_stock_alert, m.gst_rate_basis_points, m.created_at,
                 COALESCE((SELECT SUM(stock_batch.current_stock)
                   FROM medicine_batches AS stock_batch
                   WHERE stock_batch.medicine_id = m.id
                     AND stock_batch.expiry_date >= date('now', 'localtime')), 0) AS available_stock,
+                CASE WHEN UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
+                       OR EXISTS (SELECT 1 FROM medicine_batches AS exact_batch
+                         WHERE exact_batch.medicine_id = m.id
+                           AND UPPER(TRIM(COALESCE(exact_batch.barcode, ''))) = ?2)
+                     THEN 1 ELSE 0 END AS exact_barcode_match,
                 b.id AS batch_id, b.medicine_id AS batch_medicine_id, b.batch_no,
                 b.expiry_date, b.purchase_rate, b.mrp, b.sale_rate,
                 b.current_stock, b.barcode
@@ -144,21 +162,29 @@ function invokeRead(command, args = {}) {
            SELECT candidate.id FROM medicine_batches AS candidate
            WHERE candidate.medicine_id = m.id AND candidate.current_stock > 0
              AND candidate.expiry_date >= date('now', 'localtime')
-           ORDER BY CASE WHEN candidate.barcode = ?2 THEN 0 ELSE 1 END,
-             candidate.expiry_date ASC, candidate.id ASC LIMIT 1
+           ORDER BY candidate.expiry_date ASC, candidate.id ASC LIMIT 1
          )
          WHERE m.name LIKE ?1 ESCAPE '!'
             OR COALESCE(m.generic_name, '') LIKE ?1 ESCAPE '!'
             OR COALESCE(m.company, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.product_type, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.strength, '') LIKE ?1 ESCAPE '!'
+            OR COALESCE(m.composition, '') LIKE ?1 ESCAPE '!'
+            OR UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2
+            OR COALESCE(m.barcode, '') LIKE ?1 ESCAPE '!'
             OR EXISTS (SELECT 1 FROM medicine_batches AS barcode_batch
               WHERE barcode_batch.medicine_id = m.id
-                AND (barcode_batch.barcode = ?2 OR barcode_batch.barcode LIKE ?1 ESCAPE '!'))
+                AND (UPPER(TRIM(COALESCE(barcode_batch.barcode, ''))) = ?2
+                  OR barcode_batch.barcode LIKE ?1 ESCAPE '!'))
          ORDER BY CASE WHEN EXISTS (SELECT 1 FROM medicine_batches AS exact_barcode
-              WHERE exact_barcode.medicine_id = m.id AND exact_barcode.barcode = ?2)
-              THEN 0 ELSE 1 END,
+              WHERE exact_barcode.medicine_id = m.id
+                AND UPPER(TRIM(COALESCE(exact_barcode.barcode, ''))) = ?2)
+              THEN 0
+              WHEN UPPER(TRIM(COALESCE(m.barcode, ''))) = ?2 THEN 1
+              ELSE 2 END,
            m.name COLLATE NOCASE ASC, m.id ASC LIMIT ?3`,
         pattern,
-        args.searchTerm,
+        args.searchTerm.trim().toUpperCase(),
         args.limit,
       );
     }
@@ -276,7 +302,7 @@ function invokeRead(command, args = {}) {
              COALESCE(SUM(item.purchase_rate_at_sale * item.quantity), 0) AS purchase_cost
            FROM in_range AS ranged LEFT JOIN sale_items AS item ON item.sale_id = ranged.id
            GROUP BY ranged.id
-         )
+         ), totals AS (
          SELECT COALESCE(SUM(ranged.grand_total), 0) AS total_revenue,
            COALESCE(SUM(CASE WHEN profit.line_count > 0
              AND profit.line_count = profit.costed_line_count
@@ -298,13 +324,26 @@ function invokeRead(command, args = {}) {
            COALESCE(SUM(CASE WHEN profit.line_count > profit.costed_line_count
              THEN 1 ELSE 0 END), 0) AS profit_unavailable_invoices
          FROM in_range AS ranged
-         LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id`,
+         LEFT JOIN profit_by_sale AS profit ON profit.id = ranged.id
+         )
+         SELECT totals.*,
+           totals.total_revenue AS gross_sales,
+           0 AS returned_total,
+           0 AS voided_total,
+           totals.total_revenue AS net_revenue,
+           totals.gross_profit AS net_gross_profit,
+           totals.cash_revenue AS net_cash_revenue,
+           totals.card_upi_revenue AS net_card_upi_revenue,
+           totals.other_revenue AS net_other_revenue,
+           totals.profit_unavailable_invoices AS net_profit_unavailable_invoices
+         FROM totals`,
         args.startDate,
         args.endDate,
       );
     case "get_sales_report_rows":
       return all(
-        `SELECT id, invoice_no, customer_name, payment_mode, grand_total, created_at
+        `SELECT id, invoice_no, customer_name, payment_mode, grand_total,
+                'ACTIVE' AS status, 0 AS returned_total, 0 AS voided_total, created_at
          FROM sales WHERE date(created_at, 'localtime') BETWEEN ?1 AND ?2
          ORDER BY created_at DESC, id DESC`,
         args.startDate,
@@ -395,14 +434,41 @@ function createFixture() {
     name,
     genericName = null,
     company = null,
+    productType = null,
+    strength = null,
+    composition = null,
+    barcode = null,
+    uses = null,
+    adultDose = null,
+    childDose = null,
+    photoRef = null,
     rackLocation = null,
     minStockAlert = 10,
+    gstRateBasisPoints = null,
   }) {
     return insert(
       `INSERT INTO medicines
-         (id, name, generic_name, company, rack_location, min_stock_alert)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, name, genericName, company, rackLocation, minStockAlert],
+         (id, name, generic_name, company, product_type, strength, composition,
+          barcode, uses, adult_dose, child_dose, photo_ref, rack_location,
+          min_stock_alert, gst_rate_basis_points)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        name,
+        genericName,
+        company,
+        productType,
+        strength,
+        composition,
+        barcode,
+        uses,
+        adultDose,
+        childDose,
+        photoRef,
+        rackLocation,
+        minStockAlert,
+        gstRateBasisPoints,
+      ],
     );
   }
 
