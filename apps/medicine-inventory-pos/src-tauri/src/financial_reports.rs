@@ -2277,6 +2277,133 @@ mod tests {
         );
     }
 
+    fn configure_test_store(
+        connection: &mut Connection,
+        gst_enabled: bool,
+        default_gst_rate_basis_points: Option<i64>,
+    ) {
+        super::super::apply_pharmacy_mutation_to_connection(
+            connection,
+            super::super::PharmacyMutation::SaveSettings {
+                settings: super::super::StoreSettingsMutation {
+                    pharmacy_name: "Financial Report Test Pharmacy".to_owned(),
+                    address: String::new(),
+                    contact_number: String::new(),
+                    drug_license_number: String::new(),
+                    receipt_footer_note: String::new(),
+                    upi_id: String::new(),
+                    upi_display_name: String::new(),
+                    gst_enabled,
+                    gst_default_rate_basis_points: default_gst_rate_basis_points,
+                    gst_pricing_mode: "EXCLUSIVE".to_owned(),
+                    gst_pharmacy_state_code: "29".to_owned(),
+                },
+            },
+        )
+        .expect("save financial report test settings");
+    }
+
+    fn create_test_customer(
+        connection: &mut Connection,
+        name: &str,
+        state_code: Option<&str>,
+    ) -> i64 {
+        super::super::apply_pharmacy_mutation_to_connection(
+            connection,
+            super::super::PharmacyMutation::CreateCustomer {
+                name: name.to_owned(),
+                phone: None,
+                address: None,
+                notes: None,
+                state_code: state_code.map(str::to_owned),
+            },
+        )
+        .expect("create financial report test customer")
+        .expect("created customer id")
+    }
+
+    fn add_financial_test_batch(
+        connection: &Connection,
+        batch_id: i64,
+        medicine_id: i64,
+        expiry_offset_days: i64,
+        stock: i64,
+        purchase_rate: f64,
+        mrp: f64,
+        sale_rate: f64,
+    ) {
+        connection
+            .execute(
+                r#"INSERT INTO medicine_batches (
+                     id, medicine_id, batch_no, expiry_date, purchase_rate,
+                     mrp, sale_rate, current_stock
+                   ) VALUES (
+                     ?1, ?2, ?3, date('now', 'localtime', ?4), ?5, ?6, ?7, ?8
+                   )"#,
+                params![
+                    batch_id,
+                    medicine_id,
+                    format!("FIN-{batch_id}"),
+                    format!("{expiry_offset_days:+} days"),
+                    purchase_rate,
+                    mrp,
+                    sale_rate,
+                    stock
+                ],
+            )
+            .expect("insert financial report test batch");
+    }
+
+    fn customer_collection_request(
+        customer_id: i64,
+        amount_cents: i64,
+        payment_mode: &str,
+        reference: &str,
+    ) -> super::super::CustomerPaymentRequest {
+        super::super::CustomerPaymentRequest {
+            customer_id,
+            amount_cents,
+            payment_mode: payment_mode.to_owned(),
+            payment_reference: Some(reference.to_owned()),
+            upi_transaction_id: (payment_mode == "UPI").then(|| format!("UPI-{reference}")),
+            note: Some("Automated collection regression".to_owned()),
+        }
+    }
+
+    fn customer_due_for_test(
+        connection: &Connection,
+        report_range: &ReportDateRange,
+        customer_name: &str,
+    ) -> CustomerDueRow {
+        let report = query_customer_due(
+            connection,
+            report_range,
+            Some(customer_name),
+            false,
+            None,
+            1,
+            REPORT_DEFAULT_PAGE_SIZE,
+        )
+        .expect("query customer due report");
+        assert_eq!(report.total_rows, 1);
+        report.rows.into_iter().next().expect("customer due row")
+    }
+
+    fn customer_ledger_balance_cents(connection: &Connection, customer_id: i64) -> i64 {
+        connection
+            .query_row(
+                r#"SELECT COALESCE(SUM(debit_cents - credit_cents), 0)
+                   FROM (
+                     SELECT debit_cents, credit_cents FROM customer_ledger WHERE customer_id = ?1
+                     UNION ALL
+                     SELECT debit_cents, credit_cents FROM customer_ledger_events WHERE customer_id = ?1
+                   )"#,
+                [customer_id],
+                |row| row.get(0),
+            )
+            .expect("read test customer ledger balance")
+    }
+
     fn financial_fixture() -> Connection {
         let connection = test_connection();
         connection
@@ -2364,6 +2491,295 @@ mod tests {
             )
             .expect("insert report fixture");
         connection
+    }
+
+    #[test]
+    fn multi_line_checkout_counts_fefo_gst_cost_and_profit_once() {
+        let mut connection = test_connection();
+        configure_test_store(&mut connection, true, Some(1_800));
+        let customer_id = create_test_customer(&mut connection, "Multi-line buyer", Some("29"));
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (id, name, generic_name, company, gst_rate_basis_points)
+                VALUES
+                  (1, 'Alpha medicine', 'Alpha ingredient', 'Alpha Labs', 500),
+                  (2, 'Beta medicine', 'Beta ingredient', 'Beta Labs', 1200);
+                "#,
+            )
+            .expect("insert multi-line sale medicines");
+        add_financial_test_batch(&connection, 101, 1, 30, 1, 4.0, 20.0, 10.0);
+        add_financial_test_batch(&connection, 102, 1, 180, 4, 4.5, 20.0, 10.0);
+        add_financial_test_batch(&connection, 201, 2, 365, 6, 7.0, 30.0, 15.0);
+
+        let sale = super::super::complete_sale_in_connection(
+            &mut connection,
+            super::super::SaleCheckoutRequest {
+                customer_id: Some(customer_id),
+                customer_name: None,
+                customer_phone: None,
+                payment_mode: "CASH".to_owned(),
+                flat_discount_cents: 0,
+                cash_tendered_cents: 8_000,
+                gst_pricing_mode: Some("EXCLUSIVE".to_owned()),
+                upi_transaction_id: None,
+                items: vec![
+                    super::super::SaleCheckoutItem {
+                        medicine_id: 1,
+                        batch_id: 101,
+                        quantity: 2,
+                        unit_price_cents: 1_000,
+                        item_discount_cents: 0,
+                        gst_rate_override_basis_points: None,
+                    },
+                    super::super::SaleCheckoutItem {
+                        medicine_id: 2,
+                        batch_id: 201,
+                        quantity: 3,
+                        unit_price_cents: 1_500,
+                        item_discount_cents: 0,
+                        gst_rate_override_basis_points: None,
+                    },
+                ],
+            },
+        )
+        .expect("complete multi-line GST sale");
+
+        let allocations = checked_query(
+            &connection,
+            r#"SELECT batch_id, quantity, purchase_rate_at_sale
+               FROM sale_items WHERE sale_id = ?1 ORDER BY batch_id"#,
+            [sale.sale_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            },
+        )
+        .expect("read FEFO allocations");
+        assert_eq!(
+            allocations,
+            vec![(101, 1, 4.0), (102, 1, 4.5), (201, 3, 7.0)]
+        );
+
+        let (sale_count, item_count, invoice_total, invoice_taxable, invoice_gst): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM sales WHERE id = ?1),
+                     (SELECT COUNT(*) FROM sale_items WHERE sale_id = ?1),
+                     (SELECT CAST(ROUND(grand_total * 100) AS INTEGER)
+                        FROM sales WHERE id = ?1),
+                     (SELECT CAST(ROUND(taxable_amount * 100) AS INTEGER)
+                        FROM sales WHERE id = ?1),
+                     (SELECT CAST(ROUND(total_gst * 100) AS INTEGER)
+                        FROM sales WHERE id = ?1)"#,
+                [sale.sale_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read multi-line invoice totals");
+        assert_eq!(
+            (
+                sale_count,
+                item_count,
+                invoice_total,
+                invoice_taxable,
+                invoice_gst
+            ),
+            (1, 3, 7_140, 6_500, 640)
+        );
+
+        let product_totals = checked_query(
+            &connection,
+            r#"SELECT mb.medicine_id,
+                      SUM(si.quantity),
+                      CAST(ROUND(SUM(si.taxable_amount) * 100) AS INTEGER),
+                      CAST(ROUND(SUM(si.total_gst) * 100) AS INTEGER),
+                      CAST(ROUND(SUM(si.purchase_rate_at_sale * si.quantity) * 100) AS INTEGER)
+               FROM sale_items si
+               JOIN medicine_batches mb ON mb.id = si.batch_id
+               WHERE si.sale_id = ?1
+               GROUP BY mb.medicine_id
+               ORDER BY mb.medicine_id"#,
+            [sale.sale_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .expect("read per-medicine sales, GST, and cost");
+        assert_eq!(
+            product_totals,
+            vec![(1, 2, 2_000, 100, 850), (2, 3, 4_500, 540, 2_100)]
+        );
+
+        let (early_stock, later_stock, beta_stock): (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT current_stock FROM medicine_batches WHERE id = 101),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 102),
+                     (SELECT current_stock FROM medicine_batches WHERE id = 201)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read stock after multi-line sale");
+        assert_eq!((early_stock, later_stock, beta_stock), (0, 3, 3));
+
+        let today: String = connection
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
+            .expect("read local report date");
+        let report_range = range(&today, &today);
+        let sales = query_sales_summary(&connection, &report_range).expect("sales summary");
+        assert_eq!(sales.invoice_count, 1);
+        assert_eq!(sales.total_rows, 1);
+        assert_money(sales.gross_sales, 71.4);
+        assert_money(sales.net_sales, 71.4);
+        assert_money(sales.taxable_sales, 65.0);
+        assert_money(sales.output_gst, 6.4);
+        assert_money(sales.cash_sales, 71.4);
+
+        let profit =
+            query_profit_and_loss(&connection, &report_range).expect("multi-line profit report");
+        assert_money(profit.net_sales, 65.0);
+        assert_eq!(profit.cogs, Some(29.5));
+        assert_eq!(profit.gross_profit, Some(35.5));
+        assert_eq!(profit.cost_unavailable_invoices, 0);
+    }
+
+    #[test]
+    fn customer_collections_cover_all_methods_partial_full_and_overpayment() {
+        let mut connection = test_connection();
+        configure_test_store(&mut connection, false, None);
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO medicines (id, name, generic_name, company)
+                VALUES (1, 'Collection test medicine', 'Collection ingredient', 'Test Labs');
+                "#,
+            )
+            .expect("insert customer collection medicine");
+        add_financial_test_batch(&connection, 501, 1, 365, 5, 50.0, 150.0, 100.0);
+
+        let today: String = connection
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
+            .expect("read local customer due report date");
+        let report_range = range(&today, &today);
+
+        for payment_mode in ["CASH", "UPI", "CARD", "BANK", "OTHER"] {
+            let customer_name = format!("Collection {payment_mode}");
+            let customer_id = create_test_customer(&mut connection, &customer_name, Some("29"));
+            super::super::complete_sale_in_connection(
+                &mut connection,
+                super::super::SaleCheckoutRequest {
+                    customer_id: Some(customer_id),
+                    customer_name: None,
+                    customer_phone: None,
+                    payment_mode: "CREDIT".to_owned(),
+                    flat_discount_cents: 0,
+                    cash_tendered_cents: 0,
+                    gst_pricing_mode: Some("EXCLUSIVE".to_owned()),
+                    upi_transaction_id: None,
+                    items: vec![super::super::SaleCheckoutItem {
+                        medicine_id: 1,
+                        batch_id: 501,
+                        quantity: 1,
+                        unit_price_cents: 10_000,
+                        item_discount_cents: 0,
+                        gst_rate_override_basis_points: None,
+                    }],
+                },
+            )
+            .expect("record customer credit sale");
+
+            let partial = super::super::collect_customer_payment_in_connection(
+                &mut connection,
+                customer_collection_request(
+                    customer_id,
+                    4_000,
+                    payment_mode,
+                    &format!("{payment_mode}-PARTIAL"),
+                ),
+            )
+            .expect("record partial customer collection");
+            assert_eq!(partial.balance_due_cents, 6_000);
+            assert_eq!(
+                customer_ledger_balance_cents(&connection, customer_id),
+                6_000
+            );
+
+            let partial_report = customer_due_for_test(&connection, &report_range, &customer_name);
+            assert_money(partial_report.total_credit, 100.0);
+            assert_money(partial_report.total_paid, 40.0);
+            assert_money(partial_report.outstanding_balance, 60.0);
+
+            let overpayment = super::super::collect_customer_payment_in_connection(
+                &mut connection,
+                customer_collection_request(
+                    customer_id,
+                    6_001,
+                    payment_mode,
+                    &format!("{payment_mode}-OVERPAY"),
+                ),
+            )
+            .expect_err("reject collection above the outstanding balance");
+            assert!(overpayment.contains("cannot exceed"));
+            assert_eq!(
+                customer_ledger_balance_cents(&connection, customer_id),
+                6_000
+            );
+            let after_rejection = customer_due_for_test(&connection, &report_range, &customer_name);
+            assert_money(after_rejection.total_paid, 40.0);
+            assert_money(after_rejection.outstanding_balance, 60.0);
+
+            let full = super::super::collect_customer_payment_in_connection(
+                &mut connection,
+                customer_collection_request(
+                    customer_id,
+                    6_000,
+                    payment_mode,
+                    &format!("{payment_mode}-FULL"),
+                ),
+            )
+            .expect("record final customer collection");
+            assert_eq!(full.balance_due_cents, 0);
+            assert_eq!(customer_ledger_balance_cents(&connection, customer_id), 0);
+
+            let full_report = customer_due_for_test(&connection, &report_range, &customer_name);
+            assert_money(full_report.total_credit, 100.0);
+            assert_money(full_report.total_paid, 100.0);
+            assert_money(full_report.outstanding_balance, 0.0);
+
+            let saved_method_count: i64 = connection
+                .query_row(
+                    r#"SELECT COUNT(*) FROM customer_ledger
+                       WHERE customer_id = ?1 AND entry_type = 'COLLECTION'
+                         AND payment_mode = ?2"#,
+                    params![customer_id, payment_mode],
+                    |row| row.get(0),
+                )
+                .expect("count saved collections for payment method");
+            assert_eq!(saved_method_count, 2);
+        }
     }
 
     #[test]
