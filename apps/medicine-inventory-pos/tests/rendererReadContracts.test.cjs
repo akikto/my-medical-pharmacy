@@ -1,15 +1,56 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const Module = require("node:module");
+const path = require("node:path");
 const { afterEach, beforeEach, describe, it } = require("node:test");
 const ts = require("typescript");
 const { createFixture, invokeRead, state } = require("./rendererReadFixture.cjs");
+
+const backupServiceState = {
+  saveSelection: null,
+  openSelection: null,
+  saveOptions: null,
+  openOptions: null,
+  invocations: [],
+};
 
 const originalModuleLoad = Module._load;
 Module._load = function loadWithTauriReadMock(request, parent, isMain) {
   if (request === "@tauri-apps/api/core") {
     return {
-      invoke: async (command, args = {}) => invokeRead(command, args),
+      invoke: async (command, args = {}) => {
+        if (
+          command === "create_database_backup" ||
+          command === "restore_database_backup"
+        ) {
+          backupServiceState.invocations.push({ command, args });
+          return command === "create_database_backup"
+            ? {
+                path: args.destinationPath,
+                photoCount: 2,
+                ignoredOrphanedPhotoCount: 1,
+              }
+            : {
+                safetyBackupPath: "/local/backups/before-restore.zip",
+                sourceFormat: "legacyDatabaseOnly",
+                restoredPhotoCount: 2,
+                ignoredOrphanedPhotoCount: 0,
+              };
+        }
+        return invokeRead(command, args);
+      },
+    };
+  }
+  if (request === "@tauri-apps/plugin-dialog") {
+    return {
+      open: async (options) => {
+        backupServiceState.openOptions = options;
+        return backupServiceState.openSelection;
+      },
+      save: async (options) => {
+        backupServiceState.saveOptions = options;
+        return backupServiceState.saveSelection;
+      },
     };
   }
   return originalModuleLoad.call(this, request, parent, isMain);
@@ -42,20 +83,114 @@ const { getSuppliers } = require("../src/services/supplierService.ts");
 const { getStoreSettings } = require("../src/services/settingsService.ts");
 const { getRecentPurchases } = require("../src/services/purchaseService.ts");
 const { getRecentSales, getSaleDetails } = require("../src/services/salesService.ts");
+const { calculateOrderSuggestion } = require("../src/services/orderSuggestion.ts");
 const { getDashboardSnapshot } = require("../src/services/dashboardService.ts");
 const {
   getSalesReport,
   getSalesReportSummary,
 } = require("../src/services/reportsService.ts");
+const {
+  buildWeek,
+  formatCompactMoney,
+  getWeekRange,
+} = require("../src/components/dashboard/weeklySalesModel.ts");
+const {
+  normalizeBarcode,
+  parseSalePriceDraft,
+  resolveBarcodeLookup,
+} = require("../src/components/pos/posBillingModel.ts");
+const {
+  buildBarcodeLabelSources,
+  parseBarcodeLabelQuantity,
+  maximumBarcodeLabelQuantity,
+} = require("../src/services/barcodeLabelService.ts");
+const {
+  buildStockWorkbookBuffer,
+  filterStockExportRows,
+} = require("../src/services/inventoryWorkbookService.ts");
+const {
+  exportFinancialReportExcel,
+} = require("../src/services/financialReportExportService.ts");
+const {
+  createDatabaseBackup,
+  restoreDatabaseBackup,
+  selectBackupDestination,
+  selectRestoreSource,
+} = require("../src/services/backupService.ts");
+const ExcelJS = require("exceljs");
 let fixture;
 
 beforeEach(() => {
   fixture = createFixture();
+  backupServiceState.saveSelection = null;
+  backupServiceState.openSelection = null;
+  backupServiceState.saveOptions = null;
+  backupServiceState.openOptions = null;
+  backupServiceState.invocations = [];
 });
 
 afterEach(() => {
   fixture?.close();
   fixture = null;
+});
+
+describe("local complete backup and restore service", () => {
+  it("uses a local .zip save, supports .zip and legacy .db restore, and handles cancellation", async () => {
+    assert.equal(await selectBackupDestination(), null);
+    assert.deepEqual(backupServiceState.saveOptions.filters, [
+      { name: "MY MEDICAL complete backup", extensions: ["zip"] },
+    ]);
+    assert.match(backupServiceState.saveOptions.defaultPath, /^my-medical-backup-.*\.zip$/);
+
+    assert.equal(await selectRestoreSource(), null);
+    assert.equal(backupServiceState.openOptions.directory, false);
+    assert.equal(backupServiceState.openOptions.multiple, false);
+    assert.deepEqual(backupServiceState.openOptions.filters, [
+      { name: "MY MEDICAL backups", extensions: ["zip", "db"] },
+    ]);
+    backupServiceState.openSelection = "/local/complete-backup.zip";
+    assert.equal(await selectRestoreSource(), "/local/complete-backup.zip");
+    backupServiceState.openSelection = null;
+    assert.deepEqual(backupServiceState.invocations, []);
+  });
+
+  it("normalizes a selected restore file and forwards native results", async () => {
+    backupServiceState.saveSelection = "/local/manual-backup.zip";
+    const destination = await selectBackupDestination();
+    const backupResult = await createDatabaseBackup(destination);
+    assert.deepEqual(backupResult, {
+      path: "/local/manual-backup.zip",
+      photoCount: 2,
+      ignoredOrphanedPhotoCount: 1,
+    });
+
+    backupServiceState.openSelection = ["/local/restore-source.db"];
+    const selectedSource = await selectRestoreSource();
+    assert.equal(selectedSource, "/local/restore-source.db");
+    const restoreResult = await restoreDatabaseBackup(selectedSource);
+    assert.deepEqual(restoreResult, {
+      safetyBackupPath: "/local/backups/before-restore.zip",
+      sourceFormat: "legacyDatabaseOnly",
+      restoredPhotoCount: 2,
+      ignoredOrphanedPhotoCount: 0,
+    });
+    assert.deepEqual(backupServiceState.invocations, [
+      {
+        command: "create_database_backup",
+        args: { destinationPath: "/local/manual-backup.zip" },
+      },
+      {
+        command: "restore_database_backup",
+        args: { sourcePath: "/local/restore-source.db" },
+      },
+    ]);
+  });
+
+  it("rejects empty paths instead of invoking native database commands", async () => {
+    await assert.rejects(createDatabaseBackup("  "), /Choose a destination/);
+    await assert.rejects(restoreDatabaseBackup("  "), /Choose a backup file/);
+    assert.deepEqual(backupServiceState.invocations, []);
+  });
 });
 
 function isoDate(date) {
@@ -75,14 +210,36 @@ function mondayStartForReport(today) {
 }
 
 describe("renderer read contracts against an isolated SQLite fixture", () => {
+  it("keeps zero-sales days in the weekly chart and formats them as ₹0", () => {
+    const range = getWeekRange("2026-03-04");
+    const points = buildWeek(range, [
+      { sale_date: "2026-03-02", total_sales: 10, invoice_count: 1 },
+    ]);
+
+    assert.equal(points.length, 7);
+    assert.equal(points[0].total, 10);
+    assert.equal(points[1].total, 0);
+    assert.equal(points[1].invoiceCount, 0);
+    assert.equal(formatCompactMoney(points[1].total), "₹0");
+  });
+
   it("keeps medicine list aggregates, matching, ordering, and literal search escaping", async () => {
     fixture.insertMedicine({
       id: 1,
       name: "Alpha",
       genericName: "Amoxicillin",
       company: "North Labs",
+      productType: "Capsule",
+      strength: "500 mg",
+      composition: "Amoxicillin trihydrate",
+      barcode: "0123456789012",
+      uses: "Testing medicine metadata",
+      adultDose: "One capsule",
+      childDose: "Ask a clinician",
+      photoRef: "medicine-1.jpg",
       rackLocation: "Rack-East",
       minStockAlert: 4,
+      gstRateBasisPoints: 1800,
     });
     fixture.insertMedicine({ id: 2, name: "alpha", minStockAlert: 1 });
     fixture.insertMedicine({ id: 3, name: "Beta" });
@@ -155,16 +312,38 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       results.map((row) => [row.medicine.id, row.available_stock, row.fefo_batch?.id ?? null]),
       [[1, 10, 2], [2, 0, null]],
     );
-    assert.deepEqual(Object.keys(results[0]), ["medicine", "available_stock", "fefo_batch"]);
+    assert.deepEqual(Object.keys(results[0]), [
+      "medicine",
+      "available_stock",
+      "exact_barcode_match",
+      "fefo_batch",
+    ]);
     assert.deepEqual(Object.keys(results[0].medicine), [
       "id",
       "name",
       "generic_name",
       "company",
+      "product_type",
+      "strength",
+      "composition",
+      "barcode",
+      "uses",
+      "adult_dose",
+      "child_dose",
+      "photo_ref",
       "rack_location",
       "min_stock_alert",
+      "gst_rate_basis_points",
       "created_at",
     ]);
+    assert.equal(results[0].medicine.product_type, "Capsule");
+    assert.equal(results[0].medicine.barcode, "0123456789012");
+    assert.equal(results[0].medicine.gst_rate_basis_points, 1800);
+    const masterBarcodeMatch = await searchMedicines("0123456789012");
+    assert.deepEqual(
+      masterBarcodeMatch.map((row) => [row.medicine.id, row.fefo_batch?.id ?? null]),
+      [[1, 2]],
+    );
     assert.deepEqual(await searchMedicines("no such medicine"), []);
     assert.deepEqual(
       (await searchMedicines("Alpha", 1)).map((row) => row.medicine.id),
@@ -173,7 +352,7 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     await assert.rejects(searchMedicines("Alpha", 0), /Search limit must be between 1 and 100/);
   });
 
-  it("prioritizes exact barcode matches and exact-barcode batches", async () => {
+  it("resolves exact barcodes to medicines while keeping search batches FEFO", async () => {
     fixture.insertMedicine({ id: 1, name: "Zeta" });
     fixture.insertMedicine({ id: 2, name: "Alpha" });
     fixture.insertBatch({
@@ -204,9 +383,70 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     const matches = await searchMedicines("SCAN-123");
     assert.deepEqual(
       matches.map((row) => [row.medicine.name, row.fefo_batch?.id]),
-      [["Zeta", 2], ["Alpha", 3]],
+      [["Zeta", 1], ["Alpha", 3]],
+    );
+    assert.equal(matches[0].exact_barcode_match, true);
+    assert.equal(matches[1].exact_barcode_match, false);
+    assert.deepEqual(
+      (await getSellableBatches(matches[0].medicine.id)).map((batch) => batch.id),
+      [1, 2],
+    );
+    assert.equal(
+      resolveBarcodeLookup(matches, " scan-123 ").kind,
+      "match",
     );
     assert.deepEqual(await searchMedicines("ABSENT-CODE"), []);
+  });
+
+  it("searches saved product identifiers and surfaces exact duplicate barcodes for explicit choice", async () => {
+    fixture.insertMedicine({
+      id: 1,
+      name: "Cough relief",
+      company: "Northstar",
+      productType: "Syrup",
+      strength: "100 mg / 5 ml",
+      composition: "dextromethorphan",
+      barcode: "DUP-100",
+    });
+    fixture.insertMedicine({
+      id: 2,
+      name: "Cold tablets",
+      company: "Harbor Labs",
+      productType: "Tablet",
+      strength: "10 mg",
+      composition: "cetirizine",
+    });
+    fixture.insertBatch({ id: 1, medicineId: 1, currentStock: 3 });
+    fixture.insertBatch({
+      id: 2,
+      medicineId: 2,
+      currentStock: 4,
+      barcode: "DUP-100",
+    });
+
+    assert.equal((await searchMedicines("Northstar"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("Syrup"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("100 mg / 5 ml"))[0].medicine.id, 1);
+    assert.equal((await searchMedicines("dextromethorphan"))[0].medicine.id, 1);
+
+    const exactMatches = await searchMedicines("dup-100");
+    const resolution = resolveBarcodeLookup(exactMatches, " dup-100 ");
+    assert.equal(normalizeBarcode(" dup-100 "), "DUP-100");
+    assert.equal(resolution.kind, "ambiguous");
+    if (resolution.kind === "ambiguous") {
+      assert.deepEqual(
+        resolution.matches.map((match) => match.medicine.id).sort(),
+        [1, 2],
+      );
+    }
+  });
+
+  it("validates invoice-only sale-price drafts to cents precision", () => {
+    assert.equal(parseSalePriceDraft(" 14.2 "), 14.2);
+    assert.equal(parseSalePriceDraft("0"), 0);
+    assert.equal(parseSalePriceDraft("14.239"), null);
+    assert.equal(parseSalePriceDraft(""), null);
+    assert.equal(parseSalePriceDraft("₹14"), null);
   });
 
   it("orders batches and allocates sellable stock by FEFO, including empty and insufficient cases", async () => {
@@ -368,6 +608,12 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       drug_license_number: "",
       receipt_footer_note:
         "Thank you for choosing us. Please retain this receipt for your records.",
+      upi_id: "",
+      upi_display_name: "",
+      gst_enabled: false,
+      gst_default_rate_basis_points: null,
+      gst_pricing_mode: "EXCLUSIVE",
+      gst_pharmacy_state_code: "",
     });
     fixture.insertSetting("pharmacy_name", "Fixture Pharmacy");
     fixture.insertSetting("unrecognized_key", "ignored");
@@ -728,15 +974,24 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     const report = await getSalesReport(start, today);
     assert.deepEqual(report.summary, {
       total_revenue: 210,
+      gross_sales: 210,
+      returned_total: 0,
+      voided_total: 0,
+      net_revenue: 210,
       gross_profit: 105,
+      net_gross_profit: 105,
       total_invoices: 5,
       cash_revenue: 110,
+      net_cash_revenue: 110,
       cash_invoices: 1,
       card_upi_revenue: 65,
+      net_card_upi_revenue: 65,
       card_upi_invoices: 2,
       other_revenue: 35,
+      net_other_revenue: 35,
       other_invoices: 2,
       profit_unavailable_invoices: 1,
+      net_profit_unavailable_invoices: 1,
     });
     assert.deepEqual(
       report.sales.map((sale) => [sale.invoice_no, sale.grand_total]),
@@ -807,15 +1062,24 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
     assert.deepEqual(await getSalesReport(today, today), {
       summary: {
         total_revenue: 0,
+        gross_sales: 0,
+        returned_total: 0,
+        voided_total: 0,
+        net_revenue: 0,
         gross_profit: 0,
+        net_gross_profit: 0,
         total_invoices: 0,
         cash_revenue: 0,
+        net_cash_revenue: 0,
         cash_invoices: 0,
         card_upi_revenue: 0,
+        net_card_upi_revenue: 0,
         card_upi_invoices: 0,
         other_revenue: 0,
+        net_other_revenue: 0,
         other_invoices: 0,
         profit_unavailable_invoices: 0,
+        net_profit_unavailable_invoices: 0,
       },
       sales: [],
     });
@@ -852,5 +1116,424 @@ describe("renderer read contracts against an isolated SQLite fixture", () => {
       () => invokeRead("execute_sql_transaction", { query: "UPDATE medicines" }),
       /Unsupported typed native read command/,
     );
+  });
+});
+
+describe("inventory order quantity suggestions", () => {
+  it("uses the reorder floor when sales history is insufficient and excludes expired stock", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 0,
+        reorderLevel: 5,
+        soldUnits30Days: 0,
+        salesDays30Days: 0,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 10,
+        suggestedAdditionalQuantity: 10,
+        limitedSalesHistory: true,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("subtracts pending orders from a target based on recent usage", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 2,
+        reorderLevel: 5,
+        soldUnits30Days: 15,
+        salesDays30Days: 9,
+        pendingOrderQuantity: 4,
+      }),
+      {
+        targetStock: 15,
+        suggestedAdditionalQuantity: 9,
+        limitedSalesHistory: false,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("suggests nothing when sellable stock already meets the target", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 20,
+        reorderLevel: 5,
+        soldUnits30Days: 8,
+        salesDays30Days: 10,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 10,
+        suggestedAdditionalQuantity: 0,
+        limitedSalesHistory: false,
+        suggestionCapped: false,
+      },
+    );
+  });
+
+  it("caps suggestions at the order-list limit and rejects invalid stock values", () => {
+    assert.deepEqual(
+      calculateOrderSuggestion({
+        sellableStock: 0,
+        reorderLevel: 1_000_000_000,
+        soldUnits30Days: 0,
+        salesDays30Days: 0,
+        pendingOrderQuantity: 0,
+      }),
+      {
+        targetStock: 2_000_000_000,
+        suggestedAdditionalQuantity: 1_000_000_000,
+        limitedSalesHistory: true,
+        suggestionCapped: true,
+      },
+    );
+    assert.throws(
+      () =>
+        calculateOrderSuggestion({
+          sellableStock: -1,
+          reorderLevel: 1,
+          soldUnits30Days: 0,
+          salesDays30Days: 0,
+          pendingOrderQuantity: 0,
+        }),
+      /Sellable stock must be a non-negative whole number/,
+    );
+  });
+});
+
+describe("barcode label preparation", () => {
+  it("uses saved batch barcodes first and the saved medicine barcode as fallback", () => {
+    const medicine = {
+      id: 1,
+      name: "Test medicine",
+      barcode: "MASTER-123",
+      strength: "250 mg",
+      product_type: "Capsule",
+    };
+    const sources = buildBarcodeLabelSources(
+      [medicine, { ...medicine, id: 2, name: "No barcode", barcode: null }],
+      [[
+        {
+          id: 10,
+          medicine_id: 1,
+          batch_no: "BATCH-A",
+          barcode: "BATCH-10",
+          expiry_date: "2027-01-01",
+          purchase_rate: 2,
+          mrp: 3,
+          sale_rate: 2.5,
+          current_stock: 4,
+        },
+        {
+          id: 11,
+          medicine_id: 1,
+          batch_no: "BATCH-B",
+          barcode: null,
+          expiry_date: "2027-06-01",
+          purchase_rate: 2,
+          mrp: 3,
+          sale_rate: 2.5,
+          current_stock: 4,
+        },
+      ], []],
+    );
+
+    assert.deepEqual(
+      sources.map((source) => [source.key, source.barcode, source.batch?.batch_no ?? null]),
+      [
+        ["batch-1-10", "BATCH-10", "BATCH-A"],
+        ["batch-1-11", "MASTER-123", "BATCH-B"],
+        ["medicine-2", null, null],
+      ],
+    );
+  });
+
+  it("validates a bounded whole-number label quantity", () => {
+    assert.equal(maximumBarcodeLabelQuantity, 500);
+    assert.equal(parseBarcodeLabelQuantity("1"), 1);
+    assert.equal(parseBarcodeLabelQuantity("500"), 500);
+    assert.equal(parseBarcodeLabelQuantity(""), null);
+    assert.equal(parseBarcodeLabelQuantity("0"), null);
+    assert.equal(parseBarcodeLabelQuantity("1.5"), null);
+    assert.equal(parseBarcodeLabelQuantity("501"), null);
+  });
+});
+
+describe("stock export workbook", () => {
+  const makeMedicine = (id, name = `Medicine ${id}`) => ({
+    id,
+    name,
+    generic_name: null,
+    company: "Example Company",
+    product_type: "Tablet",
+    strength: "250 mg",
+    composition: null,
+    barcode: `MED-${id}`,
+    uses: null,
+    adult_dose: null,
+    child_dose: null,
+    photo_ref: null,
+    rack_location: "A-01",
+    min_stock_alert: 5,
+    gst_rate_basis_points: 500,
+    created_at: "2026-01-01",
+    available_stock: 12,
+    expired_stock: 0,
+    near_expiry_stock: 0,
+    batch_count: 1,
+  });
+
+  const makeBatch = (id, medicineId, expiryDate) => ({
+    id,
+    medicine_id: medicineId,
+    batch_no: `BATCH-${id}`,
+    expiry_date: expiryDate,
+    purchase_rate: 10.5,
+    mrp: 15,
+    sale_rate: 13,
+    current_stock: 12,
+    barcode: `LOT-${id}`,
+  });
+
+  it("filters expired and near-expiry batches at inclusive date boundaries", () => {
+    const rows = [
+      { medicine: makeMedicine(1), batch: makeBatch(1, 1, "2026-10-02") },
+      { medicine: makeMedicine(2), batch: makeBatch(2, 2, "2026-10-03") },
+      { medicine: makeMedicine(3), batch: makeBatch(3, 3, "2026-11-02") },
+      { medicine: makeMedicine(4), batch: makeBatch(4, 4, "2026-11-03") },
+      { medicine: makeMedicine(5), batch: null },
+    ];
+    const today = new Date(2026, 9, 3);
+
+    assert.deepEqual(
+      filterStockExportRows(rows, "expired", today).map(({ batch }) => batch.batch_no),
+      ["BATCH-1"],
+    );
+    assert.deepEqual(
+      filterStockExportRows(rows, "near-expiry", today).map(({ batch }) => batch.batch_no),
+      ["BATCH-2", "BATCH-3"],
+    );
+    assert.equal(filterStockExportRows(rows, "all", today).length, rows.length);
+  });
+
+  it("preserves data and exports numeric cells and long medicine names", async () => {
+    const longName = "Very long medicine name ".repeat(5);
+    const rows = [
+      {
+        medicine: makeMedicine(1, longName),
+        batch: makeBatch(1, 1, "2027-03-01"),
+      },
+    ];
+    const before = structuredClone(rows);
+    const buffer = await buildStockWorkbookBuffer(rows);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const sheet = workbook.getWorksheet("Stock");
+
+    assert.deepEqual(rows, before);
+    assert.equal(sheet.getCell("A2").value, longName);
+    assert.equal(sheet.getCell("D2").value, "LOT-1");
+    assert.equal(sheet.getCell("G2").value, 12);
+    assert.equal(typeof sheet.getCell("G2").value, "number");
+    assert.equal(sheet.getCell("I2").value, 15);
+    assert.equal(sheet.getCell("M2").value, "Healthy");
+  });
+
+  it("creates a valid header-only workbook for empty exports and handles many rows", async () => {
+    const emptyWorkbook = new ExcelJS.Workbook();
+    await emptyWorkbook.xlsx.load(await buildStockWorkbookBuffer([]));
+    const emptySheet = emptyWorkbook.getWorksheet("Stock");
+    assert.equal(emptySheet.rowCount, 1);
+    assert.equal(emptySheet.getCell("A1").value, "Medicine");
+    assert.equal(emptySheet.getCell("M1").value, "Stock Status");
+
+    const rows = Array.from({ length: 300 }, (_, index) => ({
+      medicine: makeMedicine(index + 1),
+      batch: makeBatch(index + 1, index + 1, "2027-03-01"),
+    }));
+    const manyWorkbook = new ExcelJS.Workbook();
+    await manyWorkbook.xlsx.load(await buildStockWorkbookBuffer(rows));
+    assert.equal(manyWorkbook.getWorksheet("Stock").rowCount, 301);
+  });
+});
+
+describe("expense and financial report surfaces", () => {
+  it("connects the Expenses workspace to native CRUD and exposes print/PDF controls", () => {
+    const expensesPage = fs.readFileSync(
+      path.join(__dirname, "../src/components/expenses/ExpensesPage.tsx"),
+      "utf8",
+    );
+    const reportsPage = fs.readFileSync(
+      path.join(__dirname, "../src/components/reports/ReportsPage.tsx"),
+      "utf8",
+    );
+
+    for (const serviceCall of [
+      "getExpenseCategories",
+      "getExpenses",
+      "saveExpense",
+      "saveExpenseCategory",
+      "setExpenseCategoryActive",
+      "cancelExpense",
+    ]) {
+      assert.match(expensesPage, new RegExp(`\\b${serviceCall}\\b`));
+    }
+    assert.match(expensesPage, /window\.confirm/);
+    assert.match(expensesPage, /status === "CANCELLED"/);
+    assert.match(expensesPage, /data-testid="page-expenses"/);
+    assert.match(reportsPage, /data-testid="button-print-report"/);
+    assert.match(reportsPage, /window\.print\(\)/);
+    assert.match(reportsPage, /\{ id: "expenses"/);
+    assert.match(reportsPage, /\{ id: "financial_summary", title: "Financial Summary", group: "Overview" \}/);
+    assert.match(reportsPage, /\["Trading", "Overview", "Inventory", "Analysis", "Balances", "Tax"\]/);
+  });
+
+  it("exports expense breakdowns and cancelled ledger rows as an Excel workbook", async () => {
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    let downloadedBlob = null;
+    let downloadedFilename = null;
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: (blob) => {
+        downloadedBlob = blob;
+        return "blob:expense-test";
+      },
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: () => {},
+    });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { setTimeout: (callback) => { callback(); return 0; } },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        createElement: () => ({
+          click: () => {},
+          set download(filename) { downloadedFilename = filename; },
+          set href(_href) {},
+        }),
+      },
+    });
+
+    try {
+      const range = { startDate: "2025-03-10", endDate: "2025-03-12" };
+      const settings = {
+        pharmacy_name: "MY MEDICAL",
+        address: "",
+        contact_number: "",
+        drug_license_number: "",
+      };
+      const report = {
+        reportType: "expenses",
+        data: {
+          range,
+          totalExpenses: 75,
+          activeCount: 2,
+          cancelledCount: 1,
+          categoryTotals: [{ categoryName: "Rent", amount: 50, count: 1 }],
+          paymentMethodTotals: [{ paymentMethod: "CASH", amount: 50, count: 1 }],
+          dailyTotals: [{ period: "2025-03-10", amount: 50, count: 1 }],
+          monthlyTotals: [{ period: "2025-03", amount: 75, count: 2 }],
+          rows: [
+            {
+              id: 1,
+              expenseDate: "2025-03-10",
+              categoryName: "Rent",
+              description: "Shop rent",
+              amount: 50,
+              paymentMethod: "CASH",
+              referenceNumber: "RENT-1",
+              status: "ACTIVE",
+            },
+            {
+              id: 2,
+              expenseDate: "2025-03-11",
+              categoryName: "Rent",
+              description: "Voided bill",
+              amount: 90,
+              paymentMethod: "UPI",
+              referenceNumber: null,
+              status: "CANCELLED",
+            },
+          ],
+          totalRows: 2,
+        },
+      };
+      await exportFinancialReportExcel(report, settings);
+      assert.equal(downloadedFilename, "my-medical-expenses-2025-03-10-to-2025-03-12.xlsx");
+      assert.ok(downloadedBlob instanceof Blob);
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await downloadedBlob.arrayBuffer());
+      const summary = workbook.getWorksheet("Expense Summary");
+      const ledger = workbook.getWorksheet("Expense Ledger");
+      assert.ok(summary);
+      assert.ok(ledger);
+      const summaryValues = summary.getSheetValues().flat().filter(Boolean);
+      assert.ok(summaryValues.includes("Expense by category"));
+      assert.ok(summaryValues.includes("Expense by payment method"));
+      assert.ok(summaryValues.includes("Daily expense totals"));
+      assert.ok(summaryValues.includes("Monthly expense totals"));
+      assert.equal(ledger.getCell("G10").value, "ACTIVE");
+      assert.equal(ledger.getCell("G11").value, "CANCELLED");
+      assert.equal(ledger.getCell("D11").value, 90);
+
+      const financialReport = {
+        reportType: "financial_summary",
+        data: {
+          range,
+          grossSales: 1000,
+          salesReturns: 100,
+          netSales: 900,
+          grossPurchases: 500,
+          purchaseReturns: 20,
+          netPurchases: 480,
+          cogs: 450,
+          grossProfit: 450,
+          operatingExpenses: 75,
+          netProfit: 375,
+          customerOutstanding: 50,
+          supplierOutstanding: 30,
+          stockValuation: 1500,
+          stockQuantity: 20,
+          costUnavailableInvoices: 0,
+        },
+      };
+      await exportFinancialReportExcel(financialReport, settings);
+      assert.equal(
+        downloadedFilename,
+        "my-medical-financial_summary-2025-03-10-to-2025-03-12.xlsx",
+      );
+      const financialWorkbook = new ExcelJS.Workbook();
+      await financialWorkbook.xlsx.load(await downloadedBlob.arrayBuffer());
+      const financialSheet = financialWorkbook.getWorksheet("Financial Summary");
+      assert.ok(financialSheet);
+      assert.equal(financialSheet.getCell("A18").value, "Operating expenses");
+      assert.equal(financialSheet.getCell("B18").value, 75);
+      assert.equal(financialSheet.getCell("A19").value, "Net profit");
+      assert.equal(financialSheet.getCell("B19").value, 375);
+    } finally {
+      if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+      else delete globalThis.window;
+      if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+      else delete globalThis.document;
+      if (originalCreateObjectURL) Object.defineProperty(URL, "createObjectURL", originalCreateObjectURL);
+      else delete URL.createObjectURL;
+      if (originalRevokeObjectURL) Object.defineProperty(URL, "revokeObjectURL", originalRevokeObjectURL);
+      else delete URL.revokeObjectURL;
+    }
   });
 });

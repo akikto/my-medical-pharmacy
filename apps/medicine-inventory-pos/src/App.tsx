@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   UsersRound,
   Receipt,
+  Wallet,
   X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
@@ -17,10 +18,13 @@ import { useCallback } from "react";
 import type { AppSection } from "./types";
 import { POSBilling } from "./components/pos/POSBilling";
 import { DashboardPage } from "./components/dashboard/DashboardPage";
+import { OrderListPage } from "./components/orders/OrderListPage";
 import { InventoryPage } from "./components/inventory/InventoryPage";
 import { PurchasesPage } from "./components/purchases/PurchasesPage";
 import { SuppliersPage } from "./components/purchases/SuppliersPage";
+import { CustomersPage } from "./components/customers/CustomersPage";
 import { SalesPage } from "./components/sales/SalesPage";
+import { ExpensesPage } from "./components/expenses/ExpensesPage";
 import { ReportsView } from "./components/reports/ReportsView";
 import { StoreSettings } from "./components/settings/StoreSettings";
 import "./components/workspace/workspace.css";
@@ -32,10 +36,13 @@ const navigation: Array<{
 }> = [
   { id: "home", label: "Home", icon: House },
   { id: "pos", label: "POS Billing", icon: ClipboardList },
+  { id: "orders", label: "Today's Order List", icon: ClipboardList },
   { id: "inventory", label: "Inventory & Batches", icon: Boxes },
   { id: "purchases", label: "Purchases", icon: Pill },
   { id: "suppliers", label: "Suppliers", icon: UsersRound },
+  { id: "customers", label: "Customers & credit", icon: UsersRound },
   { id: "sales", label: "Sales", icon: Receipt },
+  { id: "expenses", label: "Expenses", icon: Wallet },
   { id: "reports", label: "Reports", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
@@ -43,6 +50,7 @@ const navigation: Array<{
 export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [pendingSaleSearch, setPendingSaleSearch] = useState<string | null>(null);
+  const [pendingCustomerLedgerId, setPendingCustomerLedgerId] = useState<number | null>(null);
   const [autoBackupError, setAutoBackupError] = useState<string | null>(null);
   const navigateToSection = useCallback(
     (section: AppSection, initialSaleSearch?: string) => {
@@ -53,6 +61,13 @@ export default function App() {
   );
   const clearPendingSaleSearch = useCallback(() => {
     setPendingSaleSearch(null);
+  }, []);
+  const openCustomerLedger = useCallback((customerId: number) => {
+    setPendingCustomerLedgerId(customerId);
+    setActiveSection("customers");
+  }, []);
+  const clearPendingCustomerLedger = useCallback(() => {
+    setPendingCustomerLedgerId(null);
   }, []);
 
   useEffect(() => {
@@ -174,20 +189,29 @@ export default function App() {
             initialSearchQuery={pendingSaleSearch ?? undefined}
             onInitialSearchConsumed={clearPendingSaleSearch}
           />
+        ) : activeSection === "orders" ? (
+          <OrderListPage onNavigateToSuppliers={() => navigateToSection("suppliers")} />
         ) : activeSection === "inventory" ? (
           <InventoryPage />
         ) : activeSection === "purchases" ? (
           <PurchasesPage />
         ) : activeSection === "suppliers" ? (
           <SuppliersPage />
+        ) : activeSection === "customers" ? (
+          <CustomersPage
+            initialCustomerId={pendingCustomerLedgerId}
+            onInitialCustomerConsumed={clearPendingCustomerLedger}
+          />
         ) : activeSection === "sales" ? (
           <SalesPage />
+        ) : activeSection === "expenses" ? (
+          <ExpensesPage />
         ) : activeSection === "reports" ? (
-          <ReportsView />
+          <ReportsView onOpenCustomerLedger={openCustomerLedger} />
         ) : activeSection === "settings" ? (
           <StoreSettings
             onDatabaseRestored={() => {
-              window.setTimeout(() => window.location.reload(), 500);
+              window.setTimeout(() => window.location.reload(), 1500);
             }}
           />
         ) : (

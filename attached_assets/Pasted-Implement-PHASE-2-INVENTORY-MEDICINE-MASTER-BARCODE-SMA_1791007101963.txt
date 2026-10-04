@@ -1,0 +1,892 @@
+Implement PHASE 2 — INVENTORY + MEDICINE MASTER + BARCODE + SMART AUTOFILL + BULK STOCK in MY MEDICAL.
+
+IMPORTANT PROJECT RULES
+========================
+
+This is a controlled production-readiness implementation.
+
+DO NOT:
+- Commit anything.
+- Push anything.
+- Publish anything.
+- Modify Home/dashboard design, layout, content, or existing Home functionality.
+- Redesign unrelated screens.
+- Remove existing features.
+- Change existing Phase 1 GST, Customer, Credit/Due, UPI, POS, receipt, or payment behavior unless a change is strictly required to integrate Phase 2.
+- Introduce arbitrary renderer SQL.
+- Bypass the existing typed native Tauri data-access architecture.
+- Add unnecessary dependencies.
+- Hard-code pharmacy-specific data.
+- Assume a fixed GST rate.
+- Automatically change existing medicine/sale/purchase data without an explicit migration.
+- Use production/demo seed data to test features.
+- Change business rules merely for convenience.
+
+PRESERVE:
+- Existing SQLite data.
+- Existing migrations.
+- Existing FEFO behavior.
+- Existing POS behavior.
+- Existing GST configuration and historical tax snapshots.
+- Existing Customer/Due/UPI functionality.
+- Existing backup/restore behavior.
+- Existing Home page exactly as it currently is.
+
+Use isolated temporary databases for destructive/integration tests.
+
+At the end of the entire Phase 2 work:
+- no commit
+- no push
+- no publish
+
+
+==================================================
+PHASE 2 SUB-PHASE PLAN
+==================================================
+
+Implement in these sub-phases, in order:
+
+SUB-PHASE 2A
+Medicine Master Data Model + Migration
+
+SUB-PHASE 2B
+Medicine Form + Medicine Details UI
+
+SUB-PHASE 2C
+Smart Autofill / Suggestions
+
+SUB-PHASE 2D
+Barcode Search + POS Integration
+
+SUB-PHASE 2E
+Bulk Stock Update + Multi-select
+
+SUB-PHASE 2F
+Excel Import + Excel Template
+
+SUB-PHASE 2G
+Stock Export + Barcode Label Foundation
+
+SUB-PHASE 2H
+Stock-out Ordering + Purchase Quantity Suggestions
+
+SUB-PHASE 2I
+Full Phase 2 Regression + Visual QA
+
+
+==================================================
+SUB-PHASE 2A — MEDICINE MASTER DATA MODEL
+==================================================
+
+First inspect the existing medicine, batch, inventory, purchase, sale, POS and migration schema.
+
+Do not duplicate fields that already exist.
+
+Add only missing medicine-master fields needed for Phase 2.
+
+Medicine should support, where appropriate:
+
+- barcode
+- product type
+- composition
+- uses
+- adult dose
+- child dose
+- photo/image reference
+- medicine-level GST rate, if not already available from Phase 1
+- existing name/company/manufacturer fields where already supported
+- existing strength/unit/pack fields where already supported
+
+Product Type must be configurable/extensible rather than hard-coded to only three values.
+
+Initial commonly used values may include:
+- Tablet
+- Capsule
+- Syrup
+- Suspension
+- Injection
+- Cream
+- Ointment
+- Drops
+- Inhaler
+- Powder
+- Other
+
+Do not assume these are the only possible values.
+
+BARCODE RULES
+-------------
+- Barcode must be optional.
+- Do not require a barcode for every medicine.
+- Barcode values should be normalized consistently.
+- Prevent duplicate barcode values across active medicine records.
+- If the database supports unique constraints safely, use them.
+- Otherwise enforce uniqueness transactionally.
+- Do not silently replace an existing barcode.
+
+PHOTO RULES
+-----------
+- Medicine photo must be optional.
+- Do not store unnecessarily large raw images in SQLite.
+- Reuse the existing image/file storage approach if one exists.
+- If no suitable approach exists, use a local app-managed image reference with safe validation.
+- Preserve offline operation.
+- Do not introduce cloud storage.
+
+GST
+---
+- Do NOT introduce a new fixed GST rate.
+- Reuse the Phase 1 medicine-level GST model.
+- Existing GST precedence must remain:
+  POS override → medicine rate → pharmacy default.
+
+MIGRATION
+---------
+Create a safe migration only if required.
+
+Requirements:
+- Existing medicines remain valid.
+- Existing batches remain linked.
+- Existing sales remain unchanged.
+- Existing purchases remain unchanged.
+- Existing historical GST snapshots remain unchanged.
+- Migration must be idempotent/safe on startup.
+- No destructive migration.
+
+TESTS
+-----
+Add isolated tests for:
+- migration
+- existing data preservation
+- barcode uniqueness
+- optional barcode
+- product type
+- optional photo
+- medicine-level metadata
+- GST compatibility
+
+Run:
+- renderer tests
+- Rust tests
+- typecheck
+- build
+- git diff --check
+
+STOP and report results before moving to the next sub-phase if a migration/data-integrity problem is found.
+
+
+==================================================
+SUB-PHASE 2B — MEDICINE FORM + DETAILS UI
+==================================================
+
+Update the existing Medicine Add/Edit flow rather than creating duplicate medicine-management systems.
+
+Add clearly labeled fields for:
+
+Basic:
+- Medicine Name
+- Manufacturer/Company
+- Product Type
+- Strength
+- Composition
+- Barcode
+
+Additional information:
+- Uses
+- Adult Dose
+- Child Dose
+- Photo
+
+Tax:
+- Medicine GST rate, using the existing Phase 1 configurable GST mechanism
+
+Do not force optional fields.
+
+UX REQUIREMENTS
+---------------
+- Clear labels.
+- Sensible grouping.
+- Good keyboard navigation.
+- Validation messages must be understandable.
+- Barcode field must support scanner-style keyboard input.
+- Save/cancel actions must remain obvious.
+- Existing medicine editing must continue to work.
+- Existing stock/batch fields must remain intact.
+- Do not make the form unnecessarily huge.
+
+Photo:
+- Add optional image selection.
+- Show preview.
+- Allow replacing/removing the image if the existing architecture safely supports it.
+- Validate file type and reasonable size.
+- Do not load massive images into the UI unnecessarily.
+
+Do not redesign the entire Inventory page.
+
+TESTS
+-----
+Verify:
+- Add medicine with only required fields.
+- Add medicine with all metadata.
+- Edit existing medicine.
+- Save barcode.
+- Reject duplicate barcode.
+- Save/remove photo.
+- Cancel without changing data.
+- Invalid data does not partially save.
+- Existing medicines remain searchable.
+
+Run:
+- renderer tests
+- Rust tests
+- typecheck
+- build
+
+
+==================================================
+SUB-PHASE 2C — SMART AUTOFILL / SUGGESTIONS
+==================================================
+
+Implement reusable local-data suggestions/autofill using existing saved records.
+
+The goal is to reduce repetitive typing.
+
+MEDICINE
+--------
+When entering medicine names:
+- suggest existing medicines
+- show useful identifying information such as company/product type/strength where available
+- selecting a medicine should reuse its saved metadata
+- never silently overwrite manually edited values
+
+CUSTOMER
+--------
+Preserve existing Phase 1 customer autocomplete.
+
+Where customer fields are used elsewhere:
+- name
+- phone
+- address where applicable
+
+reuse existing customer data.
+
+SUPPLIER
+--------
+Reuse existing supplier records for:
+- purchase supplier selection
+- contact information
+- existing supplier data
+
+PURCHASE ENTRY
+--------------
+Where practical, selecting an existing medicine should reuse:
+- product type
+- composition
+- GST
+- barcode
+- existing medicine metadata
+
+Do not overwrite purchase-specific:
+- batch
+- expiry
+- quantity
+- purchase rate
+- MRP
+- sale rate
+
+AUTOFILL RULE
+-------------
+Autofill means:
+- suggest/reuse existing saved data
+- never silently change user-entered values
+- user can manually override fields
+
+Performance:
+- debounce expensive searches where necessary
+- avoid loading the entire database into the renderer
+- use typed native reads
+
+TESTS
+-----
+- medicine suggestions
+- customer suggestions
+- supplier suggestions
+- selecting suggestion
+- manual override
+- no-result state
+- duplicate names
+- long names
+- special characters
+- offline operation
+
+Verify that no arbitrary SQL is exposed to the renderer.
+
+
+==================================================
+SUB-PHASE 2D — BARCODE SEARCH + POS INTEGRATION
+==================================================
+
+Integrate barcode into the existing POS.
+
+REQUIREMENTS
+------------
+
+Inventory:
+- Search medicine by barcode.
+- Exact barcode match should have priority.
+- Preserve existing medicine-name search.
+
+POS:
+- Barcode input/search must work with keyboard barcode scanners.
+- Scanner input should behave like fast keyboard input.
+- If a scanner sends Enter, treat it as a completed barcode lookup.
+- Exact barcode match should select the medicine.
+- If multiple records somehow exist due to legacy data, do not silently choose an arbitrary one; show a clear resolution state.
+
+If the medicine has multiple batches:
+- preserve existing FEFO allocation behavior.
+- Do not bypass native FEFO enforcement.
+
+Manual medicine search must continue working exactly as before.
+
+Barcode should NOT automatically submit checkout.
+
+Do not require camera access yet.
+Camera scanning belongs to a later dedicated sub-phase.
+
+TESTS
+-----
+- exact barcode search
+- barcode not found
+- barcode with spaces/normalization
+- scanner-style input
+- Enter after barcode
+- barcode → medicine → batch/FEFO
+- barcode billing
+- normal name search regression
+- invalid barcode
+- duplicate barcode protection
+
+
+==================================================
+SUB-PHASE 2E — BULK STOCK UPDATE + MULTI-SELECT
+==================================================
+
+Add safe bulk stock management to Inventory.
+
+Requirements:
+- Multi-select mode.
+- Select individual medicines.
+- Select all visible filtered medicines.
+- Clear selection.
+- Show selected count.
+- Do not accidentally select hidden/non-filtered records.
+
+Supported bulk actions should be limited to safe inventory operations.
+
+At minimum:
+- bulk stock adjustment
+
+If the existing architecture safely supports it, allow:
+- bulk reorder threshold update
+
+Do NOT allow a bulk action to silently change:
+- historical sales
+- historical purchases
+- GST snapshots
+- batch expiry dates
+- purchase prices
+- sale prices
+
+STOCK ADJUSTMENT
+----------------
+Every adjustment must be auditable.
+
+Store where the existing architecture permits:
+- medicine/batch
+- previous quantity
+- adjustment amount
+- new quantity
+- reason
+- timestamp
+
+Use transactional writes.
+
+Validation:
+- prevent impossible negative stock unless the existing business rule explicitly allows it
+- do not partially apply a multi-item adjustment
+- if one item fails validation, rollback the entire transaction where appropriate
+
+Confirmation:
+- show a clear confirmation before applying a bulk operation
+- display number of affected records
+
+TESTS
+-----
+- select one
+- select multiple
+- select all visible
+- filter then select all visible
+- bulk adjustment
+- invalid adjustment rollback
+- audit data
+- selection cleared after completion
+- existing inventory values preserved when operation is canceled
+
+
+==================================================
+SUB-PHASE 2F — EXCEL IMPORT + TEMPLATE
+==================================================
+
+Implement Excel import carefully.
+
+Do not directly insert arbitrary spreadsheet rows into production tables.
+
+Provide:
+- Download Excel Template
+- Import Excel
+- Preview before import
+- Validation result
+- Import confirmation
+
+TEMPLATE
+--------
+Include useful columns such as:
+- Medicine Name
+- Manufacturer/Company
+- Product Type
+- Strength
+- Composition
+- Barcode
+- Uses
+- Adult Dose
+- Child Dose
+- GST Rate
+- MRP
+- Sale Price
+- Purchase Price
+- Opening Stock
+- Reorder Level
+
+Use only fields actually compatible with the existing schema/business model.
+
+Do not create fake batches without required batch/expiry information.
+
+IMPORT VALIDATION
+-----------------
+Validate:
+- required medicine name
+- duplicate barcode
+- numeric values
+- GST rate format
+- prices
+- stock values
+- invalid dates where applicable
+- unsupported product types if validation requires them
+
+Show:
+- valid rows
+- invalid rows
+- clear reason for each invalid row
+
+Do not import until user explicitly confirms.
+
+IMPORT MODES
+------------
+If possible, support:
+- Add new medicines
+- Update matching medicines
+
+Do not silently overwrite existing values.
+
+Prefer matching by:
+1. stable medicine ID if template contains it
+2. exact barcode
+3. otherwise require explicit user confirmation for ambiguous name matching
+
+Do not modify historical transaction records through Excel import.
+
+Use a transactional import.
+
+If any fatal database error occurs:
+- rollback the import
+- report the error
+
+FILE SAFETY
+-----------
+- Accept only expected spreadsheet formats.
+- Do not execute macros.
+- Do not treat spreadsheet formulas as executable code.
+- Do not upload files to external services.
+
+TESTS
+-----
+- valid template
+- invalid required field
+- duplicate barcode
+- duplicate medicine
+- update existing medicine
+- ambiguous match
+- malformed numeric value
+- malformed GST
+- partial invalid file
+- transaction rollback
+- large-but-reasonable file
+- existing data preservation
+
+
+==================================================
+SUB-PHASE 2G — STOCK EXPORT + BARCODE LABEL FOUNDATION
+==================================================
+
+Add Inventory export options.
+
+At minimum:
+- Excel stock export
+- PDF stock export
+
+Export should respect the currently selected filters where practical.
+
+Useful stock columns:
+- Medicine
+- Company
+- Product Type
+- Barcode
+- Batch
+- Expiry
+- Current Stock
+- Reorder Level
+- MRP
+- Sale Price
+- Purchase Price
+- GST
+- Stock Status
+
+Do not expose sensitive internal information unnecessarily.
+
+PDF:
+- readable on normal desktop paper
+- repeat table headers across pages
+- no clipped columns
+- sensible page margins
+
+EXCEL:
+- proper columns
+- no merged-cell structure that makes data unusable
+- preserve numeric values as numeric cells where possible
+
+BARCODE LABEL FOUNDATION
+------------------------
+Create a safe barcode-label workflow.
+
+At minimum:
+- select medicine/batch
+- select quantity of labels
+- preview label data
+- print/print-dialog foundation
+
+Label may include:
+- Medicine name
+- Strength/product type where available
+- Batch
+- Expiry
+- MRP
+- Barcode
+
+Do not assume a specific physical printer yet.
+
+Bluetooth/thermal printer integration belongs to the later Printing sub-phase.
+
+Do not pretend barcode generation is possible for a medicine that has no barcode unless the user explicitly requests generation of a new barcode.
+
+TESTS
+-----
+- filtered stock export
+- Excel export
+- PDF export
+- empty result export
+- long medicine name
+- many rows
+- barcode label preview
+- label quantity validation
+- no data mutation during export
+
+
+==================================================
+SUB-PHASE 2H — STOCK-OUT ORDERING + PURCHASE QUANTITY SUGGESTION
+==================================================
+
+Integrate stock alerts with ordering workflow without creating a duplicate purchasing system.
+
+When stock reaches zero/low stock:
+- provide an Order action where appropriate
+- preselect the medicine
+- allow supplier selection
+- allow requested quantity
+- allow notes
+
+Do not automatically create a purchase invoice merely by pressing Order.
+
+Prefer creating/using the existing Home Order List / purchase-order preparation functionality if already available.
+
+PURCHASE QUANTITY SUGGESTION
+----------------------------
+Provide a suggested purchase quantity based on available local data.
+
+Possible calculation inputs:
+- recent sales/usage
+- current stock
+- reorder level
+- configurable target stock level
+- existing pending order quantity if supported
+
+Do NOT pretend to have accurate forecasting when insufficient data exists.
+
+If there is insufficient sales history:
+- show that the suggestion is based on limited data
+- allow manual quantity override
+
+The suggestion must NEVER automatically place an order.
+
+Example concept:
+
+Suggested Quantity =
+Target Stock - Current Sellable Stock - Pending Order Quantity
+
+If target stock is derived from usage:
+- document the calculation clearly
+- keep it deterministic and testable
+
+Expired stock must not be treated as sellable stock.
+
+TESTS
+-----
+- zero stock
+- low stock
+- sufficient stock
+- insufficient sales history
+- recent usage
+- expired stock
+- pending order if supported
+- manual override
+- Order action does not create an invoice automatically
+
+
+==================================================
+SUB-PHASE 2I — FULL REGRESSION + VISUAL QA
+==================================================
+
+After all Phase 2 sub-phases are complete, perform a full regression.
+
+FUNCTIONAL REGRESSION
+---------------------
+Verify existing Phase 1:
+
+POS:
+- medicine search
+- barcode search
+- quantity
+- price
+- discount
+- GST
+- customer
+- credit
+- due
+- cash
+- UPI
+- transaction reference
+- receipt
+
+Customers:
+- search
+- customer creation
+- credit balance
+- collection
+- partial payment
+- full payment
+
+Settings:
+- GST settings
+- UPI settings
+- historical invoice preservation
+
+Inventory:
+- existing medicine search
+- batch display
+- stock
+- expiry
+- low stock
+- FEFO
+
+Purchases:
+- existing purchase workflow
+- stock creation/update
+- supplier selection
+
+Sales:
+- existing Sales History
+- invoice viewing
+
+Reports:
+- existing report totals
+- existing filters
+
+Home:
+- weekly sales
+- order list
+- supplier contacts
+- reset workflow
+
+IMPORTANT:
+Home must remain unchanged visually and functionally.
+
+DATA INTEGRITY
+--------------
+Verify:
+- no existing sales changed
+- no existing purchases changed
+- no existing invoices changed
+- no historical GST snapshots changed
+- no customer balances changed unexpectedly
+- no supplier balances changed unexpectedly
+- no backup records changed unexpectedly
+
+Run SQLite quick_check on the isolated QA database.
+
+VISUAL QA
+---------
+Check at:
+- 1366x768
+- 1440x900
+- 1920x1080
+
+Pay special attention to:
+- Inventory form
+- Medicine details
+- Barcode controls
+- Bulk selection toolbar
+- Excel import preview
+- Export dialogs
+- Barcode label preview
+- POS barcode workflow
+- Customer autocomplete
+- Stock-order workflow
+
+Check:
+- no horizontal page overflow
+- no clipped labels
+- no overlapping dialogs
+- no inaccessible buttons
+- keyboard focus
+- Tab / Shift+Tab
+- Enter/Escape where applicable
+- readable tables
+- long medicine names
+- long company names
+- empty states
+- validation errors
+- loading states
+
+
+==================================================
+REQUIRED TEST/VERIFICATION COMMANDS
+==================================================
+
+At minimum run:
+
+pnpm test
+pnpm run typecheck
+pnpm run build
+
+cargo test --manifest-path src-tauri/Cargo.toml
+
+pnpm exec tauri build --bundles deb
+
+git diff --check
+
+If additional tests are added, report their exact count.
+
+Do not run a whole-crate formatter that rewrites unrelated pre-existing Rust files.
+
+If cargo fmt --check reports pre-existing unrelated formatting differences:
+- report them
+- do not perform a broad formatting rewrite
+
+
+==================================================
+SECURITY / DATA ACCESS REQUIREMENTS
+==================================================
+
+Maintain the existing typed Tauri native data-access architecture.
+
+DO NOT:
+- expose arbitrary SQL to renderer
+- add a generic execute_sql command
+- trust renderer-provided SQL
+- bypass validation
+- trust spreadsheet contents
+- execute spreadsheet formulas/macros
+- write arbitrary filesystem paths
+- upload medicine/customer data externally
+
+Validate all native command inputs.
+
+Use transactions for:
+- medicine creation/update where multiple records are affected
+- bulk stock updates
+- Excel imports
+- barcode-related changes
+- order creation where multiple writes occur
+
+
+==================================================
+FINAL REPORT FORMAT
+==================================================
+
+At the end provide a concise report with:
+
+1. Sub-phase status:
+   2A — PASS/ISSUE
+   2B — PASS/ISSUE
+   2C — PASS/ISSUE
+   2D — PASS/ISSUE
+   2E — PASS/ISSUE
+   2F — PASS/ISSUE
+   2G — PASS/ISSUE
+   2H — PASS/ISSUE
+   2I — PASS/ISSUE
+
+2. Files changed
+
+3. Database migrations added
+
+4. New native Tauri commands, if any
+
+5. New renderer tests
+
+6. Rust test count
+
+7. TypeScript/typecheck result
+
+8. Vite build result
+
+9. Tauri build result
+
+10. git diff --check result
+
+11. Visual QA results at:
+    - 1366x768
+    - 1440x900
+    - 1920x1080
+
+12. Any known limitations
+
+13. Confirm:
+    - Home unchanged
+    - Phase 1 behavior preserved
+    - existing pharmacy data not modified
+    - no commit
+    - no push
+    - no publish
+
+If any serious data-integrity or Phase 1 regression is found, STOP implementation and report it instead of continuing to add features.

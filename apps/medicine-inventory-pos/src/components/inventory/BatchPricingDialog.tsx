@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import type { Medicine, MedicineBatch } from "../../types";
 import { formatMoney } from "../../utils/money";
 
@@ -20,6 +21,10 @@ export function BatchPricingDialog({
   onClose,
   onSave,
 }: BatchPricingDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useDialogFocusTrap(dialogRef, isSaving ? undefined : onClose);
+
   const [mrp, setMrp] = useState(String(batch.mrp));
   const [saleRate, setSaleRate] = useState(String(batch.sale_rate));
   const [rackLocation, setRackLocation] = useState(medicine.rack_location ?? "");
@@ -36,7 +41,9 @@ export function BatchPricingDialog({
         aria-modal="true"
         className="workspace-dialog workspace-dialog--narrow"
         data-testid="dialog-batch-pricing"
+        ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>

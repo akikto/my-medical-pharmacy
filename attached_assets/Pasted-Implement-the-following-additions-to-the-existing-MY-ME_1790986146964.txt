@@ -1,0 +1,157 @@
+Implement the following additions to the existing MY MEDICAL pharmacy desktop app Home/Dashboard.
+
+IMPORTANT:
+- This is the existing MY MEDICAL Windows/Tauri pharmacy app.
+- Preserve the existing Home page design, existing cards, navigation, styling, colors, and all current functionality.
+- Do NOT remove, rename, move, or break any existing Home option.
+- Add the new features as additional Home quick-action/options.
+- Do not create fake/demo business data.
+- Use the existing local SQLite database and existing services/models wherever possible.
+- Keep the app fully offline-first.
+- All visible UI text must be English only. No Bengali script anywhere in the UI.
+
+NEW HOME OPTIONS
+
+1. WEEKLY SALES CHART
+Add a "Weekly Sales" option/card on Home.
+
+Requirements:
+- Show sales for the current week, day by day.
+- Use actual saved sales from the local database.
+- Show at least:
+  - Mon
+  - Tue
+  - Wed
+  - Thu
+  - Fri
+  - Sat
+  - Sun
+- Show sales amount in INR (₹).
+- If there are no sales on a day, show ₹0.
+- Prefer a clean bar/line chart consistent with the existing Home visual design.
+- Add a "View Sales" action that opens the existing Sales History page.
+- Do not change existing Sales History logic.
+
+2. TODAY'S ORDER LIST
+Add a "Today's Order List" option/card on Home.
+
+Purpose:
+The pharmacy owner should be able to create a list of medicines/items that need to be ordered from wholesalers today and then share that list through WhatsApp or export it as PDF.
+
+Requirements:
+- Create an order-list workspace using the existing medicine/inventory data.
+- Allow adding medicines to today's order list.
+- For each order item support:
+  - Medicine name
+  - Strength/form if available
+  - Quantity to order
+  - Optional supplier/wholesaler
+  - Optional note
+- Allow editing quantity and removing items.
+- Show total number of order items.
+- Save today's order list locally so it survives app restart.
+- Allow marking an item as ordered.
+- Provide:
+  - "Share via WhatsApp"
+  - "Export PDF"
+  - "Print" if the existing native print capability is available
+  - "Clear Today's Order List"
+- WhatsApp sharing must use the user's installed/default WhatsApp mechanism or an appropriate wa.me/share URL; do not build a separate messaging system.
+- PDF must be generated locally/offline and contain:
+  - Pharmacy name
+  - Date
+  - Medicine/item list
+  - Quantities
+  - Supplier/wholesaler where available
+  - Notes where available
+- Do not send any data to a third-party server.
+- If WhatsApp is not installed/available, show a clear fallback instead of failing silently.
+
+3. WHOLESALER / ORDER CONTACTS
+Add a "Wholesalers & Order Contacts" option on Home.
+
+Requirements:
+- Create a simple local contact list for pharmacy wholesalers/suppliers.
+- Reuse the existing Supplier data where possible instead of creating duplicate supplier records.
+- Each contact may contain:
+  - Supplier/Wholesaler name
+  - Contact person
+  - Phone number
+  - WhatsApp number if different
+  - Address
+  - Notes
+- Provide search.
+- Provide Add/Edit/Delete.
+- Provide direct "Call" action using the device/OS phone mechanism where available.
+- Provide "WhatsApp" action using WhatsApp where available.
+- Do not create an internal calling/SMS system.
+- Existing Supplier records and supplier workflows must continue to work unchanged.
+
+4. ACCOUNTS / BUSINESS DATA RESET
+Add a carefully protected "Reset Accounts/Data" option under Settings or an appropriate admin-only area, and provide a shortcut from Home if appropriate.
+
+IMPORTANT SAFETY REQUIREMENTS:
+- Do NOT make this a one-click destructive action.
+- Require an explicit confirmation dialog.
+- Clearly explain exactly what will be deleted/reset before confirmation.
+- Require a second confirmation for the final destructive action.
+- Require the user to type a confirmation phrase such as:
+  RESET MY DATA
+- Automatically create a backup before reset.
+- If backup creation fails, abort the reset.
+- Never delete the application itself, database schema, settings required for the app to run, or medicine master data unless the user explicitly selects that scope.
+- Prefer separate reset scopes:
+  A. Reset sales/accounting transaction history
+  B. Reset purchase/accounting transaction history
+  C. Reset customer/supplier dues if supported
+  D. Reset all transactional/business history
+- Keep medicine master data and core configuration by default.
+- Show a final summary of what was reset.
+- Make the operation transactional/atomic so a partial reset cannot leave inconsistent data.
+- After reset, refresh all dashboard totals, reports, stock calculations, sales history, purchase history, and account balances.
+- Do not silently delete backups.
+- Do not affect production data during development/testing.
+
+HOME UI
+- Add the four new options without overcrowding the existing Home dashboard.
+- Use the existing Home visual language and spacing.
+- Make the options easy to find and usable at 1366x768, 1440x900/960, and 1920x1080.
+- No horizontal page overflow.
+- Keep Home professional and pharmacy-focused.
+- Do not redesign unrelated Home sections.
+
+DATA / SAFETY
+- Inspect the existing schema and services first.
+- Reuse existing tables/services where appropriate.
+- Only add a migration if a new persistent table/field is genuinely required.
+- Do not duplicate existing supplier data unnecessarily.
+- Do not use fake metrics.
+- Do not add arbitrary renderer SQL access.
+- Preserve the existing typed native database access/security model.
+- Keep backup/restore behavior intact.
+
+TESTING
+Before finishing:
+- Run typecheck.
+- Run existing tests.
+- Run the web build.
+- Run Rust/Tauri tests.
+- Test weekly sales using real local data.
+- Test creating/editing/removing today's order items.
+- Test PDF export.
+- Test WhatsApp share/fallback behavior.
+- Test wholesaler search/add/edit/delete and contact actions.
+- Test reset confirmation and cancellation.
+- Test backup-before-reset behavior.
+- Verify reset leaves the database consistent.
+- Verify existing Home, POS, Inventory, Purchases, Sales, Suppliers, Reports, and Settings still work.
+- Verify no horizontal overflow at 1366x768.
+- Do not modify unrelated functionality.
+
+At the end, provide:
+1. Files changed
+2. Database/schema changes
+3. Features implemented
+4. Tests run and results
+5. Any limitations, especially WhatsApp/Windows-specific behavior
+6. Confirmation that existing Home functionality was preserved

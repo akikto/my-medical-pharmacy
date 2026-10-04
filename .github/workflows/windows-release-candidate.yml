@@ -43,6 +43,14 @@ jobs:
         working-directory: apps/medicine-inventory-pos
         run: pnpm typecheck
 
+      - name: Run Rust tests
+        working-directory: apps/medicine-inventory-pos/src-tauri
+        run: cargo test --locked --lib
+
+      - name: Check Rust build
+        working-directory: apps/medicine-inventory-pos/src-tauri
+        run: cargo check --locked
+
       - name: Build Windows release and configured bundles
         working-directory: apps/medicine-inventory-pos
         run: pnpm run tauri:build

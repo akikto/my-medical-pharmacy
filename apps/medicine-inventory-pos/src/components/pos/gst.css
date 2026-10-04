@@ -1,0 +1,238 @@
+.gst-mode-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid #e8efee;
+}
+
+.gst-mode-control > span {
+  color: #5c7175;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.gst-mode-control [role="group"] {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #dce8e5;
+  border-radius: 9px;
+  background: #f6faf9;
+}
+
+.gst-mode-control button {
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #63777b;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.gst-mode-control button.is-selected {
+  background: #fff;
+  color: #137467;
+  box-shadow: 0 1px 4px rgb(24 64 60 / 12%);
+  font-weight: 700;
+}
+
+.gst-breakdown {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.summary-row--gst-total {
+  padding-top: 8px;
+  border-top: 1px dashed #dce7e5;
+  color: #2a4b4b;
+  font-weight: 700;
+}
+
+.gst-rate-required {
+  margin: 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: #fff5e9;
+  color: #8c5a1d;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.gst-rate-cell {
+  min-width: 95px;
+}
+
+.gst-rate-cell > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #587073;
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.gst-rate-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #75888b;
+  font-size: 0.7rem;
+}
+
+.gst-rate-input input {
+  width: 56px;
+  min-width: 0;
+  height: 29px;
+  padding: 4px 5px;
+  border: 1px solid #dce7e5;
+  border-radius: 6px;
+  background: #fff;
+  color: #294346;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.gst-rate-input input:focus {
+  outline: 2px solid rgb(19 121 109 / 20%);
+  border-color: #79b8ac;
+}
+
+.checkout-tax-summary {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid #e2ece9;
+  border-radius: 10px;
+  background: #f7fbf9;
+}
+
+.checkout-tax-summary > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: #6d8083;
+  font-size: 0.75rem;
+}
+
+.checkout-tax-summary strong {
+  color: #29494a;
+  font-variant-numeric: tabular-nums;
+}
+
+.customer-autocomplete {
+  position: relative;
+  min-width: 0;
+}
+
+.customer-autocomplete-options {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 3px);
+  right: 0;
+  left: 0;
+  overflow: hidden;
+  border: 1px solid #dce8e5;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgb(30 67 65 / 16%);
+}
+
+.customer-autocomplete-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid #eff3f2;
+  background: #fff;
+  color: #436064;
+  font-size: 0.72rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer-autocomplete-option:last-child {
+  border-bottom: 0;
+}
+
+.customer-autocomplete-option:hover,
+.customer-autocomplete-option:focus-visible {
+  background: #f1f8f6;
+}
+
+.customer-autocomplete-option > span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.customer-autocomplete-option strong {
+  color: #254044;
+  font-size: 0.77rem;
+}
+
+.customer-autocomplete-option small,
+.customer-lookup-error,
+.saved-customer-state {
+  color: #71858a;
+  font-size: 0.68rem;
+}
+
+.customer-lookup-error {
+  display: block;
+  margin-top: 6px;
+  color: #9b5044;
+}
+
+.saved-customer-state {
+  display: block;
+  margin-top: 6px;
+  color: #247063;
+}
+
+.checkout-upi-fields {
+  display: grid;
+  gap: 11px;
+}
+
+.checkout-upi-fields .button {
+  justify-self: start;
+  text-decoration: none;
+}
+
+.checkout-upi-warning {
+  margin: -2px 0 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #fff7e9;
+  color: #80581f;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.receipt-item-tax {
+  margin-top: 4px;
+  color: #576f72;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.receipt-gst-total {
+  padding-top: 5px;
+  border-top: 1px dashed #8d9a98;
+}
+
+.receipt-upi-warning {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  color: #80581f;
+  line-height: 1.35;
+}
+
+.receipt-upi-warning span {
+  font-size: 0.67rem;
+}

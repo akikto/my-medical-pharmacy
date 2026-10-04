@@ -8,15 +8,24 @@ import { invoke } from "@tauri-apps/api/core";
 
 interface RawSalesReportSummary {
   total_revenue: number | string | null;
+  gross_sales: number | string | null;
+  returned_total: number | string | null;
+  voided_total: number | string | null;
+  net_revenue: number | string | null;
   gross_profit: number | string | null;
+  net_gross_profit: number | string | null;
   total_invoices: number | string | null;
   cash_revenue: number | string | null;
+  net_cash_revenue: number | string | null;
   cash_invoices: number | string | null;
   card_upi_revenue: number | string | null;
+  net_card_upi_revenue: number | string | null;
   card_upi_invoices: number | string | null;
   other_revenue: number | string | null;
+  net_other_revenue: number | string | null;
   other_invoices: number | string | null;
   profit_unavailable_invoices: number | string | null;
+  net_profit_unavailable_invoices: number | string | null;
 }
 
 function isIsoDate(value: string): boolean {
@@ -39,15 +48,24 @@ function toFiniteNumber(value: number | string | null): number {
 function mapSummary(row: RawSalesReportSummary): SalesReportSummary {
   return {
     total_revenue: toFiniteNumber(row.total_revenue),
+    gross_sales: toFiniteNumber(row.gross_sales),
+    returned_total: toFiniteNumber(row.returned_total),
+    voided_total: toFiniteNumber(row.voided_total),
+    net_revenue: toFiniteNumber(row.net_revenue),
     gross_profit: toFiniteNumber(row.gross_profit),
+    net_gross_profit: toFiniteNumber(row.net_gross_profit),
     total_invoices: toFiniteNumber(row.total_invoices),
     cash_revenue: toFiniteNumber(row.cash_revenue),
+    net_cash_revenue: toFiniteNumber(row.net_cash_revenue),
     cash_invoices: toFiniteNumber(row.cash_invoices),
     card_upi_revenue: toFiniteNumber(row.card_upi_revenue),
+    net_card_upi_revenue: toFiniteNumber(row.net_card_upi_revenue),
     card_upi_invoices: toFiniteNumber(row.card_upi_invoices),
     other_revenue: toFiniteNumber(row.other_revenue),
+    net_other_revenue: toFiniteNumber(row.net_other_revenue),
     other_invoices: toFiniteNumber(row.other_invoices),
     profit_unavailable_invoices: toFiniteNumber(row.profit_unavailable_invoices),
+    net_profit_unavailable_invoices: toFiniteNumber(row.net_profit_unavailable_invoices),
   };
 }
 

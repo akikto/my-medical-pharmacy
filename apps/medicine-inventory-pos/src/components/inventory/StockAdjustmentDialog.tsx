@@ -1,5 +1,6 @@
 import { ArrowDownToLine, ArrowUpFromLine, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import type { Medicine, MedicineBatch } from "../../types";
 
 interface StockAdjustmentDialogProps {
@@ -19,6 +20,10 @@ export function StockAdjustmentDialog({
   onClose,
   onSave,
 }: StockAdjustmentDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useDialogFocusTrap(dialogRef, isSaving ? undefined : onClose);
+
   const [direction, setDirection] = useState<"add" | "remove">("add");
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");
@@ -36,7 +41,9 @@ export function StockAdjustmentDialog({
         aria-modal="true"
         className="workspace-dialog workspace-dialog--narrow"
         data-testid="dialog-stock-adjustment"
+        ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>

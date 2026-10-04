@@ -1,0 +1,526 @@
+Implement PHASE 5 — REPORTS & FINANCIAL REPORTING for the existing MY MEDICAL Pharmacy desktop app.
+
+IMPORTANT:
+- This is a feature implementation task only.
+- DO NOT redesign, modify, refactor, or change the Home/Dashboard page in any way. Home/Dashboard is FROZEN.
+- Preserve all existing Phase 1, Phase 2, Phase 3, and Phase 4 functionality.
+- Do NOT reset the database.
+- Do NOT reseed demo data.
+- Do NOT delete existing data.
+- Do NOT commit.
+- Do NOT push to GitHub.
+- Do NOT publish/release anything.
+- Do NOT run broad cargo fmt changes. Only format files you actually modify if needed.
+- Keep the app offline/local-first and compatible with the existing Tauri + SQLite architecture.
+- Reuse existing typed native read services/contracts. Do NOT reintroduce arbitrary renderer SQL access.
+- Reuse the existing configurable GST architecture and existing sale/purchase/customer/supplier/stock services.
+- Historical financial calculations MUST use stored transaction-time snapshots, not current medicine/settings values.
+- Returns, voids/cancellations, and corrections from Phase 4 MUST be correctly reflected without double-counting.
+- Preserve existing UI style and shared workspace shell. Do not redesign unrelated pages.
+
+PHASE 5 GOAL:
+Build a complete professional Reports & Financial Reporting module suitable for an Indian pharmacy.
+
+==================================================
+5A — REPORTS DATE RANGE FOUNDATION
+==================================================
+
+Implement a reusable report date-range/filter model.
+
+Support:
+- Today
+- Yesterday
+- This Week
+- This Month
+- Last Month
+- Custom Date Range
+
+Use local pharmacy/business dates consistently.
+
+Requirements:
+- Start/end dates must be explicit.
+- Custom range validates start <= end.
+- Reports must include the selected date range in their visible header/title area.
+- Date filtering must be based on transaction timestamps/dates already stored.
+- Do not mutate transaction records when changing filters.
+
+Add tests for:
+- today
+- month boundaries
+- custom ranges
+- empty date ranges
+- invalid custom range rejection.
+
+==================================================
+5B — MONTHLY SALES SUMMARY
+==================================================
+
+Create a Sales Summary report.
+
+Show:
+- Gross Sales
+- Sales Returns
+- Cancelled/Void Sales
+- Net Sales
+- Taxable Sales
+- GST
+- Cash Sales
+- UPI Sales
+- Other Sales
+- Credit/Due Sales
+- Number of invoices
+- Number of returned invoices/transactions where available
+
+Net Sales must correctly account for:
+- completed sales
+- sales returns
+- cancelled/void invoices
+- corrections/revisions
+
+Do NOT double-count correction/reversal transactions.
+
+Provide:
+- summary cards
+- date filtering
+- invoice-level details/table
+- refresh
+- empty state
+- error state.
+
+==================================================
+5C — MONTHLY PURCHASE SUMMARY
+==================================================
+
+Create a Purchase Summary report.
+
+Show:
+- Gross Purchases
+- Purchase Returns
+- Cancelled/void purchases if supported by existing model
+- Net Purchases
+- Taxable Purchase Amount
+- Purchase GST
+- Cash/Bank/UPI/Other supplier payments where supported
+- Number of purchase invoices
+
+Include:
+- date range
+- supplier filter
+- invoice-level details
+- empty state
+- error state.
+
+Purchase returns must reduce net purchases correctly.
+
+==================================================
+5D — PROFIT & LOSS
+==================================================
+
+Create a pharmacy Profit & Loss report.
+
+Calculate:
+
+Net Sales
+- Cost of Goods Sold (COGS)
+= Gross Profit
+
+Then show available operating/financial adjustments already supported by the app.
+
+Important:
+- Use saved sale-time cost snapshots.
+- Do NOT calculate historical profit using current purchase cost.
+- Returned/cancelled/corrected sales must reverse their appropriate revenue and cost effects.
+- Avoid counting voided/corrected original invoices twice.
+
+Show:
+- Gross sales
+- Sales returns
+- Net sales
+- COGS
+- Gross profit
+- Gross margin %
+- Optional supported expenses/adjustments only if the current database already supports them.
+- If expenses are not modeled, clearly show that operating expenses are not included rather than inventing expense data.
+
+Add product/date-level drill-down where practical.
+
+==================================================
+5E — STOCK VALUATION REPORT
+==================================================
+
+Create Stock Valuation.
+
+Show:
+- Current sellable stock quantity
+- Current stock at purchase cost
+- Current stock at MRP/sale value where available
+- Expired stock separately
+- Near-expiry stock separately where existing expiry rules support it
+- Low-stock items separately where applicable
+- Total stock valuation
+
+Important:
+- Exclude expired stock from "sellable stock value" consistently with existing Home behavior.
+- Preserve existing FEFO/batch logic.
+- Show batch-level details:
+  medicine
+  batch
+  expiry
+  quantity
+  purchase cost
+  MRP
+  valuation.
+
+Do not alter stock quantities.
+
+==================================================
+5F — PRODUCT-WISE SALES REPORT
+==================================================
+
+Create Product-wise Sales.
+
+For each medicine:
+- Medicine name
+- Barcode if available
+- Company
+- Quantity sold
+- Gross sales
+- Returns
+- Net quantity
+- Net sales
+- GST
+- COGS
+- Gross profit
+- Margin %
+
+Support:
+- date range
+- search
+- sorting
+- pagination or safe table rendering
+- empty state.
+
+Use transaction-time cost/GST snapshots.
+
+==================================================
+5G — COMPANY-WISE SALES REPORT
+==================================================
+
+Create Company-wise Sales.
+
+Group medicines by company/manufacturer.
+
+Show:
+- Company
+- Quantity sold
+- Gross sales
+- Returns
+- Net sales
+- GST
+- COGS
+- Gross profit
+- Margin %
+
+Handle medicines with blank/unknown company safely using a clear "Unknown/Unspecified" grouping.
+
+Support date filtering and search.
+
+==================================================
+5H — CUSTOMER DUE REPORT
+==================================================
+
+Create Customer Due Report.
+
+Show:
+- Customer
+- Phone
+- Total credit
+- Total paid/collected
+- Outstanding balance
+- Last transaction date
+
+Support:
+- Outstanding only
+- All customers
+- Search
+- Sort by outstanding balance
+- Date filter where meaningful.
+
+Clicking/opening a customer should reuse the existing Customer Ledger functionality.
+
+Do not allow report actions to alter balances accidentally.
+
+==================================================
+5I — SUPPLIER DUE REPORT
+==================================================
+
+Create Supplier Due Report.
+
+Show:
+- Supplier
+- Contact
+- Total purchases
+- Purchase returns
+- Payments
+- Outstanding balance
+- Last transaction date
+
+Support:
+- Outstanding only
+- All suppliers
+- Search
+- Date filtering where meaningful.
+
+Reuse existing Supplier Ledger calculations.
+
+==================================================
+5J — GST REPORT
+==================================================
+
+Create a configurable GST report using the existing transaction-time GST snapshots.
+
+Show:
+- Taxable sales
+- CGST
+- SGST
+- IGST
+- Total output GST
+- Taxable purchases
+- Input CGST
+- Input SGST
+- Input IGST
+- Total input GST
+- Net GST position where mathematically supported
+
+Support:
+- date range
+- same-state vs interstate breakdown
+- invoice-level details
+- totals.
+
+IMPORTANT:
+- Never recompute old GST from current medicine GST/default GST settings.
+- Use stored sale/purchase GST snapshots.
+- Returns/cancellations/corrections must reverse the appropriate GST effect.
+- Clearly distinguish output GST from input GST.
+
+==================================================
+5K — REPORT EXPORT
+==================================================
+
+Add report export for the major reports.
+
+Support:
+- PDF export
+- Excel export where the existing project already has a safe Excel/export foundation.
+
+At minimum provide export for:
+- Sales Summary
+- Purchase Summary
+- Profit & Loss
+- Stock Valuation
+- Product-wise Sales
+- Company-wise Sales
+- Customer Due
+- Supplier Due
+- GST Report
+
+PDF requirements:
+- Pharmacy name/details from Settings
+- Report title
+- selected date range
+- generated date/time
+- summary totals
+- readable tables
+- page numbers where practical
+- professional pharmacy-style print layout
+- no UI-only controls in printed output.
+
+Excel requirements:
+- proper column headers
+- numeric values as numbers
+- date fields as dates/text consistently
+- no formulas/macros
+- safe local export only.
+
+==================================================
+5L — REPORT UI
+==================================================
+
+Create/complete a professional Reports workspace.
+
+Use the existing shared workspace shell.
+
+Suggested structure:
+
+Reports
+├── Sales
+├── Purchases
+├── Profit & Loss
+├── Stock Valuation
+├── Product Sales
+├── Company Sales
+├── Customer Due
+├── Supplier Due
+└── GST
+
+Do not change the existing Home/Dashboard design.
+
+Keep controls simple:
+- Date Range
+- Search where applicable
+- Filter
+- Refresh
+- Export PDF
+- Export Excel where supported
+
+Use the existing green workspace visual language.
+
+Ensure:
+- responsive desktop layout
+- no horizontal page overflow
+- tables remain usable at 1366×768
+- larger layouts work at 1440×900 and 1920×1080
+- keyboard focus remains accessible
+- dialogs can close with Escape
+- loading/empty/error states are clear.
+
+==================================================
+5M — REPORT DATA INTEGRITY
+==================================================
+
+This is critical.
+
+Validate calculations against existing Phase 4 behavior.
+
+Examples:
+
+1. Completed sale:
+   Sale contributes revenue + COGS + GST.
+
+2. Partial sale return:
+   Only returned quantity/revenue/cost/GST is reversed.
+
+3. Full sale return:
+   Original sale becomes fully reversed for financial reporting.
+
+4. Cancelled invoice:
+   Revenue, stock and customer due effects are reversed exactly once.
+
+5. Invoice correction:
+   Original transaction must not be counted together with the corrected replacement in a way that doubles revenue/profit.
+
+6. Credit sale:
+   Sales report includes sale.
+   Customer Due report reflects outstanding balance.
+
+7. Customer collection:
+   Does not reduce sales revenue.
+   It reduces outstanding customer balance only.
+
+8. Purchase:
+   Included in purchase totals.
+
+9. Purchase return:
+   Reduces net purchase value and appropriate GST/input values.
+
+10. Supplier payment:
+   Does not reduce purchase expense/value again.
+   It reduces supplier outstanding balance.
+
+11. Historical transaction:
+   Current GST settings, current medicine price, or current purchase cost must NOT change historical reports.
+
+==================================================
+5N — TESTING
+==================================================
+
+Add/extend tests for:
+
+Rust/native:
+- date range calculations
+- sales summary
+- purchase summary
+- P&L
+- stock valuation
+- product sales
+- company sales
+- customer due
+- supplier due
+- GST report
+- returns
+- voids
+- corrections
+- historical cost snapshots
+- historical GST snapshots
+- empty aggregates
+- zero-result ranges
+- backup/restore compatibility
+
+Frontend:
+- report date filters
+- report switching/navigation
+- search/filter behavior
+- empty/error/loading states
+- export button behavior/contracts
+- customer/supplier report navigation
+- no stale report data after changing date range.
+
+Run:
+- all Rust tests
+- all frontend tests
+- TypeScript/typecheck
+- Vite production build
+- Tauri Debian package build if available
+- existing diff/source checks.
+
+Do NOT run a database reset or seed.
+
+==================================================
+5O — VISUAL QA
+==================================================
+
+Perform browser-based visual QA at:
+- 1366×768
+- 1440×900
+- 1920×1080
+
+Check:
+- no horizontal overflow
+- no clipped table headers
+- no clipped buttons
+- report totals readable
+- date filter usable
+- tables scroll correctly
+- PDF/print styles
+- Excel export does not affect UI
+- Reports page does not alter Home.
+
+Known Linux issue:
+If native Tauri GUI fails with EGL_BAD_PARAMETER / no /dev/dri, do not waste time trying to fix the environment. Record native UI as UNVERIFIED and continue browser-based QA.
+
+==================================================
+5P — FINAL VERIFICATION REPORT
+==================================================
+
+At the end report:
+
+1. Implemented features
+2. Files changed
+3. Database migration number, if any
+4. Rust test result
+5. Frontend test result
+6. TypeScript result
+7. Vite build result
+8. Debian package result
+9. Visual QA resolutions checked
+10. Native Tauri GUI status
+11. Any known limitations
+12. Git status
+
+CRITICAL:
+- Do not commit.
+- Do not push.
+- Do not publish.
+- Do not modify Home/Dashboard.
+- Do not reset/reseed database.

@@ -1,0 +1,229 @@
+Implement PHASE 1 of the MY MEDICAL pharmacy management system.
+
+IMPORTANT:
+- Do NOT push to GitHub.
+- Do NOT create or change any Git remote.
+- Do NOT redesign the existing Home page.
+- Preserve all existing functionality.
+- Do NOT implement later phases yet.
+- Work only on the Phase 1 scope below.
+- Inspect the existing database schema/services before changing anything.
+- Reuse existing typed native Tauri database access.
+- Do NOT reintroduce arbitrary renderer SQL.
+- All visible UI text must be English only.
+- Keep the application offline-first.
+- Do not create fake business data.
+
+PHASE 1 SCOPE
+
+A. POS BILLING FOUNDATION
+
+Improve the existing POS Billing page.
+
+Support:
+- Medicine search by name
+- Barcode search
+- Existing batch/FEFO behavior
+- Quantity
+- Sale price
+- Item discount if already supported
+- Bill-level discount if appropriate
+- Customer selection
+- Payment mode
+- Credit payment
+- GST/tax calculation
+- Final payable amount
+- Cash received/change where applicable
+
+Do not remove any currently working POS shortcuts or functionality.
+
+B. GST / TAX
+
+Add proper GST support for sales.
+
+Requirements:
+- GST should be calculated from the existing medicine/product data where possible.
+- Support GST rate per product/batch if the existing model can safely support it.
+- Do not invent a tax rate.
+- Support common Indian GST rates through configurable product data rather than hard-coding one rate for every medicine.
+- Clearly separate:
+  - taxable amount
+  - CGST
+  - SGST
+  - IGST if the application configuration requires it
+  - total GST
+  - final invoice total
+- Preserve rounding consistency.
+- Store the GST values used at sale time so historical invoices do not change if the product's GST setting changes later.
+- Existing invoices must remain readable.
+
+If the current database does not have enough information to safely support GST, create the smallest safe migration required.
+
+C. CUSTOMER MASTER
+
+Create a dedicated Customer page/service.
+
+Customer fields:
+- Customer name
+- Phone number
+- Optional address
+- Optional notes
+- Active/inactive status if useful
+
+Requirements:
+- Search customers by name or phone.
+- Existing customers should auto-suggest while typing in POS.
+- Selecting a customer should not require retyping their details.
+- Avoid duplicate customer records where possible.
+- Do not make customer login/authentication necessary.
+
+D. CREDIT / DUE KHATA
+
+Payment mode "Credit" must create a customer receivable.
+
+Create a dedicated:
+"Due Khata" / customer credit management page.
+
+For each customer show:
+- Customer name
+- Phone
+- Total credit
+- Amount paid
+- Current outstanding due
+
+Transaction/ledger view:
+- Invoice/date
+- Debit/credit amount
+- Payment/collection
+- Running balance
+- Notes
+
+Requirements:
+- A credit sale increases customer due.
+- A customer payment decreases customer due.
+- Partial payments must be supported.
+- Full settlement must be supported.
+- Do not allow a payment to reduce the balance below zero.
+- Every due/payment change must be auditable through the ledger.
+- Historical sale amounts must not be silently modified.
+- Customer deletion must be protected if financial transactions exist.
+- Prefer deactivate/archive over destructive deletion when transaction history exists.
+
+E. CUSTOMER DUE COLLECTION
+
+Add "Collect Payment" action.
+
+Requirements:
+- Select customer.
+- Show current outstanding balance.
+- Enter payment amount.
+- Payment mode.
+- Optional note.
+- Save payment.
+- Update balance immediately.
+- Show transaction in ledger.
+- Prevent invalid/negative amounts.
+- Use a transaction so partial writes cannot leave inconsistent balances.
+
+F. UPI
+
+Add UPI support to payment settings and POS.
+
+Settings:
+- UPI ID
+- Optional pharmacy display name
+
+POS:
+- Payment mode "UPI"
+- Show configured UPI ID.
+- Generate a standard UPI payment QR/deep-link using the configured UPI ID and current invoice amount where supported.
+- Allow entering/storing UPI Transaction ID/reference number.
+- Transaction ID must be associated with the invoice/payment.
+- Do not claim that a payment was actually received merely because a QR was displayed.
+- Payment confirmation remains the user's responsibility unless a verified payment integration is added later.
+
+G. CUSTOMER AUTOFILL
+
+Implement reusable local autocomplete behavior for:
+- Customer name
+- Customer phone
+- Customer selection in POS
+- Existing medicine/product records
+
+Requirements:
+- Suggestions come only from saved local data.
+- Selecting an existing customer/product should reuse the saved record.
+- Do not create duplicate records just because the user typed the same name.
+- Keyboard navigation should work where practical.
+- No external API is required.
+
+H. DATA INTEGRITY
+
+Before implementing:
+- Inspect current sales/invoice/payment/batch/customer-related tables.
+- Design migrations carefully.
+- Existing sales, purchases, medicines, batches, suppliers and settings must remain intact.
+- Historical invoices must remain readable.
+- Do not recalculate historical invoice totals from today's product settings.
+- Use transactional writes for invoice + payment + due changes.
+
+I. TESTING
+
+Add focused tests for:
+
+Customer:
+- create
+- search
+- autocomplete
+- duplicate prevention behavior
+
+Credit:
+- credit sale creates due
+- partial payment reduces due
+- full payment closes due
+- overpayment is rejected
+- ledger ordering and running balance
+
+GST:
+- taxable amount
+- CGST/SGST calculation
+- configured GST rate
+- invoice stores sale-time tax values
+- historical invoice remains unchanged after product GST changes
+
+UPI:
+- UPI settings persist
+- QR/deep-link amount matches invoice total
+- transaction ID is stored against the payment
+- displaying QR does not mark payment as verified
+
+Regression:
+- existing POS workflow
+- FEFO
+- inventory
+- purchases
+- sales history
+- reports
+- suppliers
+- Home
+
+Run:
+- renderer tests
+- Rust tests
+- typecheck
+- web build
+- git diff --check
+
+Use isolated temporary databases for destructive/reset/financial tests.
+Do not alter production/dev user data.
+
+At the end report:
+1. Files changed
+2. Database migrations
+3. New pages/services
+4. Exact financial rules implemented
+5. Tests/results
+6. Any limitations
+7. Confirmation that Home and existing functionality were preserved
+
+Do NOT push, commit, or publish.
