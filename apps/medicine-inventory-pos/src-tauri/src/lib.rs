@@ -87,6 +87,8 @@ enum PharmacyMutation {
         rack_location: Option<String>,
         min_stock_alert: i64,
         gst_rate_basis_points: Option<i64>,
+        #[serde(default)]
+        opening_batch: Option<ImportedOpeningBatch>,
     },
     UpdateMedicine {
         medicine_id: i64,
@@ -2613,6 +2615,77 @@ pub(crate) fn validate_iso_date(
     Ok(())
 }
 
+fn insert_opening_stock_batch(
+    connection: &Connection,
+    medicine_id: i64,
+    batch: ImportedOpeningBatch,
+    audit_reason: &str,
+) -> Result<(), String> {
+    let batch_no = normalized_required_text(batch.batch_no, 120, "Batch number")?;
+    validate_iso_date(connection, &batch.expiry_date, "Expiry date")?;
+    if !(0..=100_000_000_000).contains(&batch.purchase_rate_cents)
+        || !(0..=100_000_000_000).contains(&batch.mrp_cents)
+        || !(0..=100_000_000_000).contains(&batch.sale_rate_cents)
+    {
+        return Err("Batch prices must be between 0 and 1,000,000,000.".to_owned());
+    }
+    if !(0..=1_000_000_000).contains(&batch.opening_stock) {
+        return Err("Opening stock must be between 0 and 1,000,000,000 units.".to_owned());
+    }
+
+    let duplicate_batch: i64 = connection
+        .query_row(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM medicine_batches
+                 WHERE medicine_id = ?1
+                   AND UPPER(TRIM(batch_no)) = UPPER(TRIM(?2))
+               )"#,
+            params![medicine_id, batch_no],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not check batch number: {error}"))?;
+    if duplicate_batch != 0 {
+        return Err(format!(
+            "Batch {batch_no} already exists for this medicine. Use the purchase or batch workflow to change it."
+        ));
+    }
+
+    let rows_affected = connection
+        .execute(
+            r#"INSERT INTO medicine_batches (
+                 medicine_id, batch_no, expiry_date, purchase_rate, mrp,
+                 sale_rate, current_stock
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+            params![
+                medicine_id,
+                batch_no,
+                batch.expiry_date,
+                batch.purchase_rate_cents as f64 / 100.0,
+                batch.mrp_cents as f64 / 100.0,
+                batch.sale_rate_cents as f64 / 100.0,
+                batch.opening_stock
+            ],
+        )
+        .map_err(|error| format!("Could not create the opening batch: {error}"))?;
+    require_one_changed_row(rows_affected, "Medicine batch")?;
+    let batch_id = connection.last_insert_rowid();
+
+    if batch.opening_stock > 0 {
+        let rows_affected = connection
+            .execute(
+                r#"INSERT INTO stock_adjustments (
+                     medicine_id, batch_id, quantity_change, reason,
+                     previous_quantity, new_quantity
+                   ) VALUES (?1, ?2, ?3, ?4, 0, ?3)"#,
+                params![medicine_id, batch_id, batch.opening_stock, audit_reason],
+            )
+            .map_err(|error| format!("Could not record the opening stock: {error}"))?;
+        require_one_changed_row(rows_affected, "Opening stock adjustment")?;
+    }
+
+    Ok(())
+}
+
 fn apply_pharmacy_mutation_to_connection(
     connection: &mut Connection,
     operation: PharmacyMutation,
@@ -2637,6 +2710,7 @@ fn apply_pharmacy_mutation_to_connection(
             rack_location,
             min_stock_alert,
             gst_rate_basis_points,
+            opening_batch,
         } => {
             let name = normalized_required_text(name, 120, "Medicine name")?;
             let generic_name = normalized_optional_text(generic_name, 150, "Generic name")?;
@@ -2683,7 +2757,22 @@ fn apply_pharmacy_mutation_to_connection(
                 )
                 .map_err(|error| medicine_write_error(error, "create the medicine"))?;
             require_one_changed_row(rows_affected, "Medicine")?;
-            Some(transaction.last_insert_rowid())
+            let medicine_id = transaction.last_insert_rowid();
+            if let Some(batch) = opening_batch {
+                if !(1..=1_000_000_000).contains(&batch.opening_stock) {
+                    return Err(
+                        "Opening stock must be a whole number from 1 to 1,000,000,000 units."
+                            .to_owned(),
+                    );
+                }
+                insert_opening_stock_batch(
+                    &transaction,
+                    medicine_id,
+                    batch,
+                    "Opening stock entered while adding medicine",
+                )?;
+            }
+            Some(medicine_id)
         }
         PharmacyMutation::UpdateMedicine {
             medicine_id,
@@ -3102,64 +3191,12 @@ fn apply_pharmacy_mutation_to_connection(
                 };
 
                 if let Some(batch) = record.opening_batch {
-                    let batch_no = normalized_required_text(batch.batch_no, 120, "Batch number")?;
-                    validate_iso_date(&transaction, &batch.expiry_date, "Expiry date")?;
-                    if !(0..=100_000_000_000).contains(&batch.purchase_rate_cents)
-                        || !(0..=100_000_000_000).contains(&batch.mrp_cents)
-                        || !(0..=100_000_000_000).contains(&batch.sale_rate_cents)
-                    {
-                        return Err("Imported batch prices must be between 0 and 1,000,000,000.".to_owned());
-                    }
-                    if !(0..=1_000_000_000).contains(&batch.opening_stock) {
-                        return Err("Imported opening stock must be between 0 and 1,000,000,000 units.".to_owned());
-                    }
-                    let duplicate_batch: i64 = transaction
-                        .query_row(
-                            r#"SELECT EXISTS(
-                                 SELECT 1 FROM medicine_batches
-                                 WHERE medicine_id = ?1
-                                   AND UPPER(TRIM(batch_no)) = UPPER(TRIM(?2))
-                               )"#,
-                            params![medicine_id, batch_no],
-                            |row| row.get(0),
-                        )
-                        .map_err(|error| format!("Could not check imported batch number: {error}"))?;
-                    if duplicate_batch != 0 {
-                        return Err(format!(
-                            "Batch {batch_no} already exists for {name}. Use the purchase or batch workflow to change it."
-                        ));
-                    }
-                    let rows_affected = transaction
-                        .execute(
-                            r#"INSERT INTO medicine_batches (
-                                 medicine_id, batch_no, expiry_date, purchase_rate, mrp,
-                                 sale_rate, current_stock
-                               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
-                            params![
-                                medicine_id,
-                                batch_no,
-                                batch.expiry_date,
-                                batch.purchase_rate_cents as f64 / 100.0,
-                                batch.mrp_cents as f64 / 100.0,
-                                batch.sale_rate_cents as f64 / 100.0,
-                                batch.opening_stock
-                            ],
-                        )
-                        .map_err(|error| format!("Could not create an imported opening batch: {error}"))?;
-                    require_one_changed_row(rows_affected, "Medicine batch")?;
-                    let batch_id = transaction.last_insert_rowid();
-                    if batch.opening_stock > 0 {
-                        let rows_affected = transaction
-                            .execute(
-                                r#"INSERT INTO stock_adjustments (
-                                     medicine_id, batch_id, quantity_change, reason,
-                                     previous_quantity, new_quantity
-                                   ) VALUES (?1, ?2, ?3, 'Opening stock imported from Excel', 0, ?3)"#,
-                                params![medicine_id, batch_id, batch.opening_stock],
-                            )
-                            .map_err(|error| format!("Could not record the imported opening stock: {error}"))?;
-                        require_one_changed_row(rows_affected, "Opening stock adjustment")?;
-                    }
+                    insert_opening_stock_batch(
+                        &transaction,
+                        medicine_id,
+                        batch,
+                        "Opening stock imported from Excel",
+                    )?;
                 }
             }
             None
@@ -6751,10 +6788,134 @@ mod pharmacy_mutation_tests {
                 rack_location: Some("A-1".to_owned()),
                 min_stock_alert: 5,
                 gst_rate_basis_points: None,
+                opening_batch: None,
             },
         )
         .expect("create medicine")
         .expect("medicine id")
+    }
+
+    #[test]
+    fn medicine_creation_records_opening_batch_and_audit_adjustment_atomically() {
+        let mut connection = migrated_connection();
+        let medicine_id = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::CreateMedicine {
+                name: "Opening stock medicine".to_owned(),
+                generic_name: None,
+                company: Some("Example maker".to_owned()),
+                product_type: Some("Tablet".to_owned()),
+                strength: Some("20 mg".to_owned()),
+                composition: None,
+                barcode: None,
+                uses: None,
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
+                rack_location: None,
+                min_stock_alert: 10,
+                gst_rate_basis_points: None,
+                opening_batch: Some(ImportedOpeningBatch {
+                    batch_no: "OPEN-2026".to_owned(),
+                    expiry_date: "2028-12-31".to_owned(),
+                    purchase_rate_cents: 1250,
+                    mrp_cents: 2000,
+                    sale_rate_cents: 1800,
+                    opening_stock: 15,
+                }),
+            },
+        )
+        .expect("create medicine with opening stock")
+        .expect("medicine id");
+
+        let batch: (String, String, f64, f64, f64, i64) = connection
+            .query_row(
+                r#"SELECT batch_no, expiry_date, purchase_rate, mrp, sale_rate, current_stock
+                   FROM medicine_batches WHERE medicine_id = ?1"#,
+                [medicine_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("read opening batch");
+        assert_eq!(
+            batch,
+            (
+                "OPEN-2026".to_owned(),
+                "2028-12-31".to_owned(),
+                12.5,
+                20.0,
+                18.0,
+                15,
+            )
+        );
+
+        let adjustment: (i64, i64, i64, String) = connection
+            .query_row(
+                r#"SELECT quantity_change, previous_quantity, new_quantity, reason
+                   FROM stock_adjustments WHERE medicine_id = ?1"#,
+                [medicine_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read opening stock audit adjustment");
+        assert_eq!(
+            adjustment,
+            (
+                15,
+                0,
+                15,
+                "Opening stock entered while adding medicine".to_owned(),
+            )
+        );
+
+        let rejected = apply_pharmacy_mutation_to_connection(
+            &mut connection,
+            PharmacyMutation::CreateMedicine {
+                name: "Invalid opening batch".to_owned(),
+                generic_name: None,
+                company: None,
+                product_type: None,
+                strength: None,
+                composition: None,
+                barcode: None,
+                uses: None,
+                adult_dose: None,
+                child_dose: None,
+                photo_ref: None,
+                rack_location: None,
+                min_stock_alert: 0,
+                gst_rate_basis_points: None,
+                opening_batch: Some(ImportedOpeningBatch {
+                    batch_no: "BAD-DATE".to_owned(),
+                    expiry_date: "2028-13-40".to_owned(),
+                    purchase_rate_cents: 100,
+                    mrp_cents: 200,
+                    sale_rate_cents: 150,
+                    opening_stock: 1,
+                }),
+            },
+        )
+        .expect_err("invalid opening batch date must reject the whole medicine creation");
+        assert!(rejected.contains("valid date"));
+
+        let counts: (i64, i64, i64) = connection
+            .query_row(
+                r#"SELECT
+                     (SELECT COUNT(*) FROM medicines),
+                     (SELECT COUNT(*) FROM medicine_batches),
+                     (SELECT COUNT(*) FROM stock_adjustments)"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("count records after rejected creation");
+        assert_eq!(counts, (1, 1, 1));
     }
 
     #[test]
@@ -6777,6 +6938,7 @@ mod pharmacy_mutation_tests {
                 rack_location: None,
                 min_stock_alert: 4,
                 gst_rate_basis_points: Some(1800),
+                opening_batch: None,
             },
         )
         .expect("create medicine with metadata")
@@ -6855,6 +7017,7 @@ mod pharmacy_mutation_tests {
                 rack_location: None,
                 min_stock_alert: 0,
                 gst_rate_basis_points: None,
+                opening_batch: None,
             },
         )
         .expect_err("normalized duplicate barcode must be rejected");

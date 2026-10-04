@@ -58,6 +58,14 @@ export class InventoryError extends Error {
   }
 }
 
+export class MedicineSavedWithPhotoError extends InventoryError {
+  constructor(photoError: unknown) {
+    const detail = photoError instanceof Error ? ` ${photoError.message}` : "";
+    super(`The medicine and its opening stock were saved, but the photo could not be stored.${detail}`);
+    this.name = "MedicineSavedWithPhotoError";
+  }
+}
+
 function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new InventoryError(`${label} must be a positive whole number.`);
@@ -149,6 +157,41 @@ function normalizeRate(value: number, label: string): number {
   return cents / 100;
 }
 
+function normalizeOpeningStock(
+  input: MedicineFormValues["opening_stock"],
+): ImportedMedicineRecord["opening_batch"] {
+  if (!input) return null;
+
+  const batchNo = input.batch_no.trim();
+  const expiryDate = input.expiry_date.trim();
+  if (!batchNo || batchNo.length > 120) {
+    throw new InventoryError("Batch number is required and must be 120 characters or fewer.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) {
+    throw new InventoryError("Expiry date must be entered as a valid date.");
+  }
+  if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 1_000_000_000) {
+    throw new InventoryError("Opening stock must be a whole number from 1 to 1,000,000,000.");
+  }
+
+  const toCents = (value: number, label: string) => {
+    const cents = Math.round(normalizeRate(value, label) * 100);
+    if (!Number.isSafeInteger(cents) || cents > 100_000_000_000) {
+      throw new InventoryError(`${label} exceeds the supported amount.`);
+    }
+    return cents;
+  };
+
+  return {
+    batch_no: batchNo,
+    expiry_date: expiryDate,
+    purchase_rate_cents: toCents(input.purchase_rate, "Purchase rate"),
+    mrp_cents: toCents(input.mrp, "MRP"),
+    sale_rate_cents: toCents(input.sale_rate, "Sale rate"),
+    opening_stock: input.quantity,
+  };
+}
+
 export async function getInventoryMedicines(
   searchTerm = "",
 ): Promise<MedicineInventoryRow[]> {
@@ -160,9 +203,11 @@ export async function getInventoryMedicines(
 
 export async function createMedicine(input: MedicineFormValues): Promise<EntityId> {
   const medicine = normalizeMedicineInput(input);
+  const openingBatch = normalizeOpeningStock(input.opening_stock);
   const result = await applyPharmacyMutation({
     kind: "create_medicine",
     ...medicine,
+    opening_batch: openingBatch,
   });
   const medicineId = result.entityId;
   if (medicineId === null || !Number.isSafeInteger(medicineId) || medicineId <= 0) {
@@ -172,6 +217,9 @@ export async function createMedicine(input: MedicineFormValues): Promise<EntityI
     try {
       await saveMedicinePhoto(medicineId, input.photo_upload_bytes);
     } catch (error) {
+      if (openingBatch) {
+        throw new MedicineSavedWithPhotoError(error);
+      }
       try {
         await deleteMedicine(medicineId);
       } catch {

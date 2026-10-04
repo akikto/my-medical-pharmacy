@@ -31,6 +31,15 @@ export interface MedicineInventoryRow extends Medicine {
 
 export type InventoryFilter = "all" | "low-stock" | "expired" | "near-expiry";
 
+export interface MedicineOpeningStockValues {
+  batch_no: string;
+  expiry_date: string;
+  purchase_rate: number;
+  mrp: number;
+  sale_rate: number;
+  quantity: number;
+}
+
 export interface MedicineFormValues {
   name: string;
   generic_name: string;
@@ -48,6 +57,7 @@ export interface MedicineFormValues {
   rack_location: string;
   min_stock_alert: number;
   gst_rate_basis_points: number | null;
+  opening_stock?: MedicineOpeningStockValues | null;
 }
 
 export interface MedicineBatch {
