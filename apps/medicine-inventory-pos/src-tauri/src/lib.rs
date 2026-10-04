@@ -3479,6 +3479,43 @@ fn medicine_photo_path(
     Ok(directory.join(reference))
 }
 
+pub(crate) fn ensure_local_storage_directory(directory: &Path) -> Result<(), String> {
+    let parent = directory
+        .parent()
+        .ok_or_else(|| "The local storage directory is invalid.".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the local app-data directory: {error}"))?;
+
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::create_dir(directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(format!("Could not create local storage: {error}"));
+                }
+            }
+            fs::symlink_metadata(directory)
+                .map_err(|error| format!("Could not inspect local storage: {error}"))?
+        }
+        Err(error) => return Err(format!("Could not inspect local storage: {error}")),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Local storage must be a real directory inside the app-data folder.".to_owned());
+    }
+
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| format!("Could not resolve the app-data folder: {error}"))?;
+    let canonical_directory = fs::canonicalize(directory)
+        .map_err(|error| format!("Could not resolve local storage: {error}"))?;
+    if canonical_directory == canonical_parent || !canonical_directory.starts_with(&canonical_parent)
+    {
+        return Err("Local storage must remain inside the app-data folder.".to_owned());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn save_medicine_photo(
     app: AppHandle,
@@ -3505,8 +3542,7 @@ fn save_medicine_photo(
     }
 
     let directory = medicine_photo_directory(&app)?;
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("Could not create local medicine photo storage: {error}"))?;
+    ensure_local_storage_directory(&directory)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "The local clock is invalid; the medicine photo was not saved.".to_owned())?
@@ -3572,11 +3608,12 @@ fn get_medicine_photo(app: AppHandle, medicine_id: i64) -> Result<Option<Vec<u8>
         return Ok(None);
     };
     let directory = medicine_photo_directory(&app)?;
+    ensure_local_storage_directory(&directory)?;
     let path = medicine_photo_path(&directory, medicine_id, &photo_ref)?;
-    let metadata = fs::metadata(&path)
+    let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("The saved medicine photo is unavailable: {error}"))?;
-    if metadata.len() > 2_000_000 {
-        return Err("The saved medicine photo exceeds the supported size limit.".to_owned());
+    if !metadata.file_type().is_file() || metadata.len() > 2_000_000 {
+        return Err("The saved medicine photo is not a supported regular file.".to_owned());
     }
     let bytes = fs::read(&path)
         .map_err(|error| format!("Could not read the saved medicine photo: {error}"))?;

@@ -156,3 +156,6 @@ overrides:
   esbuild: "0.28.2"
   # orval pins js-yaml to an exact version older than the CVE fix (>=4.3.2)
   js-yaml: '4.3.2'
+  # ExcelJS currently depends on uuid ^8, whose buffer-write APIs are vulnerable.
+  # uuid 11 retains the CommonJS v4 API ExcelJS uses and includes the bounds fix.
+  "exceljs>uuid": "11.1.1"
