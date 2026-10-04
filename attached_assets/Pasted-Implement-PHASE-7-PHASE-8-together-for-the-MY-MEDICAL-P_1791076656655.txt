@@ -1,0 +1,764 @@
+Implement PHASE 7 + PHASE 8 together for the MY MEDICAL Pharmacy desktop application.
+
+============================================================
+IMPORTANT GLOBAL RULES
+============================================================
+
+- Preserve ALL existing Phase 1–6 functionality.
+- HOME / DASHBOARD IS FROZEN.
+- Do NOT redesign, modify, refactor, or change Home/Dashboard.
+- Do NOT reset the database.
+- Do NOT reseed demo data.
+- Do NOT delete existing production-like data.
+- Do NOT commit.
+- Do NOT push to GitHub.
+- Do NOT publish or release.
+- Do NOT create a Git tag.
+- Do NOT introduce arbitrary renderer SQL.
+- Continue using the existing typed native Tauri read/write architecture.
+- Do NOT make broad unrelated refactors.
+- Do NOT run broad cargo fmt changes.
+- Only format files that are actually modified if necessary.
+- Preserve the existing SQLite migration history.
+- Do not remove existing migrations.
+- Do not change existing financial history merely to make tests pass.
+- Do not modify existing transaction records during QA.
+- If test data is required, use an isolated temporary/test database only.
+- Never run destructive test operations against the development database.
+- Preserve the existing backup/restore architecture.
+- Preserve medicine photos and purchase attachments backup behavior.
+- Preserve FEFO behavior.
+- Preserve historical cost and GST snapshots.
+- Preserve existing customer/supplier ledgers.
+- Preserve returns, voids, corrections and expense cancellation behavior.
+
+============================================================
+PHASE 7
+FINAL PRODUCTION AUDIT & FULL INTEGRATION QA
+============================================================
+
+Goal:
+
+Perform a complete end-to-end audit of the application after Phase 1–6.
+
+Do NOT add unnecessary new features during Phase 7.
+Focus on correctness, data integrity, regression prevention and production readiness.
+
+------------------------------------------------------------
+7A — SALES → INVENTORY → PROFIT INTEGRATION
+------------------------------------------------------------
+
+Verify in an isolated test database:
+
+1. Normal cash sale
+2. UPI sale
+3. Credit sale
+4. Partial quantity sale
+5. Multi-item sale
+6. FEFO batch allocation
+7. Stock reduction
+8. COGS calculation
+9. Gross profit
+10. GST calculation
+
+Verify that:
+
+Sale
+→ stock decreases
+→ customer due changes only for credit
+→ GST snapshot is stored
+→ cost snapshot is stored
+→ reports reflect the transaction exactly once.
+
+------------------------------------------------------------
+7B — SALES RETURN INTEGRATION
+------------------------------------------------------------
+
+Test:
+
+- partial return
+- full return
+- multiple returns against same invoice
+- over-return rejection
+- stock restoration
+- original batch restoration
+- customer due adjustment
+- GST reversal
+- revenue reversal
+- COGS reversal
+- profit reversal
+
+Verify that returned quantities cannot be returned again.
+
+Verify that reports do NOT double-count returns.
+
+------------------------------------------------------------
+7C — VOID / CANCEL INTEGRATION
+------------------------------------------------------------
+
+Test invoice cancellation.
+
+Verify:
+
+- stock restored
+- customer due reversed where applicable
+- GST reversed
+- revenue removed from net sales
+- COGS removed appropriately
+- profit corrected
+- invoice remains auditable
+- repeated cancellation rejected
+
+Verify cancelled invoice is not counted as a normal completed sale.
+
+------------------------------------------------------------
+7D — INVOICE CORRECTION
+------------------------------------------------------------
+
+Test Phase 4 correction flow.
+
+Verify:
+
+- original invoice remains auditable
+- correction/replacement is recorded
+- stock is correct
+- customer due is correct
+- GST is correct
+- cost snapshot is preserved
+- reports do not double-count original + corrected transaction
+- repeated correction is safely rejected where appropriate.
+
+------------------------------------------------------------
+7E — PURCHASE → STOCK → SUPPLIER DUE
+------------------------------------------------------------
+
+Test:
+
+- purchase invoice
+- multiple batches
+- purchase GST
+- stock increase
+- supplier payable
+- supplier payment
+- partial supplier payment
+- full supplier payment
+- supplier ledger
+- purchase report
+
+Verify:
+
+Supplier payment does NOT become a second purchase expense/value.
+
+------------------------------------------------------------
+7F — PURCHASE RETURN
+------------------------------------------------------------
+
+Test:
+
+- partial purchase return
+- full purchase return
+- batch-aware return
+- insufficient-stock rejection
+- supplier balance adjustment
+- GST/input GST adjustment
+- stock reduction
+- net purchase calculation
+
+Verify no double counting.
+
+------------------------------------------------------------
+7G — CUSTOMER DUE
+------------------------------------------------------------
+
+Test:
+
+- credit sale
+- partial collection
+- full collection
+- UPI collection
+- cash collection
+- overpayment rejection
+- ledger running balance
+- returned credit sale
+- cancelled credit sale
+- corrected credit sale
+
+Verify:
+
+Customer collection does NOT reduce sales revenue.
+
+It only reduces outstanding customer balance.
+
+------------------------------------------------------------
+7H — SUPPLIER DUE
+------------------------------------------------------------
+
+Test:
+
+- purchase
+- supplier payment
+- partial payment
+- full payment
+- purchase return
+- supplier ledger
+- running balance
+- overpayment rejection
+
+Verify payment does not reduce purchase totals a second time.
+
+------------------------------------------------------------
+7I — EXPENSES
+------------------------------------------------------------
+
+Test:
+
+- create expense
+- edit expense
+- cancel expense
+- category filter
+- payment method filter
+- date filter
+- expense totals
+- cancelled expense exclusion
+
+Verify:
+
+Expense affects Net Profit.
+
+Expense does NOT affect:
+- Sales
+- Purchases
+- Customer Due
+- Supplier Due
+- Stock quantities
+
+unless the existing business logic explicitly requires otherwise.
+
+------------------------------------------------------------
+7J — PROFIT & LOSS INTEGRITY
+------------------------------------------------------------
+
+For controlled test transactions calculate expected values independently.
+
+Verify:
+
+Net Sales
+minus COGS
+= Gross Profit
+
+Gross Profit
+minus Operating Expenses
+= Net Profit
+
+Verify:
+
+- sales returns
+- voids
+- corrections
+- purchase returns
+- expenses
+
+are all handled exactly once.
+
+Verify margin percentages.
+
+Avoid divide-by-zero problems.
+
+------------------------------------------------------------
+7K — GST CROSS-REPORT AUDIT
+------------------------------------------------------------
+
+Cross-check:
+
+Sales Report
+↔ GST Report
+
+Purchase Report
+↔ GST Report
+
+Verify:
+
+- taxable sales
+- output CGST
+- output SGST
+- output IGST
+- taxable purchases
+- input CGST
+- input SGST
+- input IGST
+- returns
+- voids
+- corrections
+
+All must use transaction-time GST snapshots.
+
+Changing current GST settings must NOT change historical reports.
+
+------------------------------------------------------------
+7L — STOCK VALUATION AUDIT
+------------------------------------------------------------
+
+Cross-check:
+
+Inventory
+↔ Stock Valuation Report
+
+Verify:
+
+- batch quantity
+- purchase cost
+- MRP
+- sellable stock
+- expired stock
+- near-expiry stock
+- low-stock
+- total valuation
+
+Expired stock must remain excluded from sellable stock valuation consistently with the existing application behavior.
+
+Do not change stock during the audit.
+
+------------------------------------------------------------
+7M — REPORT CROSS-CHECK
+------------------------------------------------------------
+
+Cross-check:
+
+Sales Summary
+Purchase Summary
+P&L
+Expense Report
+Stock Valuation
+Product Sales
+Company Sales
+Customer Due
+Supplier Due
+GST
+Financial Summary
+
+Use controlled test data and independently calculate expected totals.
+
+No report should double-count:
+- returns
+- voids
+- corrections
+- cancelled expenses
+- supplier payments
+- customer collections.
+
+------------------------------------------------------------
+7N — BACKUP / RESTORE FULL AUDIT
+------------------------------------------------------------
+
+Using an isolated test database:
+
+Create data containing:
+
+- medicines
+- batches
+- medicine photos
+- suppliers
+- purchase invoices
+- purchase attachments
+- sales
+- sales returns
+- voided invoices
+- corrected invoices
+- customers
+- customer collections
+- supplier payments
+- expenses
+- cancelled expenses
+- GST information
+- ledgers.
+
+Create a full backup.
+
+Restore it into a clean temporary environment.
+
+Verify:
+
+- all records preserved
+- IDs/references valid
+- medicine photos preserved
+- purchase attachments preserved
+- checksums validated
+- financial totals identical
+- customer balances identical
+- supplier balances identical
+- stock identical
+- report totals identical.
+
+Test failed/corrupted backup handling and rollback.
+
+Do not modify the real development database.
+
+------------------------------------------------------------
+7O — DATABASE / MIGRATION AUDIT
+------------------------------------------------------------
+
+Verify:
+
+- migration chain is complete
+- latest migration applies cleanly to a fresh temporary DB
+- existing DB opens normally
+- no destructive migration
+- no duplicate migration numbers
+- foreign keys remain valid
+- indexes required for major report queries exist where appropriate.
+
+Do not rewrite old migrations unless absolutely necessary.
+
+------------------------------------------------------------
+7P — SECURITY / DATA ACCESS AUDIT
+------------------------------------------------------------
+
+Verify:
+
+- renderer cannot execute arbitrary SQL
+- typed native commands only
+- input validation exists on financial writes
+- negative amounts rejected where invalid
+- zero quantities rejected where invalid
+- invalid IDs rejected
+- overpayment rejected
+- over-return rejected
+- invalid dates rejected
+- unsafe file paths rejected
+- backup restore validates files/checksums
+- attachments cannot escape the intended local storage area.
+
+------------------------------------------------------------
+7Q — PERFORMANCE / LARGE DATA QA
+------------------------------------------------------------
+
+Use an isolated temporary test database.
+
+Test reports with a realistically larger number of records.
+
+Check:
+
+- Sales History
+- Purchase History
+- Reports
+- Product Sales
+- Company Sales
+- Customer Due
+- Supplier Due
+- GST
+- Financial Summary
+- Inventory
+
+Look for:
+- obvious slow queries
+- UI freezes
+- excessive memory use
+- repeated queries
+- unnecessary full-table rendering.
+
+Do not prematurely optimize without evidence.
+
+------------------------------------------------------------
+7R — FRONTEND REGRESSION
+------------------------------------------------------------
+
+Verify:
+
+- navigation
+- sidebar
+- breadcrumbs
+- POS
+- Inventory
+- Purchases
+- Suppliers
+- Customers
+- Sales
+- Reports
+- Expenses
+- Settings
+
+Verify existing keyboard behavior remains intact:
+
+- F2 search
+- Enter
+- F9 checkout
+- Esc
+- Tab / Shift+Tab where dialogs trap focus.
+
+Do NOT alter Home/Dashboard.
+
+============================================================
+PHASE 8
+RELEASE READINESS & WINDOWS RC HARDENING
+============================================================
+
+After Phase 7 passes, prepare the application for Windows release-candidate testing.
+
+------------------------------------------------------------
+8A — VERSION / PRODUCT IDENTITY AUDIT
+------------------------------------------------------------
+
+Verify:
+
+Product name:
+MY MEDICAL
+
+Application version:
+0.1.0 unless the existing project already requires another version.
+
+Identifier:
+com.pharmadesk.offline
+
+Verify:
+- Tauri config
+- package metadata
+- desktop entry
+- icons
+- executable name
+- application title.
+
+Do not arbitrarily change the version.
+
+------------------------------------------------------------
+8B — WINDOWS BUILD WORKFLOW AUDIT
+------------------------------------------------------------
+
+Inspect the existing:
+
+.github/workflows/windows-release-candidate.yml
+
+Verify it:
+
+- uses Windows runner
+- installs the expected Node version
+- installs pnpm
+- installs Rust
+- performs frozen dependency install
+- runs tests
+- runs typecheck
+- builds the Tauri Windows application
+- creates a downloadable artifact
+- does not require signing secrets
+- does not publish a release
+- does not push anything.
+
+If the workflow is incomplete or broken, fix it.
+
+Do NOT execute GitHub Actions by pushing/committing.
+
+If workflow execution cannot be performed without a push, report it as NOT RUN.
+
+------------------------------------------------------------
+8C — WINDOWS CONFIGURATION AUDIT
+------------------------------------------------------------
+
+Inspect Windows-specific Tauri configuration.
+
+Verify:
+
+- Windows target configuration
+- installer configuration
+- application icon
+- executable name
+- WebView2 assumptions
+- writable application-data paths
+- SQLite path behavior
+- backup directory behavior
+- medicine photo directory behavior
+- purchase attachment directory behavior
+- file export behavior.
+
+Do not add unnecessary Windows-specific complexity.
+
+------------------------------------------------------------
+8D — LOCAL FILE PATH SAFETY
+------------------------------------------------------------
+
+Audit all filesystem paths used for:
+
+- SQLite database
+- backups
+- medicine photos
+- purchase attachments
+- PDF export
+- Excel export.
+
+Verify Windows-safe path handling.
+
+Avoid hard-coded Linux-only paths.
+
+------------------------------------------------------------
+8E — BACKUP SAFETY
+------------------------------------------------------------
+
+Verify:
+
+- automatic backups
+- manual backups
+- close-time backups
+- retention of 30 newest automatic backups
+- manual backups are not accidentally deleted by automatic retention
+- restore rollback
+- corrupted backup rejection
+- active DB protection.
+
+------------------------------------------------------------
+8F — PRINT / PDF / EXCEL RELEASE CHECK
+------------------------------------------------------------
+
+Verify report exports are usable.
+
+Check:
+
+- pharmacy name
+- report title
+- date range
+- generated timestamp
+- totals
+- table headers
+- page layout
+- numeric formatting
+- INR formatting
+- no UI buttons printed.
+
+Verify Excel files contain no macros.
+
+------------------------------------------------------------
+8G — UI FINAL QA
+------------------------------------------------------------
+
+Browser-based visual QA at:
+
+1366×768
+1440×900
+1920×1080
+
+Check:
+
+- no page-level horizontal overflow
+- no clipped buttons
+- no clipped table headers
+- no broken dialogs
+- no broken forms
+- no overlapping controls
+- reports readable
+- expenses readable
+- POS readable
+- inventory readable
+- purchases readable
+- customers readable
+- suppliers readable
+- sales readable
+- settings readable.
+
+Home/Dashboard must remain unchanged.
+
+If native Tauri still fails because of the known Linux EGL_BAD_PARAMETER / missing /dev/dri environment issue:
+
+- do NOT attempt unrelated environment hacks
+- record native GUI as UNVERIFIED
+- continue browser QA and build verification.
+
+------------------------------------------------------------
+8H — ACCESSIBILITY / USABILITY
+------------------------------------------------------------
+
+Verify:
+
+- visible focus
+- keyboard navigation
+- Escape closes dialogs
+- labels are understandable
+- buttons have clear names
+- destructive actions require confirmation
+- financial cancellation requires confirmation
+- no accidental destructive action from Enter key.
+
+------------------------------------------------------------
+8I — FINAL BUILD / TEST
+------------------------------------------------------------
+
+Run:
+
+- all Rust tests
+- all frontend tests
+- cargo check
+- TypeScript/typecheck
+- Vite production build
+- Tauri Debian build
+- git diff --check
+- existing source/diff checks.
+
+Do not run database reset or seed.
+
+------------------------------------------------------------
+8J — FINAL GIT SAFETY
+------------------------------------------------------------
+
+At the end:
+
+Run git status.
+
+There must be NO commit created by this task.
+
+There must be NO push.
+
+There must be NO release.
+
+If the working tree contains pre-existing commits, do not rewrite them.
+
+Do not use git reset --hard.
+
+------------------------------------------------------------
+FINAL REPORT
+------------------------------------------------------------
+
+Provide a complete report with:
+
+PHASE 7
+1. Integration tests performed
+2. Sales/inventory/profit result
+3. Returns result
+4. Void/cancel result
+5. Correction result
+6. Purchase/supplier result
+7. Customer due result
+8. Expense result
+9. GST cross-check result
+10. Stock valuation result
+11. Report cross-check result
+12. Backup/restore result
+13. Migration result
+14. Security/data-access result
+15. Performance result
+16. Frontend regression result
+
+PHASE 8
+17. Product identity/config result
+18. Windows workflow audit result
+19. Windows configuration result
+20. File path safety result
+21. Backup safety result
+22. PDF/Excel result
+23. Visual QA result
+24. Accessibility/usability result
+25. Rust test count
+26. Frontend test count
+27. Typecheck result
+28. Vite build result
+29. Debian package result
+30. Native Tauri GUI status
+31. Git status
+32. Any remaining blockers
+33. Any recommended fixes
+
+IMPORTANT:
+Do not hide failures.
+If something cannot be verified, clearly mark it UNVERIFIED rather than claiming PASS.
+
+Do not commit.
+Do not push.
+Do not publish.
+Do not release.
+Do not reset/reseed the database.
+Do not modify Home/Dashboard.
