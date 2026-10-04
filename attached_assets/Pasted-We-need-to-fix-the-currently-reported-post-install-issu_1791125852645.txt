@@ -1,0 +1,276 @@
+We need to fix the currently reported post-install issues in the MY MEDICAL Pharmacy Windows desktop app.
+
+IMPORTANT:
+- First inspect the existing implementation carefully before changing anything.
+- Do not rewrite or unnecessarily refactor working features.
+- Preserve the current final Home/Dashboard design, navigation, existing options, functionality, database structure, and business logic unless a change is strictly required for these fixes.
+- Do not remove existing features.
+- Keep the application native/offline and compatible with the existing Tauri + SQLite architecture.
+- Use existing native commands/services where possible.
+- After implementation, run all relevant tests, typecheck/build checks, and fix any regressions.
+- Do not commit/push unless explicitly requested.
+
+Implement ALL of the following:
+
+==================================================
+ISSUE #1 — BILL/INVOICE PRINT IS BLANK
+==================================================
+
+Currently when printing a bill/invoice, the print page/window opens but the actual invoice content is completely blank.
+
+Fix the printing flow so that:
+- The actual invoice/bill content is rendered correctly in the print view.
+- Customer information is shown where applicable.
+- Invoice number is shown.
+- Date and time are shown.
+- All sold items are shown.
+- Quantity, sale rate, discount/GST if applicable, line totals and grand total are shown.
+- The printed document must not depend on the screen-only UI.
+- Verify that the content is actually present in the browser/Tauri print document before printing.
+- Fix any print CSS, print route, timing/rendering, iframe/window, or data-loading issue causing the blank page.
+- Printing must work reliably after opening the print action.
+
+==================================================
+ISSUE #2 — A4 / A5 PAPER SIZE OPTIONS
+==================================================
+
+The current printing setup appears to use an incorrect/custom paper size.
+
+Add proper invoice print paper-size support for:
+- A4
+- A5
+- Keep the existing paper-size option if it is a legitimate existing feature, but make the available choices clear.
+
+Requirements:
+- Paper size selection should be available from the invoice/print flow or the appropriate existing settings location.
+- Print CSS must correctly use the selected paper size.
+- A4 should produce an A4 layout.
+- A5 should produce an A5 layout.
+- Content must fit the selected paper without being cut off.
+- Avoid unnecessary scaling.
+- Ensure page margins, invoice width, font sizes and table layout work properly for both A4 and A5.
+- Do not break normal Windows printing.
+
+==================================================
+ISSUE #3 — PHARMACY/STORE HEADER ON PRINTED INVOICE
+==================================================
+
+Add configurable pharmacy/store information for printed bills.
+
+The user should be able to configure/store:
+- Pharmacy / Store name
+- Address
+- Phone number
+- Other useful store details if already supported by the application
+- Date/details where applicable
+
+These details should appear in the printed invoice header.
+
+Requirements:
+- Prefer storing these values in the existing Settings/configuration system.
+- Enter once and reuse automatically on future invoices.
+- Do not force the user to manually enter the shop information every time.
+- Printed invoice should have a professional pharmacy header.
+- Existing invoice data must remain intact.
+- If there is already a business/store settings structure, extend it instead of creating a duplicate system.
+
+==================================================
+ISSUE #4 — EXCEL IMPORT TEMPLATE DOWNLOAD DOES NOT WORK
+==================================================
+
+In "Import medicine from Excel", the "Download Template" button exists but the template does not actually download.
+
+Fix it.
+
+Requirements:
+- Clicking Download Template must generate/download a valid .xlsx file.
+- The file must be compatible with the existing medicine Excel import functionality.
+- Use the correct expected columns/headers already used by the importer.
+- The generated file should open correctly in Excel/LibreOffice.
+- If there is already a template-generation implementation, repair it rather than duplicating it.
+- Test that the download action actually produces a file.
+
+==================================================
+ISSUE #5 — ADD ITEM LIST / MEDICINE LIST PAGE
+==================================================
+
+There is currently no convenient dedicated Item List / Medicine List option.
+
+Add a dedicated Item List / Medicine List page.
+
+Requirements:
+- Show all medicines/items.
+- Show total item/medicine count.
+- Include useful existing medicine information such as:
+  - Medicine/item name
+  - Salt/generic if available
+  - Batch information where appropriate
+  - Stock
+  - MRP
+  - Sale rate
+  - Expiry
+  - Other existing relevant fields
+- Add search/filter functionality if compatible with the existing UI.
+- Each item must have an individual "Update" action.
+- Add "Bulk Update" functionality for updating multiple selected items.
+- Bulk Update must be safe and must not accidentally overwrite unrelated fields.
+- Use existing medicine/update database logic wherever possible.
+- Keep the page responsive and suitable for Windows desktop.
+- Add the new page to existing navigation without breaking current navigation.
+
+==================================================
+ISSUE #6 — EXPIRY LIST / EXPIRY FILTERS
+==================================================
+
+There is no convenient dedicated expiry list/filter.
+
+Add an accessible Expiry List / Expiry Management view.
+
+It should allow filtering medicines/items by:
+- Expiring within 5 days
+- Expiring within 7 days / 1 week
+- Expiring within 10 days
+- Expiring within 1 month
+- All upcoming expiry
+
+Requirements:
+- Show medicine/item name.
+- Batch number where applicable.
+- Expiry date.
+- Current stock where applicable.
+- Days remaining or a clear expiry status.
+- Expired items should be clearly distinguishable.
+- Do not incorrectly classify already-expired medicines as future-expiry items.
+- Use the existing date handling/database logic.
+- Avoid timezone/date off-by-one errors.
+- Add an easy navigation entry to this view.
+
+==================================================
+ISSUE #7 — CUSTOMER DUE / PAYMENT HISTORY + SMS / WHATSAPP
+==================================================
+
+Improve Customer Details so the customer payment/due history is complete.
+
+For each customer, show:
+- Current total outstanding/due
+- Total amount paid
+- Complete payment history
+- Payment date
+- Payment amount
+- Remaining balance after each payment
+- Related invoice/reference where available
+- Complete due/collection history
+
+The history should make it easy to understand how the outstanding balance changed over time.
+
+Also add direct communication actions:
+- SMS
+- WhatsApp
+
+Requirements:
+- Use the customer's saved phone number.
+- SMS should open the device/system-supported SMS action where supported.
+- WhatsApp should open the appropriate WhatsApp action/link using the saved phone number.
+- Do not create an internal messaging system.
+- Do not require paid SMS infrastructure.
+- Validate/format the phone number appropriately before generating the action.
+- Do not expose or leak customer data unnecessarily.
+
+==================================================
+ISSUE #8 — SALES: SHOW ITEMS INSIDE EACH INVOICE
+==================================================
+
+In Sales, invoice number, date/time and customer are visible, but the actual items sold in that invoice are not shown.
+
+Fix Sales so that opening/selecting an invoice provides complete invoice details.
+
+For the selected invoice show:
+- Invoice number
+- Date & time
+- Customer
+- Every medicine/item sold
+- Quantity
+- Sale rate
+- Discount if applicable
+- GST/tax if applicable
+- Line total
+- Invoice subtotal
+- Total discount
+- Total tax/GST
+- Grand total
+- Payment/collection information if already supported
+
+Important:
+- The item list must come from the actual invoice/sale records in SQLite.
+- Do not use demo/static data.
+- Correctly handle invoices containing multiple medicines.
+- Preserve batch/FEFO information if the existing sale records contain it.
+- Do not alter historical sales data.
+- Make the invoice details easy to view from the Sales page.
+
+==================================================
+ISSUE #9 — CARD/OPTION VISUAL DIFFERENTIATION
+==================================================
+
+Across Home, Post Billing, Today's Order, List, Inventory and other pages, many cards/options currently look too similar because their backgrounds and colors are nearly identical.
+
+Improve the visual design so cards/options are clearly distinguishable.
+
+Requirements:
+- Give different functional cards/options clearly distinguishable background/accent treatments.
+- Use a professional pharmacy UI color system.
+- Different card categories can have different subtle background/accent/icon colors.
+- Keep text highly readable and accessible.
+- Do not make the UI excessively colorful or childish.
+- Maintain a cohesive professional design.
+- Use consistent color meaning across the application where possible.
+- Cards that represent different functions such as:
+  - Catalog
+  - Inventory
+  - Today's Orders
+  - New Sale
+  - Add Medicine
+  - Purchase
+  - Suppliers
+  - Customers
+  - Reports
+  - Expenses
+  - etc.
+  should be visually easier to distinguish at a glance.
+- Improve card borders, icons, accent colors and/or subtle background colors where appropriate.
+- Do NOT change the actual functionality, order, navigation or business logic of these cards unless required.
+- Do NOT redesign the final Home/Dashboard structure from scratch.
+- This is primarily a visual hierarchy/color differentiation improvement.
+
+==================================================
+GLOBAL QUALITY REQUIREMENTS
+==================================================
+
+1. Preserve the current final Home/Dashboard and its existing functionality.
+2. Preserve existing database data and migrations.
+3. Do not introduce duplicate systems for settings, customers, medicines, invoices, expiry, or printing if equivalent systems already exist.
+4. Reuse existing components and services where appropriate.
+5. Maintain the existing Tauri + SQLite offline architecture.
+6. Ensure Windows desktop compatibility.
+7. Ensure print functionality works in the actual Windows/Tauri environment, not only in development browser mode.
+8. Handle empty states gracefully.
+9. Handle missing customer/store information gracefully.
+10. Do not use fake/demo data for production functionality.
+11. Do not remove existing tests.
+12. Add focused tests for important new logic where practical.
+
+Before finishing:
+- Run frontend typecheck.
+- Run frontend tests.
+- Run Rust/native tests.
+- Run cargo check/build checks as currently used by the project.
+- Run relevant print/invoice/import/customer/sales tests.
+- Run git diff --check.
+- Fix all failures caused by these changes.
+- Review the final diff for accidental changes to unrelated features.
+
+At the end, report:
+1. What was changed for each Issue #1–#9.
+2. Files/components changed.
+3. Tests/checks executed and their results.
+4. Any remaining limitation or item that needs manual Windows verification.
