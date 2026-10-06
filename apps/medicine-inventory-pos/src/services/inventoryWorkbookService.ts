@@ -41,29 +41,6 @@ export interface StockExportRow {
 
 const spreadsheetMime =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const templateHeaders = [
-  "Medicine ID",
-  "Medicine Name",
-  "Generic Name",
-  "Manufacturer/Company",
-  "Product Type",
-  "Strength",
-  "Composition",
-  "Barcode",
-  "Uses",
-  "Adult Dose",
-  "Child Dose",
-  "GST Rate (%)",
-  "MRP",
-  "Sale Price",
-  "Purchase Price",
-  "Opening Stock",
-  "Reorder Level",
-  "Batch Number",
-  "Expiry Date",
-  "Rack Location",
-];
-
 function downloadWorkbook(bytes: ExcelJS.Buffer, filename: string): void {
   const blob = new Blob([bytes as BlobPart], { type: spreadsheetMime });
   const url = URL.createObjectURL(blob);
@@ -80,18 +57,10 @@ function downloadWorkbook(bytes: ExcelJS.Buffer, filename: string): void {
   }
 }
 
-function workbookBytesToArray(bytes: ExcelJS.Buffer): number[] {
-  const value: unknown = bytes;
-  if (value instanceof ArrayBuffer) {
-    return Array.from(new Uint8Array(value));
-  }
-  if (ArrayBuffer.isView(value)) {
-    const view = value as ArrayBufferView;
-    return Array.from(
-      new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-    );
-  }
-  return Array.from(value as ArrayLike<number>);
+function nativeOperationError(cause: unknown, fallback: string): string {
+  if (cause instanceof Error && cause.message) return cause.message;
+  if (typeof cause === "string" && cause.trim()) return cause;
+  return fallback;
 }
 
 function styleHeader(row: ExcelJS.Row): void {
@@ -106,71 +75,27 @@ function styleHeader(row: ExcelJS.Row): void {
 }
 
 export async function downloadMedicineImportTemplate(): Promise<boolean> {
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = "MY MEDICAL";
-  workbook.subject = "Medicine master import template";
-  workbook.created = new Date();
-  const sheet = workbook.addWorksheet("Medicine Import", {
-    views: [{ state: "frozen", ySplit: 1 }],
-  });
-  sheet.addRow(templateHeaders);
-  styleHeader(sheet.getRow(1));
-  sheet.autoFilter = `A1:${sheet.getColumn(templateHeaders.length).letter}1`;
-  sheet.columns = [
-    { width: 14 },
-    { width: 28 },
-    { width: 24 },
-    { width: 24 },
-    { width: 18 },
-    { width: 14 },
-    { width: 30 },
-    { width: 20, style: { numFmt: "@" } },
-    { width: 32 },
-    { width: 22 },
-    { width: 22 },
-    { width: 15, style: { numFmt: "0.00" } },
-    { width: 14, style: { numFmt: "0.00" } },
-    { width: 14, style: { numFmt: "0.00" } },
-    { width: 16, style: { numFmt: "0.00" } },
-    { width: 16, style: { numFmt: "0" } },
-    { width: 16, style: { numFmt: "0" } },
-    { width: 20 },
-    { width: 16, style: { numFmt: "yyyy-mm-dd" } },
-    { width: 18 },
-  ];
-  sheet.getColumn(7).numFmt = "@";
-
-  const instructions = workbook.addWorksheet("Instructions", {
-    views: [{ state: "frozen", ySplit: 1 }],
-  });
-  instructions.addRows([
-    ["Field", "How to use"],
-    ["Medicine ID", "Leave blank to match by barcode or add a new medicine. Use an ID from a previous stock export for a stable match."],
-    ["Medicine Name", "Required. The name and other fields are validated before import."],
-    ["Barcode", "Optional. Barcodes are normalized locally and must be unique."],
-    ["GST Rate (%)", "Optional percentage from 0 to 100, with at most two decimal places."],
-    ["Batch and opening stock", "If importing any batch values, provide Batch Number, Expiry Date, MRP, Sale Price, Purchase Price, and Opening Stock together."],
-    ["Opening Stock", "Imported opening stock is recorded as a local audited adjustment. No purchase invoice is created."],
-    ["Update mode", "Blank optional cells keep the current value. Review every match and change before confirming."],
-    ["Safety", "Only .xlsx files are accepted. Formula cells are rejected; macros are not loaded or executed. No data is sent outside this device."],
-  ]);
-  styleHeader(instructions.getRow(1));
-  instructions.columns = [{ width: 24 }, { width: 110 }];
-  instructions.eachRow((row, rowNumber) => {
-    if (rowNumber > 1) row.alignment = { vertical: "top", wrapText: true };
-  });
-  const bytes = await workbook.xlsx.writeBuffer();
-  const destinationPath = await save({
-    defaultPath: "MY-MEDICAL-Medicine-Import-Template.xlsx",
-    filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
-  });
-  if (typeof destinationPath !== "string" || destinationPath.length === 0) {
+  let destinationPath: string | null;
+  try {
+    destinationPath = await save({
+      defaultPath: "medicine-import-template.xlsx",
+      filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+    });
+  } catch (cause) {
+    throw new Error(
+      `Could not open the Save As dialog: ${nativeOperationError(cause, "native dialog failed")}`,
+    );
+  }
+  if (typeof destinationPath !== "string" || destinationPath.trim().length === 0) {
     return false;
   }
-  await invoke("save_medicine_import_template", {
-    destinationPath,
-    workbookBytes: workbookBytesToArray(bytes),
-  });
+  try {
+    await invoke("save_medicine_import_template", { destinationPath });
+  } catch (cause) {
+    throw new Error(
+      `Could not write the Excel template: ${nativeOperationError(cause, "native file save failed")}`,
+    );
+  }
   return true;
 }
 

@@ -2,6 +2,7 @@ import { Download, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { getInventoryMedicines } from "../../services/inventoryService";
+import { createMedicineImportTemplateDownloadHandler } from "./medicineImportTemplateDownload";
 import {
   downloadMedicineImportTemplate,
   parseMedicineImportFile,
@@ -149,8 +150,6 @@ export function MedicineImportDialog({
 }: MedicineImportDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
 
-  useDialogFocusTrap(dialogRef, isSaving ? undefined : onClose);
-
   const [medicines, setMedicines] = useState<MedicineInventoryRow[]>([]);
   const [isLoadingMedicines, setIsLoadingMedicines] = useState(true);
   const [medicineLoadError, setMedicineLoadError] = useState<string | null>(null);
@@ -164,6 +163,19 @@ export function MedicineImportDialog({
   const [isParsing, setIsParsing] = useState(false);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
+
+  useDialogFocusTrap(dialogRef, isSaving || isDownloadingTemplate ? undefined : onClose);
+
+  const downloadTemplate = useMemo(
+    () =>
+      createMedicineImportTemplateDownloadHandler(
+        downloadMedicineImportTemplate,
+        setIsDownloadingTemplate,
+        setFileError,
+        setTemplateNotice,
+      ),
+    [setFileError, setIsDownloadingTemplate, setTemplateNotice],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -257,24 +269,6 @@ export function MedicineImportDialog({
     }
   }
 
-  async function downloadTemplate() {
-    setIsDownloadingTemplate(true);
-    setFileError(null);
-    setTemplateNotice(null);
-    try {
-      const saved = await downloadMedicineImportTemplate();
-      setTemplateNotice(
-        saved
-          ? "Medicine import template saved."
-          : "Template save canceled. No file was created.",
-      );
-    } catch (cause) {
-      setFileError(cause instanceof Error ? cause.message : "Could not create the import template.");
-    } finally {
-      setIsDownloadingTemplate(false);
-    }
-  }
-
   return (
     <div className="dialog-backdrop inventory-dialog-backdrop inventory-dialog-backdrop--top">
       <section
@@ -294,7 +288,7 @@ export function MedicineImportDialog({
           <button
             aria-label="Close medicine import"
             className="icon-button"
-            disabled={isSaving}
+            disabled={isSaving || isDownloadingTemplate}
             onClick={onClose}
             type="button"
           >
@@ -309,7 +303,13 @@ export function MedicineImportDialog({
               <input
                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 data-testid="input-medicine-import-file"
-                disabled={isSaving || isParsing || isLoadingMedicines || medicineLoadError !== null}
+                disabled={
+                  isSaving ||
+                  isDownloadingTemplate ||
+                  isParsing ||
+                  isLoadingMedicines ||
+                  medicineLoadError !== null
+                }
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
@@ -325,7 +325,7 @@ export function MedicineImportDialog({
               type="button"
             >
               <Download size={15} />
-              {isDownloadingTemplate ? "Creating…" : "Download template"}
+              {isDownloadingTemplate ? "Saving…" : "Download template"}
             </button>
           </div>
 

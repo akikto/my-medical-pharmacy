@@ -8,9 +8,11 @@ const { createFixture, invokeRead, state } = require("./rendererReadFixture.cjs"
 
 const backupServiceState = {
   saveSelection: null,
+  saveError: null,
   openSelection: null,
   saveOptions: null,
   openOptions: null,
+  invokeError: null,
   invocations: [],
 };
 
@@ -25,7 +27,10 @@ Module._load = function loadWithTauriReadMock(request, parent, isMain) {
           command === "save_medicine_import_template"
         ) {
           backupServiceState.invocations.push({ command, args });
-          if (command === "save_medicine_import_template") return;
+          if (command === "save_medicine_import_template") {
+            if (backupServiceState.invokeError) throw backupServiceState.invokeError;
+            return;
+          }
           return command === "create_database_backup"
             ? {
                 path: args.destinationPath,
@@ -51,6 +56,7 @@ Module._load = function loadWithTauriReadMock(request, parent, isMain) {
       },
       save: async (options) => {
         backupServiceState.saveOptions = options;
+        if (backupServiceState.saveError) throw backupServiceState.saveError;
         return backupServiceState.saveSelection;
       },
     };
@@ -126,6 +132,9 @@ const {
   filterStockExportRows,
 } = require("../src/services/inventoryWorkbookService.ts");
 const {
+  createMedicineImportTemplateDownloadHandler,
+} = require("../src/components/inventory/medicineImportTemplateDownload.ts");
+const {
   getReceiptPageRule,
   isReceiptWidth,
 } = require("../src/components/pos/receiptPrintModel.ts");
@@ -147,9 +156,11 @@ let fixture;
 beforeEach(() => {
   fixture = createFixture();
   backupServiceState.saveSelection = null;
+  backupServiceState.saveError = null;
   backupServiceState.openSelection = null;
   backupServiceState.saveOptions = null;
   backupServiceState.openOptions = null;
+  backupServiceState.invokeError = null;
   backupServiceState.invocations = [];
 });
 
@@ -159,12 +170,12 @@ afterEach(() => {
 });
 
 describe("medicine import template download", () => {
-  it("saves a valid Excel workbook through the native dialog and handles cancellation", async () => {
+  it("opens native Save As and invokes the native writer after a destination is selected", async () => {
     assert.equal(await downloadMedicineImportTemplate(), false);
     assert.deepEqual(backupServiceState.invocations, []);
     assert.equal(
       backupServiceState.saveOptions.defaultPath,
-      "MY-MEDICAL-Medicine-Import-Template.xlsx",
+      "medicine-import-template.xlsx",
     );
     assert.deepEqual(backupServiceState.saveOptions.filters, [
       { name: "Excel workbook", extensions: ["xlsx"] },
@@ -177,18 +188,86 @@ describe("medicine import template download", () => {
       backupServiceState.invocations[0].args.destinationPath,
       "/local/my-medical-medicine-import-template.xlsx",
     );
-    assert.ok(Array.isArray(backupServiceState.invocations[0].args.workbookBytes));
-    assert.deepEqual(
-      backupServiceState.invocations[0].args.workbookBytes.slice(0, 4),
-      [0x50, 0x4b, 0x03, 0x04],
+    assert.deepEqual(backupServiceState.invocations[0].args, {
+      destinationPath: "/local/my-medical-medicine-import-template.xlsx",
+    });
+  });
+
+  it("surfaces Save As and native write failures", async () => {
+    backupServiceState.saveSelection = "/local/template.xlsx";
+    backupServiceState.saveError = new Error("dialog unavailable");
+    await assert.rejects(
+      downloadMedicineImportTemplate(),
+      /Could not open the Save As dialog: dialog unavailable/,
+    );
+    assert.deepEqual(backupServiceState.invocations, []);
+
+    backupServiceState.saveError = null;
+    backupServiceState.invokeError = "Access denied";
+    await assert.rejects(
+      downloadMedicineImportTemplate(),
+      /Could not write the Excel template: Access denied/,
+    );
+    assert.equal(backupServiceState.invocations.length, 1);
+  });
+});
+
+describe("medicine import template button state", () => {
+  it("prevents duplicate clicks and shows success only after the native save resolves", async () => {
+    let resolveDownload;
+    let calls = 0;
+    const state = { loading: false, error: null, notice: null };
+    const run = createMedicineImportTemplateDownloadHandler(
+      () => {
+        calls += 1;
+        return new Promise((resolve) => {
+          resolveDownload = resolve;
+        });
+      },
+      (loading) => { state.loading = loading; },
+      (error) => { state.error = error; },
+      (notice) => { state.notice = notice; },
     );
 
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(
-      Buffer.from(backupServiceState.invocations[0].args.workbookBytes),
+    const firstClick = run();
+    assert.equal(state.loading, true);
+    await run();
+    assert.equal(calls, 1);
+    resolveDownload(true);
+    await firstClick;
+    assert.equal(state.loading, false);
+    assert.equal(state.error, null);
+    assert.equal(state.notice, "Template saved successfully.");
+  });
+
+  it("returns to normal without an error when the user cancels Save As", async () => {
+    const state = { loading: false, error: null, notice: null };
+    const run = createMedicineImportTemplateDownloadHandler(
+      async () => false,
+      (loading) => { state.loading = loading; },
+      (error) => { state.error = error; },
+      (notice) => { state.notice = notice; },
     );
-    assert.equal(workbook.getWorksheet("Medicine Import").getCell("A1").value, "Medicine ID");
-    assert.equal(workbook.getWorksheet("Instructions").getCell("A1").value, "Field");
+
+    await run();
+    assert.equal(state.loading, false);
+    assert.equal(state.error, null);
+    assert.equal(state.notice, null);
+  });
+
+  it("shows native write failures and always resets the loading state", async () => {
+    const state = { loading: false, error: null, notice: null };
+    const run = createMedicineImportTemplateDownloadHandler(
+      async () => { throw new Error("Could not write the Excel template: disk full"); },
+      (loading) => { state.loading = loading; },
+      (error) => { state.error = error; },
+      (notice) => { state.notice = notice; },
+    );
+
+    await run();
+    assert.equal(state.loading, false);
+    assert.equal(state.error, "Could not write the Excel template: disk full");
+    assert.equal(state.notice, null);
   });
 });
 
@@ -327,9 +406,13 @@ describe("consolidated pharmacy maintenance contracts", () => {
       path.join(__dirname, "../src/components/inventory/MedicineImportDialog.tsx"),
       "utf8",
     );
-    assert.match(source, /const saved = await downloadMedicineImportTemplate\(\)/);
-    assert.match(source, /Medicine import template saved\./);
-    assert.match(source, /Template save canceled\. No file was created\./);
+    const flowSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/inventory/medicineImportTemplateDownload.ts"),
+      "utf8",
+    );
+    assert.match(source, /createMedicineImportTemplateDownloadHandler/);
+    assert.match(flowSource, /Template saved successfully\./);
+    assert.doesNotMatch(source, /Template save canceled/);
     assert.match(source, /data-testid="status-import-template"/);
   });
 

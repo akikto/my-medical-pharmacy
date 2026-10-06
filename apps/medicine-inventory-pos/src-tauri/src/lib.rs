@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     fs,
     fs::OpenOptions,
-    io::Write,
+    fmt::Write as FmtWrite,
+    io::{Cursor, Read, Write as IoWrite},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -1818,15 +1819,280 @@ fn create_database_backup(
     })
 }
 
-fn write_medicine_import_template_at(
-    destination: &Path,
-    workbook_bytes: &[u8],
+const MEDICINE_IMPORT_HEADERS: [&str; 20] = [
+    "Medicine ID",
+    "Medicine Name",
+    "Generic Name",
+    "Manufacturer/Company",
+    "Product Type",
+    "Strength",
+    "Composition",
+    "Barcode",
+    "Uses",
+    "Adult Dose",
+    "Child Dose",
+    "GST Rate (%)",
+    "MRP",
+    "Sale Price",
+    "Purchase Price",
+    "Opening Stock",
+    "Reorder Level",
+    "Batch Number",
+    "Expiry Date",
+    "Rack Location",
+];
+
+const MEDICINE_IMPORT_INSTRUCTIONS: [(&str, &str); 9] = [
+    (
+        "Medicine ID",
+        "Leave blank to match by barcode or add a new medicine. Use an ID from a previous stock export for a stable match.",
+    ),
+    (
+        "Medicine Name",
+        "Required. The name and other fields are validated before import.",
+    ),
+    (
+        "Barcode",
+        "Optional. Barcodes are normalized locally and must be unique.",
+    ),
+    (
+        "GST Rate (%)",
+        "Optional percentage from 0 to 100, with at most two decimal places.",
+    ),
+    (
+        "Batch and opening stock",
+        "If importing any batch values, provide Batch Number, Expiry Date, MRP, Sale Price, Purchase Price, and Opening Stock together.",
+    ),
+    (
+        "Opening Stock",
+        "Imported opening stock is recorded as a local audited adjustment. No purchase invoice is created.",
+    ),
+    (
+        "Update mode",
+        "Blank optional cells keep the current value. Review every match and change before confirming.",
+    ),
+    (
+        "Safety",
+        "Only .xlsx files are accepted. Formula cells are rejected; macros are not loaded or executed. No data is sent outside this device.",
+    ),
+    (
+        "Import",
+        "Use the Medicine Import sheet for data. Keep the header row unchanged.",
+    ),
+];
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn excel_column_name(mut one_based_index: usize) -> String {
+    let mut letters = Vec::new();
+    while one_based_index > 0 {
+        let remainder = (one_based_index - 1) % 26;
+        letters.push((b'A' + remainder as u8) as char);
+        one_based_index = (one_based_index - 1) / 26;
+    }
+    letters.iter().rev().collect()
+}
+
+fn medicine_import_worksheet_xml(
+    rows: &[Vec<&str>],
+    column_widths: &[u32],
+    auto_filter: Option<&str>,
+) -> String {
+    let last_column = excel_column_name(column_widths.len());
+    let last_row = rows.len().max(1);
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+"#,
+    );
+    let _ = write!(
+        xml,
+        "<dimension ref=\"A1:{last_column}{last_row}\"/><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/><selection pane=\"bottomLeft\" activeCell=\"A2\" sqref=\"A2\"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight=\"15\"/><cols>"
+    );
+    for (index, width) in column_widths.iter().enumerate() {
+        let column = index + 1;
+        let _ = write!(
+            xml,
+            "<col min=\"{column}\" max=\"{column}\" width=\"{width}\" customWidth=\"1\"/>"
+        );
+    }
+    xml.push_str("</cols><sheetData>");
+    for (row_index, row) in rows.iter().enumerate() {
+        let row_number = row_index + 1;
+        if row_index == 0 {
+            let _ = write!(
+                xml,
+                "<row r=\"{row_number}\" ht=\"25\" customHeight=\"1\">"
+            );
+        } else {
+            let _ = write!(xml, "<row r=\"{row_number}\">");
+        }
+        for (column_index, value) in row.iter().enumerate() {
+            let cell = format!("{}{row_number}", excel_column_name(column_index + 1));
+            let escaped = xml_escape(value);
+            if row_index == 0 {
+                let _ = write!(
+                    xml,
+                    "<c r=\"{cell}\" s=\"1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{escaped}</t></is></c>"
+                );
+            } else {
+                let _ = write!(
+                    xml,
+                    "<c r=\"{cell}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{escaped}</t></is></c>"
+                );
+            }
+        }
+        xml.push_str("</row>");
+    }
+    xml.push_str("</sheetData>");
+    if let Some(auto_filter) = auto_filter {
+        let _ = write!(xml, "<autoFilter ref=\"{auto_filter}\"/>");
+    }
+    xml.push_str("</worksheet>");
+    xml
+}
+
+fn write_medicine_import_xlsx_part(
+    archive: &mut zip::ZipWriter<Cursor<Vec<u8>>>,
+    name: &str,
+    contents: &str,
 ) -> Result<(), String> {
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    archive
+        .start_file(name, options)
+        .map_err(|error| format!("Could not create the Excel template package: {error}"))?;
+    archive
+        .write_all(contents.as_bytes())
+        .map_err(|error| format!("Could not write the Excel template package: {error}"))
+}
+
+fn validate_medicine_import_xlsx(workbook_bytes: &[u8]) -> Result<(), String> {
     if workbook_bytes.is_empty() || workbook_bytes.len() > 2_000_000 {
         return Err("The Excel template is empty or larger than the allowed 2 MB.".to_owned());
     }
-    if !workbook_bytes.starts_with(b"PK\x03\x04") {
-        return Err("The generated file is not a valid .xlsx workbook.".to_owned());
+    let mut archive = zip::ZipArchive::new(Cursor::new(workbook_bytes))
+        .map_err(|error| format!("The generated Excel template is not a valid XLSX package: {error}"))?;
+    for entry in [
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "xl/workbook.xml",
+        "xl/_rels/workbook.xml.rels",
+        "xl/styles.xml",
+        "xl/worksheets/sheet1.xml",
+        "xl/worksheets/sheet2.xml",
+    ] {
+        archive
+            .by_name(entry)
+            .map_err(|error| format!("The generated Excel template is missing {entry}: {error}"))?;
+    }
+
+    let mut workbook_xml = String::new();
+    let mut workbook_file = archive
+        .by_name("xl/workbook.xml")
+        .map_err(|error| format!("Could not verify the generated Excel workbook: {error}"))?;
+    workbook_file
+        .read_to_string(&mut workbook_xml)
+        .map_err(|error| format!("Could not verify the generated Excel workbook: {error}"))?;
+    drop(workbook_file);
+    if !workbook_xml.contains("Medicine Import") || !workbook_xml.contains("Instructions") {
+        return Err("The generated Excel template is missing a required worksheet.".to_owned());
+    }
+
+    let mut medicine_sheet = String::new();
+    let mut medicine_sheet_file = archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .map_err(|error| format!("Could not verify the medicine import worksheet: {error}"))?;
+    medicine_sheet_file
+        .read_to_string(&mut medicine_sheet)
+        .map_err(|error| format!("Could not verify the medicine import worksheet: {error}"))?;
+    if MEDICINE_IMPORT_HEADERS
+        .iter()
+        .any(|header| !medicine_sheet.contains(&xml_escape(header)))
+    {
+        return Err("The generated Excel template is missing one or more import columns.".to_owned());
+    }
+    Ok(())
+}
+
+fn build_medicine_import_template_bytes() -> Result<Vec<u8>, String> {
+    const MEDICINE_COLUMN_WIDTHS: [u32; 20] = [
+        14, 28, 24, 24, 18, 14, 30, 20, 32, 22, 22, 15, 14, 14, 16, 16, 16, 20, 16, 18,
+    ];
+    const INSTRUCTION_COLUMN_WIDTHS: [u32; 2] = [24, 110];
+    let medicine_rows = vec![MEDICINE_IMPORT_HEADERS.to_vec()];
+    let mut instruction_rows = vec![vec!["Field", "How to use"]];
+    instruction_rows.extend(
+        MEDICINE_IMPORT_INSTRUCTIONS
+            .iter()
+            .map(|(field, description)| vec![*field, *description]),
+    );
+
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let medicine_sheet =
+        medicine_import_worksheet_xml(&medicine_rows, &MEDICINE_COLUMN_WIDTHS, Some("A1:T1"));
+    let instructions_sheet =
+        medicine_import_worksheet_xml(&instruction_rows, &INSTRUCTION_COLUMN_WIDTHS, None);
+
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "[Content_Types].xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "_rels/.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "xl/workbook.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView xWindow="0" yWindow="0" windowWidth="16000" windowHeight="9000"/></bookViews><sheets><sheet name="Medicine Import" sheetId="1" r:id="rId1"/><sheet name="Instructions" sheetId="2" r:id="rId2"/></sheets><calcPr calcId="191029"/></workbook>"#,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "xl/_rels/workbook.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "xl/styles.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF24563A"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "xl/worksheets/sheet1.xml",
+        &medicine_sheet,
+    )?;
+    write_medicine_import_xlsx_part(
+        &mut archive,
+        "xl/worksheets/sheet2.xml",
+        &instructions_sheet,
+    )?;
+
+    let workbook_bytes = archive
+        .finish()
+        .map_err(|error| format!("Could not finish the Excel template package: {error}"))?
+        .into_inner();
+    validate_medicine_import_xlsx(&workbook_bytes)?;
+    Ok(workbook_bytes)
+}
+
+fn write_medicine_import_template_at(destination: &Path) -> Result<(), String> {
+    if !destination.is_absolute() {
+        return Err("Choose an absolute path for the Excel template.".to_owned());
     }
     let extension = destination
         .extension()
@@ -1840,8 +2106,7 @@ fn write_medicine_import_template_at(
         .ok_or_else(|| "Choose a valid template filename.".to_owned())?;
     let parent = destination
         .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+        .ok_or_else(|| "Choose a valid template folder.".to_owned())?;
     if !parent.is_dir() {
         return Err("The selected template folder does not exist or is unavailable.".to_owned());
     }
@@ -1863,31 +2128,61 @@ fn write_medicine_import_template_at(
             ));
         }
     }
+
+    let workbook_bytes = build_medicine_import_template_bytes()?;
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&normalized_destination)
         .map_err(|error| format!("Could not create the Excel template: {error}"))?;
-    file.write_all(workbook_bytes)
+    file.write_all(&workbook_bytes)
         .and_then(|()| file.sync_all())
         .map_err(|error| format!("Could not finish writing the Excel template: {error}"))
 }
 
 #[tauri::command]
-fn save_medicine_import_template(
-    destination_path: String,
-    workbook_bytes: Vec<u8>,
-) -> Result<(), String> {
-    write_medicine_import_template_at(Path::new(&destination_path), &workbook_bytes)
+fn save_medicine_import_template(destination_path: String) -> Result<(), String> {
+    write_medicine_import_template_at(Path::new(&destination_path))
 }
 
 #[cfg(test)]
 mod medicine_import_template_tests {
     use super::*;
+    use std::fs::File;
 
     #[test]
-    fn saves_only_bounded_xlsx_templates_to_the_selected_folder() {
+    fn builds_a_valid_xlsx_with_expected_import_columns_and_instructions() {
+        let workbook_bytes =
+            build_medicine_import_template_bytes().expect("build valid medicine import workbook");
+        validate_medicine_import_xlsx(&workbook_bytes).expect("validate generated XLSX");
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(&workbook_bytes))
+            .expect("open generated Excel workbook");
+        let mut medicine_sheet = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .expect("read medicine sheet")
+            .read_to_string(&mut medicine_sheet)
+            .expect("decode medicine sheet");
+        for header in MEDICINE_IMPORT_HEADERS {
+            assert!(
+                medicine_sheet.contains(&xml_escape(header)),
+                "missing medicine import header {header}"
+            );
+        }
+        let mut instructions_sheet = String::new();
+        archive
+            .by_name("xl/worksheets/sheet2.xml")
+            .expect("read instructions sheet")
+            .read_to_string(&mut instructions_sheet)
+            .expect("decode instructions sheet");
+        assert!(instructions_sheet.contains("Blank optional cells keep the current value."));
+        assert!(instructions_sheet.contains("No data is sent outside this device."));
+    }
+
+    #[test]
+    fn writes_to_the_selected_xlsx_path_and_reports_native_write_failures() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("current time is after the Unix epoch")
@@ -1898,25 +2193,26 @@ mod medicine_import_template_tests {
         ));
         fs::create_dir_all(&directory).expect("create template test directory");
         let destination = directory.join("medicine-template.xlsx");
-        let contents = b"PK\x03\x04valid generated workbook bytes";
 
-        write_medicine_import_template_at(&destination, contents)
-            .expect("write selected workbook template");
-        assert_eq!(
-            fs::read(&destination).expect("read written template"),
-            contents
-        );
-        assert!(write_medicine_import_template_at(
-            &directory.join("medicine-template.csv"),
-            contents
+        write_medicine_import_template_at(&destination).expect("write selected workbook template");
+        let mut archive = zip::ZipArchive::new(
+            File::open(&destination).expect("open written Excel template"),
         )
-        .is_err());
-        assert!(write_medicine_import_template_at(
-            &directory.join("invalid-template.xlsx"),
-            b"not an Excel workbook"
-        )
-        .is_err());
-        assert!(write_medicine_import_template_at(&destination, &[]).is_err());
+        .expect("written template is a valid ZIP workbook");
+        let mut workbook_xml = String::new();
+        archive
+            .by_name("xl/workbook.xml")
+            .expect("read workbook metadata")
+            .read_to_string(&mut workbook_xml)
+            .expect("decode workbook metadata");
+        assert!(workbook_xml.contains("Medicine Import"));
+        assert!(workbook_xml.contains("Instructions"));
+
+        assert!(write_medicine_import_template_at(&directory.join("medicine-template.csv")).is_err());
+        assert!(write_medicine_import_template_at(&directory).is_err());
+        assert!(write_medicine_import_template_at(&directory.join("missing").join("template.xlsx"))
+            .is_err());
+        assert!(write_medicine_import_template_at(Path::new("relative-template.xlsx")).is_err());
 
         fs::remove_dir_all(directory).expect("remove template test directory");
     }
