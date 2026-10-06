@@ -251,7 +251,8 @@ describe("invoice print document and page settings", () => {
     assert.match(markup, /LOT-PRINT-01/);
     assert.match(markup, /Grand total/);
     assert.match(markup, /Cash received/);
-    assert.match(markup, /PHARMACY/);
+    assert.match(markup, /MY MEDICAL/);
+    assert.doesNotMatch(markup, /PHARMACY/);
     assert.doesNotMatch(markup, /<style/);
   });
 
@@ -282,8 +283,14 @@ describe("invoice print document and page settings", () => {
       path.join(__dirname, "../src/components/pos/ReceiptPrintWindow.tsx"),
       "utf8",
     );
+    const rustSource = fs.readFileSync(
+      path.join(__dirname, "../src-tauri/src/lib.rs"),
+      "utf8",
+    );
     assert.match(receiptPrintSource, /window\.addEventListener\("afterprint", handleAfterPrint\)/);
-    assert.match(receiptPrintSource, /set_receipt_print_active", \{ active: false \}/);
+    assert.match(receiptPrintSource, /const resetPrintProtection = useCallback/);
+    assert.match(receiptPrintSource, /await invoke\("set_receipt_print_active", \{ active: false \}\)/);
+    assert.match(receiptPrintSource, /void resetPrintProtection\(\)/);
     assert.doesNotMatch(receiptPrintSource, /close_receipt_print_window/);
     assert.match(
       receiptPrintSource,
@@ -294,6 +301,118 @@ describe("invoice print document and page settings", () => {
     assert.match(receiptPrintSource, /paperWidth: width/);
     assert.match(receiptWindowSource, /initialWidth=\{paperWidth\}/);
     assert.match(receiptWindowSource, /className="receipt-print-host"/);
+    assert.match(receiptPrintSource, /printInProgress\.current/);
+    assert.match(
+      receiptPrintSource,
+      /disabled=\{isPrinting \|\| !settingsLoaded \|\| Boolean\(settingsLoadError\)\}/,
+    );
+    assert.match(receiptWindowSource, /Receipt data did not load within 15 seconds/);
+    assert.match(receiptPrintSource, /storeSettings\?\.address/);
+    assert.match(receiptPrintSource, /storeSettings\?\.contact_number/);
+    assert.match(receiptPrintSource, /storeSettings\?\.drug_license_number/);
+
+    const openWindowStart = rustSource.indexOf("fn open_receipt_print_window");
+    const closeWindowStart = rustSource.indexOf("fn close_receipt_print_window", openWindowStart);
+    const openWindowSource = rustSource.slice(openWindowStart, closeWindowStart);
+    assert.match(openWindowSource, /get_webview_window\("receipt-print"\)/);
+    assert.match(openWindowSource, /existing_window\s*\.eval/);
+    assert.match(openWindowSource, /existing_window\s*\.set_focus/);
+    assert.doesNotMatch(openWindowSource, /existing_window\s*\.close/);
+  });
+});
+
+describe("consolidated pharmacy maintenance contracts", () => {
+  it("reports whether saving the import workbook succeeded or was canceled", () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "../src/components/inventory/MedicineImportDialog.tsx"),
+      "utf8",
+    );
+    assert.match(source, /const saved = await downloadMedicineImportTemplate\(\)/);
+    assert.match(source, /Medicine import template saved\./);
+    assert.match(source, /Template save canceled\. No file was created\./);
+    assert.match(source, /data-testid="status-import-template"/);
+  });
+
+  it("keeps purchase inputs aligned with their headers and supports multiple lines", () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "../src/components/purchases/PurchasesPage.tsx"),
+      "utf8",
+    );
+    const positions = [
+      "aria-label={`Expiry date on line ${index + 1}`}",
+      "aria-label={`Purchase rate on line ${index + 1}`}",
+      "aria-label={`MRP on line ${index + 1}`}",
+      "aria-label={`Sale rate on line ${index + 1}`}",
+      "aria-label={`Quantity on line ${index + 1}`}",
+      "aria-label={`GST rate override on line ${index + 1}; leave blank for medicine rate`}",
+    ].map((marker) => source.indexOf(marker));
+    assert.ok(positions.every((position) => position >= 0));
+    assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+    assert.match(source, /data-testid=\{`row-purchase-line-\$\{index \+ 1\}`\}/);
+    assert.match(source, /dd-mm-yyyy/);
+    assert.match(source, /Add line/);
+  });
+
+  it("offers the requested expiry horizons while keeping expired stock visible", () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "../src/components/medicine-views/MedicineViews.tsx"),
+      "utf8",
+    );
+    assert.match(source, /\{ value: 5, label: "5 days" \}/);
+    assert.match(source, /\{ value: 7, label: "7 days" \}/);
+    assert.match(source, /\{ value: 10, label: "10 days" \}/);
+    assert.match(source, /\{ value: 30, label: "1 month \(30 days\)" \}/);
+    assert.match(source, /\{ value: 3650, label: "All upcoming" \}/);
+    assert.match(source, /Expired batches stay visible at every horizon/);
+  });
+
+  it("shows customer activity oldest-to-newest with paid, due, and running balances", () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "../src/components/customers/CustomersPage.tsx"),
+      "utf8",
+    );
+    assert.match(source, /return ledger\.filter\(\(entry\) =>/);
+    assert.doesNotMatch(source, /\[\.\.\.ledger\]\.reverse\(\)/);
+    assert.match(source, /Collected/);
+    assert.match(source, /Balance due/);
+    assert.match(source, /formatMoney\(entry\.running_balance\)/);
+    assert.match(source, /button-customer-sms-reminder/);
+    assert.match(source, /button-customer-whatsapp-reminder/);
+  });
+
+  it("updates only explicitly selected medicine fields in one native bulk operation", () => {
+    const dialogSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/inventory/BulkMedicineUpdateDialog.tsx"),
+      "utf8",
+    );
+    const serviceSource = fs.readFileSync(
+      path.join(__dirname, "../src/services/inventoryService.ts"),
+      "utf8",
+    );
+    const rustSource = fs.readFileSync(
+      path.join(__dirname, "../src-tauri/src/lib.rs"),
+      "utf8",
+    );
+    for (const field of ["company", "product_type", "strength", "rack_location", "min_stock_alert", "gst_rate_basis_points"]) {
+      assert.match(dialogSource, new RegExp(`field: "${field}"`));
+    }
+    assert.match(dialogSource, /Only the listed fields will change/);
+    assert.match(dialogSource, /transaction history will remain unchanged/);
+    assert.match(serviceSource, /kind: "bulk_update_medicine_fields"/);
+    assert.match(rustSource, /bulk_medicine_field_updates_are_atomic_and_leave_stock_untouched/);
+  });
+
+  it("retains the Home dashboard while switching sections and uses higher-contrast muted colors", () => {
+    const appSource = fs.readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8");
+    const rootCss = fs.readFileSync(path.join(__dirname, "../src/index.css"), "utf8");
+    const workspaceCss = fs.readFileSync(
+      path.join(__dirname, "../src/components/workspace/workspace.css"),
+      "utf8",
+    );
+    assert.match(appSource, /data-testid="retained-home-dashboard"/);
+    assert.match(appSource, /isActive=\{activeSection === "home"\}/);
+    assert.match(rootCss, /--muted: #56675f/);
+    assert.match(workspaceCss, /\.workspace-muted\s*\{\s*color: #56675f/s);
   });
 });
 

@@ -19,9 +19,16 @@ export function ReceiptPrintWindow({
 
   useEffect(() => {
     let cancelled = false;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      if (!cancelled) {
+        setError("Receipt data did not load within 15 seconds. Close this window and try printing again.");
+      }
+    }, 15_000);
     getSaleDetails(invoiceNo)
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || timedOut) return;
         if (result) {
           setSale(result);
         } else {
@@ -29,16 +36,20 @@ export function ReceiptPrintWindow({
         }
       })
       .catch((loadError: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && !timedOut) {
           setError(
             loadError instanceof Error
               ? `Could not load this receipt: ${loadError.message}`
               : "Could not load this receipt.",
           );
         }
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
     };
   }, [invoiceNo]);
 
@@ -64,7 +75,7 @@ export function ReceiptPrintWindow({
   }
 
   if (!sale) {
-    return <main className="receipt-print-window-state">Loading receipt…</main>;
+    return <main className="receipt-print-window-state" data-testid="receipt-print-loading" role="status">Loading receipt…</main>;
   }
 
   return (

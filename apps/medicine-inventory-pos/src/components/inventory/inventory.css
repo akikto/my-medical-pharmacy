@@ -332,6 +332,40 @@
   cursor: pointer;
 }
 
+.bulk-medicine-field-list {
+  display: grid;
+  max-height: min(42vh, 360px);
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.bulk-medicine-field-row {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #d7e2db;
+  border-radius: 9px;
+  background: #f8fbf9;
+}
+
+.bulk-medicine-field-toggle {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 8px;
+  color: #29473b;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.bulk-medicine-field-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--green-700);
+}
+
 .bulk-reorder-preview,
 .bulk-operation-confirmation {
   display: grid;
@@ -351,7 +385,18 @@
 }
 
 .bulk-reorder-preview small {
-  color: #829087;
+  color: #52635a;
+}
+
+.medicine-import-template-status {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #b9d8c1;
+  border-radius: 8px;
+  color: #245a3d;
+  background: #eff8f1;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .bulk-operation-confirmation strong {

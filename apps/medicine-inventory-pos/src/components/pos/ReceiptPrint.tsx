@@ -28,7 +28,10 @@ export function ReceiptPrint({
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
+  const [isPrinting, setIsPrinting] = useState(false);
   const didAutoPrint = useRef(false);
+  const printInProgress = useRef(false);
+  const printResetTimer = useRef<number | null>(null);
   const onCloseRef = useRef(onClose);
   const dialogRef = useRef<HTMLDivElement>(null);
   const receiptPaperRef = useRef<HTMLElement>(null);
@@ -54,8 +57,49 @@ export function ReceiptPrint({
     return () => pageStyle.remove();
   }, [inPrintWindow, width]);
 
+  const releasePrintLock = useCallback(() => {
+    printInProgress.current = false;
+    setIsPrinting(false);
+    if (printResetTimer.current !== null) {
+      window.clearTimeout(printResetTimer.current);
+      printResetTimer.current = null;
+    }
+  }, []);
+
+  const resetPrintProtection = useCallback(async () => {
+    try {
+      await invoke("set_receipt_print_active", { active: false });
+      releasePrintLock();
+    } catch (error) {
+      setPrintError(
+        error instanceof Error
+          ? `Could not reset print protection: ${error.message}`
+          : "Could not reset print protection.",
+      );
+      if (printResetTimer.current !== null) {
+        window.clearTimeout(printResetTimer.current);
+      }
+      printResetTimer.current = window.setTimeout(() => {
+        printResetTimer.current = null;
+        void resetPrintProtection();
+      }, 5_000);
+    }
+  }, [releasePrintLock]);
+
   const printReceipt = useCallback(async () => {
+    if (printInProgress.current) return false;
+    printInProgress.current = true;
+    setIsPrinting(true);
     setPrintError(null);
+    if (!settingsLoaded || settingsLoadError) {
+      setPrintError(
+        settingsLoadError
+          ? `Could not load store receipt details: ${settingsLoadError}`
+          : "Store receipt details are still loading. Try again in a moment.",
+      );
+      releasePrintLock();
+      return false;
+    }
     if (!inPrintWindow) {
       try {
         await invoke("open_receipt_print_window", {
@@ -70,6 +114,8 @@ export function ReceiptPrint({
             : "Could not open print preview.",
         );
         return false;
+      } finally {
+        releasePrintLock();
       }
     }
 
@@ -92,18 +138,14 @@ export function ReceiptPrint({
         throw new Error("The invoice has not finished rendering for print preview.");
       }
       await invoke("set_receipt_print_active", { active: true });
+      printResetTimer.current = window.setTimeout(() => {
+        printResetTimer.current = null;
+        void resetPrintProtection();
+      }, 120_000);
       window.print();
       return true;
     } catch (error) {
-      void invoke("set_receipt_print_active", { active: false }).catch(
-        (resetError: unknown) => {
-          setPrintError(
-            resetError instanceof Error
-              ? `Print protection could not be reset: ${resetError.message}`
-              : "Print protection could not be reset.",
-          );
-        },
-      );
+      void resetPrintProtection();
       setPrintError(
         error instanceof Error
           ? `Could not open print preview: ${error.message}`
@@ -111,22 +153,30 @@ export function ReceiptPrint({
       );
       return false;
     }
-  }, [inPrintWindow, invoice.invoice_no, width]);
+  }, [
+    inPrintWindow,
+    invoice.invoice_no,
+    releasePrintLock,
+    resetPrintProtection,
+    settingsLoadError,
+    settingsLoaded,
+    width,
+  ]);
 
   useEffect(() => {
     const handleAfterPrint = () => {
-      void invoke("set_receipt_print_active", { active: false }).catch(
-        (error: unknown) => {
-          setPrintError(
-            error instanceof Error
-              ? `Could not reset print protection: ${error.message}`
-              : "Could not reset print protection.",
-          );
-        },
-      );
+      if (!inPrintWindow) return;
+      void resetPrintProtection();
     };
     window.addEventListener("afterprint", handleAfterPrint);
     return () => window.removeEventListener("afterprint", handleAfterPrint);
+  }, [inPrintWindow, resetPrintProtection]);
+
+  useEffect(() => () => {
+    if (printResetTimer.current !== null) {
+      window.clearTimeout(printResetTimer.current);
+      printResetTimer.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -176,8 +226,8 @@ export function ReceiptPrint({
     };
   }, [autoPrint, inPrintWindow, invoice.invoice_no, printReceipt, settingsLoaded]);
 
-  const pharmacyName = storeSettings?.pharmacy_name.trim() || "PHARMACY";
-  const pharmacyMark = pharmacyName.charAt(0).toUpperCase() || "P";
+  const pharmacyName = storeSettings?.pharmacy_name.trim() || "MY MEDICAL";
+  const pharmacyMark = pharmacyName.charAt(0).toUpperCase() || "M";
   const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
   const isStandardPaper = width === "A4" || width === "A5";
 
@@ -228,10 +278,11 @@ export function ReceiptPrint({
           <button
             className="button button-secondary"
             data-testid="button-print-receipt"
+            disabled={isPrinting || !settingsLoaded || Boolean(settingsLoadError)}
             onClick={() => void printReceipt()}
             type="button"
           >
-            <Printer size={16} /> Print again
+            <Printer size={16} /> {isPrinting ? "Printing…" : "Print again"}
           </button>
           <button
             autoFocus

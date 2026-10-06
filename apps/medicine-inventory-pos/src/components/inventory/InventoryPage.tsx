@@ -24,12 +24,13 @@ import {
   importMedicines,
   MedicineSavedWithPhotoError,
   updateBatchDetails,
-  updateBulkReorderThresholds,
+  updateBulkMedicineFields,
   updateMedicine,
 } from "../../services/inventoryService";
 import type { BulkStockAdjustmentInput } from "../../services/inventoryService";
 import type {
   InventoryFilter,
+  BulkMedicineFieldUpdate,
   MedicineBatch,
   MedicineFormValues,
   MedicineInventoryRow,
@@ -39,7 +40,7 @@ import { formatMoney } from "../../utils/money";
 import { BatchManagementDialog } from "./BatchManagementDialog";
 import { BatchPricingDialog } from "./BatchPricingDialog";
 import { BulkStockAdjustmentDialog } from "./BulkStockAdjustmentDialog";
-import { BulkReorderThresholdDialog } from "./BulkReorderThresholdDialog";
+import { BulkMedicineUpdateDialog } from "./BulkMedicineUpdateDialog";
 import { MedicineImportDialog } from "./MedicineImportDialog";
 import { StockExportDialog } from "./StockExportDialog";
 import { BarcodeLabelDialog } from "./BarcodeLabelDialog";
@@ -287,19 +288,20 @@ export function InventoryPage() {
     }
   }
 
-  async function saveBulkReorderThreshold(minStockAlert: number) {
+  async function saveBulkMedicineUpdate(updates: BulkMedicineFieldUpdate[]) {
+    const medicineCount = selectedMedicines.length;
     setIsSaving(true);
     setDialogError(null);
     try {
-      await updateBulkReorderThresholds({
+      await updateBulkMedicineFields({
         medicineIds: selectedMedicines.map((medicine) => medicine.id),
-        minStockAlert,
+        updates,
       });
       setIsBulkThresholdDialogOpen(false);
       setSelectedMedicineIds(new Set());
       setNotice({
         kind: "success",
-        message: `Reorder level updated for ${selectedMedicines.length} medicines.`,
+        message: `Updated ${updates.length} fields for ${medicineCount} medicines.`,
       });
       setRefreshKey((current) => current + 1);
     } catch (error) {
@@ -497,7 +499,7 @@ export function InventoryPage() {
                 </button>
                 <button
                   className="button button-secondary"
-                  data-testid="button-bulk-reorder-level"
+                  data-testid="button-bulk-medicine-update-inventory"
                   disabled={selectedMedicines.length !== selectedMedicineIds.size}
                   onClick={() => {
                     setDialogError(null);
@@ -505,7 +507,7 @@ export function InventoryPage() {
                   }}
                   type="button"
                 >
-                  Set reorder level
+                  Bulk update
                 </button>
                 <button
                   className="button button-quiet"
@@ -726,7 +728,7 @@ export function InventoryPage() {
       )}
 
       {isBulkThresholdDialogOpen && selectedMedicines.length > 0 && (
-        <BulkReorderThresholdDialog
+        <BulkMedicineUpdateDialog
           error={dialogError}
           isSaving={isSaving}
           medicines={selectedMedicines}
@@ -734,7 +736,7 @@ export function InventoryPage() {
             setIsBulkThresholdDialogOpen(false);
             setDialogError(null);
           }}
-          onSave={(minStockAlert) => void saveBulkReorderThreshold(minStockAlert)}
+          onSave={(updates) => void saveBulkMedicineUpdate(updates)}
         />
       )}
 

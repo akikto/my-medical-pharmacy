@@ -127,8 +127,9 @@ enum PharmacyMutation {
         adjustments: Vec<BulkStockAdjustment>,
         reason: String,
     },
-    UpdateBulkReorderThresholds {
-        updates: Vec<BulkReorderThreshold>,
+    BulkUpdateMedicineFields {
+        medicine_ids: Vec<i64>,
+        updates: Vec<BulkMedicineFieldUpdate>,
     },
     ImportMedicines {
         records: Vec<ImportedMedicineRecord>,
@@ -199,10 +200,15 @@ struct BulkStockAdjustment {
     quantity_change: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct BulkReorderThreshold {
-    medicine_id: i64,
-    min_stock_alert: i64,
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "field", content = "value")]
+enum BulkMedicineFieldUpdate {
+    Company(Option<String>),
+    ProductType(Option<String>),
+    Strength(Option<String>),
+    RackLocation(Option<String>),
+    MinStockAlert(i64),
+    GstRateBasisPoints(Option<i64>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -2490,8 +2496,21 @@ fn open_receipt_print_window(
     print_active.store(false, Ordering::SeqCst);
     if let Some(existing_window) = app.get_webview_window("receipt-print") {
         existing_window
-            .close()
-            .map_err(|error| format!("Could not close the previous receipt window: {error}"))?;
+            .eval(&format!(
+                "window.location.search = {};",
+                serde_json::to_string(&format!(
+                    "?receiptPrint={invoice_no}&receiptWidth={paper_width}"
+                ))
+                .map_err(|error| format!("Could not prepare the receipt location: {error}"))?
+            ))
+            .map_err(|error| format!("Could not update the open receipt window: {error}"))?;
+        existing_window
+            .show()
+            .map_err(|error| format!("Could not show the open receipt window: {error}"))?;
+        existing_window
+            .set_focus()
+            .map_err(|error| format!("Could not focus the open receipt window: {error}"))?;
+        return Ok(());
     }
 
     let window = tauri::WebviewWindowBuilder::new(
@@ -3185,28 +3204,122 @@ fn apply_pharmacy_mutation_to_connection(
             }
             None
         }
-        PharmacyMutation::UpdateBulkReorderThresholds { updates } => {
-            if updates.is_empty() || updates.len() > 100 {
-                return Err("Choose between 1 and 100 medicines for a bulk reorder-level update.".to_owned());
+        PharmacyMutation::BulkUpdateMedicineFields {
+            medicine_ids,
+            updates,
+        } => {
+            if medicine_ids.is_empty() || medicine_ids.len() > 100 {
+                return Err("Choose between 1 and 100 medicines for a bulk update.".to_owned());
             }
+            if updates.is_empty() || updates.len() > 6 {
+                return Err("Choose at least one supported medicine field to update.".to_owned());
+            }
+
             let mut seen_medicines = HashMap::<i64, ()>::new();
-            for update in updates {
-                if update.medicine_id <= 0 {
+            for medicine_id in &medicine_ids {
+                if *medicine_id <= 0 {
                     return Err("Medicine ids must be positive whole numbers.".to_owned());
                 }
-                if !(0..=1_000_000_000).contains(&update.min_stock_alert) {
-                    return Err("Reorder levels must be between 0 and 1,000,000,000 units.".to_owned());
+                if seen_medicines.insert(*medicine_id, ()).is_some() {
+                    return Err("A medicine can only be included once in a bulk update.".to_owned());
                 }
-                if seen_medicines.insert(update.medicine_id, ()).is_some() {
-                    return Err("A medicine can only appear once in a bulk reorder-level update.".to_owned());
+            }
+
+            let mut seen_fields = HashMap::<&'static str, ()>::new();
+            let normalized_updates = updates
+                .into_iter()
+                .map(|update| {
+                    let (field_name, normalized) = match update {
+                        BulkMedicineFieldUpdate::Company(value) => (
+                            "company",
+                            BulkMedicineFieldUpdate::Company(normalized_optional_text(
+                                value,
+                                120,
+                                "Company",
+                            )?),
+                        ),
+                        BulkMedicineFieldUpdate::ProductType(value) => (
+                            "product_type",
+                            BulkMedicineFieldUpdate::ProductType(normalized_optional_text(
+                                value,
+                                80,
+                                "Product type",
+                            )?),
+                        ),
+                        BulkMedicineFieldUpdate::Strength(value) => (
+                            "strength",
+                            BulkMedicineFieldUpdate::Strength(normalized_optional_text(
+                                value,
+                                80,
+                                "Strength",
+                            )?),
+                        ),
+                        BulkMedicineFieldUpdate::RackLocation(value) => (
+                            "rack_location",
+                            BulkMedicineFieldUpdate::RackLocation(normalized_optional_text(
+                                value,
+                                80,
+                                "Rack location",
+                            )?),
+                        ),
+                        BulkMedicineFieldUpdate::MinStockAlert(value) => {
+                            if !(0..=1_000_000_000).contains(&value) {
+                                return Err("Reorder levels must be between 0 and 1,000,000,000 units.".to_owned());
+                            }
+                            ("min_stock_alert", BulkMedicineFieldUpdate::MinStockAlert(value))
+                        }
+                        BulkMedicineFieldUpdate::GstRateBasisPoints(value) => {
+                            if value.is_some_and(|rate| !(0..=10_000).contains(&rate)) {
+                                return Err("GST rate must be between 0% and 100%.".to_owned());
+                            }
+                            (
+                                "gst_rate_basis_points",
+                                BulkMedicineFieldUpdate::GstRateBasisPoints(value),
+                            )
+                        }
+                    };
+                    if seen_fields.insert(field_name, ()).is_some() {
+                        return Err(
+                            "Each medicine field can only be included once in a bulk update."
+                                .to_owned(),
+                        );
+                    }
+                    Ok(normalized)
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            for medicine_id in &medicine_ids {
+                for update in &normalized_updates {
+                    let result = match update {
+                        BulkMedicineFieldUpdate::Company(value) => transaction.execute(
+                            "UPDATE medicines SET company = ?1 WHERE id = ?2",
+                            params![value.as_deref(), medicine_id],
+                        ),
+                        BulkMedicineFieldUpdate::ProductType(value) => transaction.execute(
+                            "UPDATE medicines SET product_type = ?1 WHERE id = ?2",
+                            params![value.as_deref(), medicine_id],
+                        ),
+                        BulkMedicineFieldUpdate::Strength(value) => transaction.execute(
+                            "UPDATE medicines SET strength = ?1 WHERE id = ?2",
+                            params![value.as_deref(), medicine_id],
+                        ),
+                        BulkMedicineFieldUpdate::RackLocation(value) => transaction.execute(
+                            "UPDATE medicines SET rack_location = ?1 WHERE id = ?2",
+                            params![value.as_deref(), medicine_id],
+                        ),
+                        BulkMedicineFieldUpdate::MinStockAlert(value) => transaction.execute(
+                            "UPDATE medicines SET min_stock_alert = ?1 WHERE id = ?2",
+                            params![value, medicine_id],
+                        ),
+                        BulkMedicineFieldUpdate::GstRateBasisPoints(value) => transaction.execute(
+                            "UPDATE medicines SET gst_rate_basis_points = ?1 WHERE id = ?2",
+                            params![value.as_ref(), medicine_id],
+                        ),
+                    };
+                    let rows_affected = result
+                        .map_err(|error| format!("Could not update a selected medicine field: {error}"))?;
+                    require_one_changed_row(rows_affected, "Medicine")?;
                 }
-                let rows_affected = transaction
-                    .execute(
-                        "UPDATE medicines SET min_stock_alert = ?1 WHERE id = ?2",
-                        params![update.min_stock_alert, update.medicine_id],
-                    )
-                    .map_err(|error| format!("Could not update a medicine reorder level: {error}"))?;
-                require_one_changed_row(rows_affected, "Medicine")?;
             }
             None
         }
@@ -7549,7 +7662,7 @@ mod pharmacy_mutation_tests {
     }
 
     #[test]
-    fn bulk_reorder_level_updates_are_atomic_and_leave_stock_untouched() {
+    fn bulk_medicine_field_updates_are_atomic_and_leave_stock_untouched() {
         let mut connection = migrated_connection();
         let first_medicine = create_medicine(&mut connection);
         let second_medicine = create_medicine(&mut connection);
@@ -7564,61 +7677,76 @@ mod pharmacy_mutation_tests {
 
         let rejected = apply_pharmacy_mutation_to_connection(
             &mut connection,
-            PharmacyMutation::UpdateBulkReorderThresholds {
+            PharmacyMutation::BulkUpdateMedicineFields {
+                medicine_ids: vec![first_medicine, i64::MAX],
                 updates: vec![
-                    BulkReorderThreshold {
-                        medicine_id: first_medicine,
-                        min_stock_alert: 15,
-                    },
-                    BulkReorderThreshold {
-                        medicine_id: i64::MAX,
-                        min_stock_alert: 20,
-                    },
+                    BulkMedicineFieldUpdate::Company(Some("Updated Company".to_owned())),
+                    BulkMedicineFieldUpdate::MinStockAlert(15),
                 ],
             },
         );
         assert!(rejected.is_err());
-        let unchanged_alert: i64 = connection
+        let unchanged_fields: (Option<String>, i64) = connection
             .query_row(
-                "SELECT min_stock_alert FROM medicines WHERE id = ?1",
+                "SELECT company, min_stock_alert FROM medicines WHERE id = ?1",
                 [first_medicine],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .expect("read alert after rejected bulk update");
-        assert_eq!(unchanged_alert, 5);
+            .expect("read fields after rejected bulk update");
+        assert_eq!(unchanged_fields, (Some("Test company".to_owned()), 5));
 
         apply_pharmacy_mutation_to_connection(
             &mut connection,
-            PharmacyMutation::UpdateBulkReorderThresholds {
+            PharmacyMutation::BulkUpdateMedicineFields {
+                medicine_ids: vec![first_medicine, second_medicine],
                 updates: vec![
-                    BulkReorderThreshold {
-                        medicine_id: first_medicine,
-                        min_stock_alert: 15,
-                    },
-                    BulkReorderThreshold {
-                        medicine_id: second_medicine,
-                        min_stock_alert: 20,
-                    },
+                    BulkMedicineFieldUpdate::Company(Some("  Northwind Labs  ".to_owned())),
+                    BulkMedicineFieldUpdate::ProductType(Some(" TABLET ".to_owned())),
+                    BulkMedicineFieldUpdate::RackLocation(Some(" R-14 ".to_owned())),
+                    BulkMedicineFieldUpdate::MinStockAlert(15),
+                    BulkMedicineFieldUpdate::GstRateBasisPoints(Some(500)),
                 ],
             },
         )
-        .expect("save valid bulk reorder levels");
-        let final_alerts: (i64, i64) = connection
+        .expect("save valid bulk medicine fields");
+        let final_fields: ((Option<String>, Option<String>, Option<String>, i64, Option<i64>),
+            (Option<String>, Option<String>, Option<String>, i64, Option<i64>)) = connection
             .query_row(
-                "SELECT (SELECT min_stock_alert FROM medicines WHERE id = ?1), \
-                        (SELECT min_stock_alert FROM medicines WHERE id = ?2)",
+                r#"SELECT
+                     (SELECT company FROM medicines WHERE id = ?1),
+                     (SELECT product_type FROM medicines WHERE id = ?1),
+                     (SELECT rack_location FROM medicines WHERE id = ?1),
+                     (SELECT min_stock_alert FROM medicines WHERE id = ?1),
+                     (SELECT gst_rate_basis_points FROM medicines WHERE id = ?1),
+                     (SELECT company FROM medicines WHERE id = ?2),
+                     (SELECT product_type FROM medicines WHERE id = ?2),
+                     (SELECT rack_location FROM medicines WHERE id = ?2),
+                     (SELECT min_stock_alert FROM medicines WHERE id = ?2),
+                     (SELECT gst_rate_basis_points FROM medicines WHERE id = ?2)"#,
                 params![first_medicine, second_medicine],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+                        (row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?),
+                    ))
+                },
             )
-            .expect("read saved reorder levels");
+            .expect("read saved medicine fields");
         let stock: i64 = connection
             .query_row(
                 "SELECT current_stock FROM medicine_batches WHERE medicine_id = ?1",
                 [first_medicine],
                 |row| row.get(0),
             )
-            .expect("read stock after reorder-level update");
-        assert_eq!(final_alerts, (15, 20));
+            .expect("read stock after bulk medicine update");
+        let expected_fields = (
+            Some("Northwind Labs".to_owned()),
+            Some("TABLET".to_owned()),
+            Some("R-14".to_owned()),
+            15,
+            Some(500),
+        );
+        assert_eq!(final_fields, (expected_fields.clone(), expected_fields));
         assert_eq!(stock, 7);
     }
 

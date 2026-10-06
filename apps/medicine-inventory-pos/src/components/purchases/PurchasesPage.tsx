@@ -438,23 +438,9 @@ export function PurchasesPage() {
                     </td>
                     <td>
                       <input
-                        aria-label={`GST rate override on line ${index + 1}; leave blank for medicine rate`}
-                        className="purchase-line-input purchase-line-input--number"
-                        max={100}
-                        min={0}
-                        onChange={(event) => updateLine(item.rowId, {
-                          gst_rate_override_basis_points: event.target.value === "" ? null : Math.round(Number(event.target.value) * 100),
-                        })}
-                        placeholder={String(((medicines.find((medicine) => medicine.id === item.medicine_id)?.gst_rate_basis_points ?? storeSettings?.gst_default_rate_basis_points ?? 0) / 100))}
-                        step="0.01"
-                        type="number"
-                        value={item.gst_rate_override_basis_points == null ? "" : item.gst_rate_override_basis_points / 100}
-                      />
-                    </td>
-                    <td>
-                      <input
                         aria-label={`Expiry date on line ${index + 1}`}
                         className="purchase-line-input"
+                        aria-describedby={`purchase-expiry-format-${index + 1}`}
                         data-testid={`input-purchase-expiry-${index + 1}`}
                         min={localToday()}
                         onChange={(event) => updateLine(item.rowId, { expiry_date: event.target.value })}
@@ -462,6 +448,9 @@ export function PurchasesPage() {
                         type="date"
                         value={item.expiry_date}
                       />
+                      <small className="purchase-date-format" id={`purchase-expiry-format-${index + 1}`}>
+                        dd-mm-yyyy
+                      </small>
                     </td>
                     <td>
                       <input
@@ -513,6 +502,22 @@ export function PurchasesPage() {
                         step={1}
                         type="number"
                         value={item.quantity}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        aria-label={`GST rate override on line ${index + 1}; leave blank for medicine rate`}
+                        className="purchase-line-input purchase-line-input--number"
+                        data-testid={`input-purchase-gst-override-${index + 1}`}
+                        max={100}
+                        min={0}
+                        onChange={(event) => updateLine(item.rowId, {
+                          gst_rate_override_basis_points: event.target.value === "" ? null : Math.round(Number(event.target.value) * 100),
+                        })}
+                        placeholder={String(((medicines.find((medicine) => medicine.id === item.medicine_id)?.gst_rate_basis_points ?? storeSettings?.gst_default_rate_basis_points ?? 0) / 100))}
+                        step="0.01"
+                        type="number"
+                        value={item.gst_rate_override_basis_points == null ? "" : item.gst_rate_override_basis_points / 100}
                       />
                     </td>
                     <td className="purchase-line-total">

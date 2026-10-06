@@ -22,10 +22,11 @@ import {
   getExpiryAlerts,
   getInventoryMedicines,
   getMedicineBatches,
-  updateBulkReorderThresholds,
+  updateBulkMedicineFields,
   updateMedicine,
 } from "../../services/inventoryService";
 import type {
+  BulkMedicineFieldUpdate,
   ExpiryAlert,
   ExpiryAlertStatus,
   ExpiryHorizonDays,
@@ -34,7 +35,7 @@ import type {
   MedicineInventoryRow,
 } from "../../types";
 import { formatMoney } from "../../utils/money";
-import { BulkReorderThresholdDialog } from "../inventory/BulkReorderThresholdDialog";
+import { BulkMedicineUpdateDialog } from "../inventory/BulkMedicineUpdateDialog";
 import { MedicineFormDialog } from "../inventory/MedicineFormDialog";
 import "./medicine-views.css";
 
@@ -42,12 +43,14 @@ type Notice = { kind: "success" | "error"; message: string } | null;
 type ExpiryStatusFilter = "all" | ExpiryAlertStatus;
 
 const expiryHorizons = [
+  { value: 5, label: "5 days" },
   { value: 7, label: "7 days" },
-  { value: 30, label: "30 days" },
+  { value: 10, label: "10 days" },
+  { value: 30, label: "1 month (30 days)" },
   { value: 60, label: "60 days" },
   { value: 90, label: "90 days" },
   { value: 180, label: "180 days" },
-  { value: 3650, label: "All dates" },
+  { value: 3650, label: "All upcoming" },
 ] as const;
 
 function errorText(error: unknown, fallback: string): string {
@@ -80,7 +83,7 @@ export function MedicineListPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   const [selectedRows, setSelectedRows] = useState<Map<number, MedicineInventoryRow>>(() => new Map());
-  const [isThresholdDialogOpen, setIsThresholdDialogOpen] = useState(false);
+  const [isBulkDialogOpen, setIsBulkDialogOpen] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
   const [expandedMedicineId, setExpandedMedicineId] = useState<number | null>(null);
@@ -239,19 +242,23 @@ export function MedicineListPage() {
     }
   }
 
-  async function saveBulkThreshold(minStockAlert: number) {
+  async function saveBulkUpdate(updates: BulkMedicineFieldUpdate[]) {
     if (selectedIds.size === 0) return;
+    const medicineCount = selectedIds.size;
     setIsBulkSaving(true);
     setBulkError(null);
     try {
-      await updateBulkReorderThresholds({
+      await updateBulkMedicineFields({
         medicineIds: Array.from(selectedIds),
-        minStockAlert,
+        updates,
       });
-      setIsThresholdDialogOpen(false);
+      setIsBulkDialogOpen(false);
       setSelectedIds(new Set());
       setSelectedRows(new Map());
-      setNotice({ kind: "success", message: `Reorder alert level updated for ${selectedIds.size} medicines.` });
+      setNotice({
+        kind: "success",
+        message: `Updated ${updates.length} fields for ${medicineCount} medicines.`,
+      });
       setRefreshKey((current) => current + 1);
     } catch (error) {
       setBulkError(errorText(error, "The reorder alert levels could not be updated."));
@@ -336,20 +343,20 @@ export function MedicineListPage() {
           <div>
             <span className="mv-selection-mark"><ShieldCheck size={16} /></span>
             <strong>{selectedIds.size} selected</strong>
-            <span>Only the reorder alert level can be changed in bulk.</span>
+            <span>Choose which shared fields to change; stock and batches are not changed.</span>
           </div>
           <div className="mv-selection-actions">
             <button
               className="mv-button mv-button--primary mv-button--compact"
-              data-testid="button-bulk-reorder-level"
+              data-testid="button-bulk-medicine-update"
               disabled={selectedMedicines.length !== selectedIds.size}
               onClick={() => {
                 setBulkError(null);
-                setIsThresholdDialogOpen(true);
+                setIsBulkDialogOpen(true);
               }}
               type="button"
             >
-              Set reorder level
+              Bulk update
             </button>
             <button
               aria-label="Clear selected medicines"
@@ -465,18 +472,18 @@ export function MedicineListPage() {
           onSave={(values) => void saveMedicine(values)}
         />
       )}
-      {isThresholdDialogOpen && (
-        <BulkReorderThresholdDialog
+      {isBulkDialogOpen && (
+        <BulkMedicineUpdateDialog
           medicines={selectedMedicines}
           error={bulkError}
           isSaving={isBulkSaving}
           onClose={() => {
             if (!isBulkSaving) {
-              setIsThresholdDialogOpen(false);
+              setIsBulkDialogOpen(false);
               setBulkError(null);
             }
           }}
-          onSave={(minStockAlert) => void saveBulkThreshold(minStockAlert)}
+          onSave={(updates) => void saveBulkUpdate(updates)}
         />
       )}
     </section>

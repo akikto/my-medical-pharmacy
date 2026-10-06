@@ -313,6 +313,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+.purchase-date-format {
+  display: block;
+  margin-top: 3px;
+  color: var(--purchase-muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
 .purchase-lines-table td:first-child {
   min-width: 175px;
 }
@@ -525,7 +533,7 @@
 .purchases-page,
 .suppliers-page {
   --purchase-ink: #183c38;
-  --purchase-muted: #738781;
+  --purchase-muted: #526760;
   --purchase-line: #dce9e3;
   --purchase-paper: #f5f9f6;
   --purchase-teal: #177967;

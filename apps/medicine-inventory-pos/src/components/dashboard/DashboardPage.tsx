@@ -24,7 +24,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { getDashboardSnapshot } from "../../services/dashboardService";
 import type { DashboardSnapshot } from "../../services/dashboardService";
@@ -42,6 +42,7 @@ import "./dashboard.css";
 
 interface DashboardPageProps {
   onNavigate: (section: AppSection, initialSaleSearch?: string) => void;
+  isActive: boolean;
 }
 
 const quickActions: Array<{
@@ -127,7 +128,7 @@ function RecentSaleRow({ sale }: { sale: RecentSale }) {
   );
 }
 
-export function DashboardPage({ onNavigate }: DashboardPageProps) {
+export function DashboardPage({ onNavigate, isActive }: DashboardPageProps) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -140,14 +141,17 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [activeResult, setActiveResult] = useState(0);
+  const hasLoadedSnapshot = useRef(false);
 
   useEffect(() => {
+    if (!isActive) return;
     let cancelled = false;
-    setLoading(true);
+    setLoading(!hasLoadedSnapshot.current);
     setLoadError(null);
     void getDashboardSnapshot()
       .then((data) => {
         if (!cancelled) {
+          hasLoadedSnapshot.current = true;
           setSnapshot(data);
           setLoading(false);
         }
@@ -159,12 +163,13 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         }
       });
     return () => { cancelled = true; };
-  }, [reloadKey]);
+  }, [isActive, reloadKey]);
 
   useEffect(() => {
+    if (!isActive) return;
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [isActive]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
@@ -172,11 +177,12 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
   }, [query]);
 
   useEffect(() => {
-    if (debouncedQuery.length < 2) {
+    if (!isActive || debouncedQuery.length < 2) {
       setSearchResults([]);
       setSearchLoading(false);
       setSearchError(null);
       setActiveResult(0);
+      if (!isActive) setSearchOpen(false);
       return;
     }
     let cancelled = false;
@@ -198,7 +204,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         }
       });
     return () => { cancelled = true; };
-  }, [debouncedQuery]);
+  }, [debouncedQuery, isActive]);
 
   const pharmacyName = snapshot?.store_settings.pharmacy_name.trim() || "MY MEDICAL";
   const formattedNow = useMemo(() => ({

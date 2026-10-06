@@ -60,6 +60,14 @@ export interface MedicineFormValues {
   opening_stock?: MedicineOpeningStockValues | null;
 }
 
+export type BulkMedicineFieldUpdate =
+  | { field: "company"; value: string | null }
+  | { field: "product_type"; value: string | null }
+  | { field: "strength"; value: string | null }
+  | { field: "rack_location"; value: string | null }
+  | { field: "min_stock_alert"; value: number }
+  | { field: "gst_rate_basis_points"; value: number | null };
+
 export interface MedicineBatch {
   id: EntityId;
   medicine_id: EntityId;
@@ -550,7 +558,7 @@ export interface LowStockAlert {
 }
 
 export type ExpiryAlertStatus = "expired" | "expiring";
-export type ExpiryHorizonDays = 7 | 30 | 60 | 90 | 180 | 3650;
+export type ExpiryHorizonDays = 5 | 7 | 10 | 30 | 60 | 90 | 180 | 3650;
 
 export interface ExpiryAlert {
   batch: MedicineBatch;

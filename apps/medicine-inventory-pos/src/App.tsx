@@ -185,9 +185,14 @@ export default function App() {
             </button>
           </div>
         )}
-        {activeSection === "home" ? (
-          <DashboardPage onNavigate={navigateToSection} />
-        ) : activeSection === "pos" ? (
+        <div
+          aria-hidden={activeSection !== "home"}
+          data-testid="retained-home-dashboard"
+          hidden={activeSection !== "home"}
+        >
+          <DashboardPage isActive={activeSection === "home"} onNavigate={navigateToSection} />
+        </div>
+        {activeSection === "home" ? null : activeSection === "pos" ? (
           <POSBilling
             initialSearchQuery={pendingSaleSearch ?? undefined}
             onInitialSearchConsumed={clearPendingSaleSearch}

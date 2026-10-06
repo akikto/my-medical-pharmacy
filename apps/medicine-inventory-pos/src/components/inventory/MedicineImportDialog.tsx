@@ -160,6 +160,7 @@ export function MedicineImportDialog({
   const [resolutions, setResolutions] = useState<Record<number, number>>({});
   const [fileName, setFileName] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -243,6 +244,7 @@ export function MedicineImportDialog({
     setResolutions({});
     setShowConfirmation(false);
     setFileError(null);
+    setTemplateNotice(null);
     setFileName(file?.name ?? "");
     if (!file) return;
     setIsParsing(true);
@@ -258,8 +260,14 @@ export function MedicineImportDialog({
   async function downloadTemplate() {
     setIsDownloadingTemplate(true);
     setFileError(null);
+    setTemplateNotice(null);
     try {
-      await downloadMedicineImportTemplate();
+      const saved = await downloadMedicineImportTemplate();
+      setTemplateNotice(
+        saved
+          ? "Medicine import template saved."
+          : "Template save canceled. No file was created.",
+      );
     } catch (cause) {
       setFileError(cause instanceof Error ? cause.message : "Could not create the import template.");
     } finally {
@@ -337,6 +345,11 @@ export function MedicineImportDialog({
             </div>
           )}
           {fileError && <p className="workspace-error" role="alert">{fileError}</p>}
+          {templateNotice && (
+            <p className="medicine-import-template-status" data-testid="status-import-template" role="status">
+              {templateNotice}
+            </p>
+          )}
 
           {rows && (
             <>

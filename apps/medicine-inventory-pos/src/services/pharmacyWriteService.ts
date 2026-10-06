@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ImportedMedicineRecord, StoreSettings } from "../types";
+import type {
+  BulkMedicineFieldUpdate,
+  ImportedMedicineRecord,
+  StoreSettings,
+} from "../types";
 
 export type PharmacyMutation =
   | {
@@ -64,8 +68,9 @@ export type PharmacyMutation =
       reason: string;
     }
   | {
-      kind: "update_bulk_reorder_thresholds";
-      updates: Array<{ medicine_id: number; min_stock_alert: number }>;
+      kind: "bulk_update_medicine_fields";
+      medicine_ids: number[];
+      updates: BulkMedicineFieldUpdate[];
     }
   | {
       kind: "import_medicines";

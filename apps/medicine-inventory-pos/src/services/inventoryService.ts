@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { applyPharmacyMutation } from "./pharmacyWriteService";
 import type {
   EntityId,
+  BulkMedicineFieldUpdate,
   ExpiryAlert,
   ExpiryHorizonDays,
   FefoAllocation,
@@ -391,34 +392,71 @@ export async function adjustBatchStockBulk(input: {
   });
 }
 
-export async function updateBulkReorderThresholds(input: {
+export async function updateBulkMedicineFields(input: {
   medicineIds: EntityId[];
-  minStockAlert: number;
+  updates: BulkMedicineFieldUpdate[];
 }): Promise<void> {
   if (input.medicineIds.length < 1 || input.medicineIds.length > 100) {
-    throw new InventoryError("Select between 1 and 100 medicines for a bulk reorder-level update.");
+    throw new InventoryError("Select between 1 and 100 medicines for a bulk update.");
   }
-  if (
-    !Number.isSafeInteger(input.minStockAlert) ||
-    input.minStockAlert < 0 ||
-    input.minStockAlert > 1_000_000_000
-  ) {
-    throw new InventoryError("Reorder level must be a whole number between 0 and 1,000,000,000.");
+  if (input.updates.length < 1 || input.updates.length > 6) {
+    throw new InventoryError("Choose at least one supported medicine field to update.");
   }
-  const seen = new Set<number>();
-  const updates = input.medicineIds.map((medicineId) => {
+
+  const seenMedicineIds = new Set<number>();
+  for (const medicineId of input.medicineIds) {
     assertPositiveInteger(medicineId, "Medicine id");
-    if (seen.has(medicineId)) {
-      throw new InventoryError("A medicine can only be included once in a bulk reorder-level update.");
+    if (seenMedicineIds.has(medicineId)) {
+      throw new InventoryError("A medicine can only be included once in a bulk update.");
     }
-    seen.add(medicineId);
-    return {
-      medicine_id: medicineId,
-      min_stock_alert: input.minStockAlert,
-    };
-  });
+    seenMedicineIds.add(medicineId);
+  }
+
+  const seenFields = new Set<BulkMedicineFieldUpdate["field"]>();
+  const updates: BulkMedicineFieldUpdate[] = [];
+  for (const update of input.updates) {
+    if (seenFields.has(update.field)) {
+      throw new InventoryError("Each medicine field can only be included once in a bulk update.");
+    }
+    seenFields.add(update.field);
+
+    switch (update.field) {
+      case "company":
+      case "product_type":
+      case "strength":
+      case "rack_location": {
+        const maxLength = update.field === "company" ? 120 : 80;
+        if (update.value !== null && update.value.length > maxLength) {
+          throw new InventoryError(`${update.field.replace("_", " ")} must be ${maxLength} characters or fewer.`);
+        }
+        updates.push({ ...update, value: update.value?.trim() || null });
+        break;
+      }
+      case "min_stock_alert":
+        if (
+          !Number.isSafeInteger(update.value) ||
+          update.value < 0 ||
+          update.value > 1_000_000_000
+        ) {
+          throw new InventoryError("Reorder level must be a whole number between 0 and 1,000,000,000.");
+        }
+        updates.push(update);
+        break;
+      case "gst_rate_basis_points":
+        if (
+          update.value !== null &&
+          (!Number.isSafeInteger(update.value) || update.value < 0 || update.value > 10_000)
+        ) {
+          throw new InventoryError("GST rate must be between 0% and 100%.");
+        }
+        updates.push(update);
+        break;
+    }
+  }
+
   await applyPharmacyMutation({
-    kind: "update_bulk_reorder_thresholds",
+    kind: "bulk_update_medicine_fields",
+    medicine_ids: input.medicineIds,
     updates,
   });
 }

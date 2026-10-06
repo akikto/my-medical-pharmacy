@@ -195,7 +195,7 @@ export function CustomersPage({
 
   const visibleLedger = useMemo(() => {
     const query = ledgerSearch.trim().toLocaleLowerCase();
-    return [...ledger].reverse().filter((entry) => {
+    return ledger.filter((entry) => {
       const entryDate = entry.created_at.slice(0, 10);
       if (ledgerFromDate && entryDate < ledgerFromDate) return false;
       if (ledgerToDate && entryDate > ledgerToDate) return false;
