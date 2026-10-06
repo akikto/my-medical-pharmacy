@@ -1965,6 +1965,21 @@ kbd {
   font-size: 9pt;
 }
 
+.receipt-print-host {
+  min-height: 100vh;
+  background: #fff;
+}
+
+.receipt-print-window-state {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  justify-items: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+}
+
 .receipt-brand {
   display: grid;
   justify-items: center;
@@ -2585,6 +2600,12 @@ kbd {
   body:not([data-inventory-print]) .app-shell,
   .receipt-actions {
     display: none !important;
+  }
+
+  .receipt-print-host {
+    display: block !important;
+    min-height: 0 !important;
+    visibility: visible !important;
   }
 
   .receipt-overlay {

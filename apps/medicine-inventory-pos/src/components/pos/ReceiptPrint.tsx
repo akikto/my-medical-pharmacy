@@ -1,30 +1,37 @@
 import { Printer, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getStoreSettings } from "../../services/settingsService";
 import type { SaleDetails, StoreSettings } from "../../types";
 import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { formatDateTime, formatMoney } from "../../utils/money";
+import { getReceiptPageRule, type ReceiptWidth } from "./receiptPrintModel";
 
 interface ReceiptPrintProps {
   sale: SaleDetails;
   autoPrint?: boolean;
+  inPrintWindow?: boolean;
+  initialWidth?: ReceiptWidth;
   onClose: () => void;
 }
-
-type ReceiptWidth = "58" | "80" | "A4" | "A5";
 
 export function ReceiptPrint({
   sale,
   autoPrint = false,
+  inPrintWindow = false,
+  initialWidth = "80",
   onClose,
 }: ReceiptPrintProps) {
-  const [width, setWidth] = useState<ReceiptWidth>("80");
+  const [width, setWidth] = useState<ReceiptWidth>(initialWidth);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
+  const [printError, setPrintError] = useState<string | null>(null);
   const didAutoPrint = useRef(false);
+  const onCloseRef = useRef(onClose);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const receiptPaperRef = useRef<HTMLElement>(null);
   const { sale: invoice, items } = sale;
   const itemDiscountTotal = items.reduce(
     (total, item) => total + item.item_discount,
@@ -32,6 +39,95 @@ export function ReceiptPrint({
   );
 
   useDialogFocusTrap(dialogRef);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!inPrintWindow) return;
+
+    const pageStyle = document.createElement("style");
+    pageStyle.dataset.receiptPageSettings = "true";
+    pageStyle.textContent = getReceiptPageRule(width);
+    document.head.appendChild(pageStyle);
+    return () => pageStyle.remove();
+  }, [inPrintWindow, width]);
+
+  const printReceipt = useCallback(async () => {
+    setPrintError(null);
+    if (!inPrintWindow) {
+      try {
+        await invoke("open_receipt_print_window", {
+          invoiceNo: encodeURIComponent(invoice.invoice_no),
+          paperWidth: width,
+        });
+        return true;
+      } catch (error) {
+        setPrintError(
+          error instanceof Error
+            ? `Could not open print preview: ${error.message}`
+            : "Could not open print preview.",
+        );
+        return false;
+      }
+    }
+
+    try {
+      const paper = receiptPaperRef.current;
+      if (!paper?.isConnected) {
+        throw new Error("The invoice is not ready for printing.");
+      }
+      if (document.fonts?.ready) await document.fonts.ready;
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      });
+      if (!paper.isConnected) {
+        throw new Error("The invoice closed before it could be printed.");
+      }
+      const bounds = paper.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) {
+        throw new Error("The invoice has not finished rendering for print preview.");
+      }
+      await invoke("set_receipt_print_active", { active: true });
+      window.print();
+      return true;
+    } catch (error) {
+      void invoke("set_receipt_print_active", { active: false }).catch(
+        (resetError: unknown) => {
+          setPrintError(
+            resetError instanceof Error
+              ? `Print protection could not be reset: ${resetError.message}`
+              : "Print protection could not be reset.",
+          );
+        },
+      );
+      setPrintError(
+        error instanceof Error
+          ? `Could not open print preview: ${error.message}`
+          : "Could not open print preview.",
+      );
+      return false;
+    }
+  }, [inPrintWindow, invoice.invoice_no, width]);
+
+  useEffect(() => {
+    const handleAfterPrint = () => {
+      void invoke("set_receipt_print_active", { active: false }).catch(
+        (error: unknown) => {
+          setPrintError(
+            error instanceof Error
+              ? `Could not reset print protection: ${error.message}`
+              : "Could not reset print protection.",
+          );
+        },
+      );
+    };
+    window.addEventListener("afterprint", handleAfterPrint);
+    return () => window.removeEventListener("afterprint", handleAfterPrint);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,35 +153,35 @@ export function ReceiptPrint({
   }, [invoice.id]);
 
   useEffect(() => {
-    if (!autoPrint || !settingsLoaded || didAutoPrint.current) {
+    if (!autoPrint) {
+      didAutoPrint.current = false;
       return;
     }
-    didAutoPrint.current = true;
+    if (!settingsLoaded || didAutoPrint.current) {
+      return;
+    }
     let disposed = false;
-    const printAfterLayout = () => {
-      if (disposed) return;
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          if (!disposed) window.print();
-        });
-      });
-    };
     const timer = window.setTimeout(() => {
-      void document.fonts.ready.then(printAfterLayout, printAfterLayout);
-    }, 200);
+      if (disposed || didAutoPrint.current) return;
+      didAutoPrint.current = true;
+      void printReceipt().then((opened) => {
+        if (opened && autoPrint && !inPrintWindow && !disposed) {
+          onCloseRef.current();
+        }
+      });
+    }, 0);
     return () => {
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [autoPrint, invoice.invoice_no, settingsLoaded]);
+  }, [autoPrint, inPrintWindow, invoice.invoice_no, printReceipt, settingsLoaded]);
 
   const pharmacyName = storeSettings?.pharmacy_name.trim() || "PHARMACY";
   const pharmacyMark = pharmacyName.charAt(0).toUpperCase() || "P";
   const footerNote = storeSettings?.receipt_footer_note.trim() ?? "";
   const isStandardPaper = width === "A4" || width === "A5";
-  const pageSize = isStandardPaper ? `${width} portrait` : "auto";
 
-  return createPortal(
+  const receiptDocument = (
     <div
       aria-labelledby="receipt-dialog-title"
       aria-modal="true"
@@ -95,7 +191,6 @@ export function ReceiptPrint({
       role="dialog"
       tabIndex={-1}
     >
-      <style>{`@page { size: ${pageSize}; margin: ${isStandardPaper ? "10mm" : "0"}; }`}</style>
       <div className="receipt-actions">
         <div>
           <span className="eyebrow">{autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}</span>
@@ -105,6 +200,11 @@ export function ReceiptPrint({
         {settingsLoadError && (
           <p className="receipt-settings-warning" role="alert">
             Store receipt details could not be loaded: {settingsLoadError}
+          </p>
+        )}
+        {printError && (
+          <p className="receipt-settings-warning" role="alert">
+            {printError}
           </p>
         )}
         <div className="receipt-action-controls">
@@ -128,7 +228,7 @@ export function ReceiptPrint({
           <button
             className="button button-secondary"
             data-testid="button-print-receipt"
-            onClick={() => window.print()}
+            onClick={() => void printReceipt()}
             type="button"
           >
             <Printer size={16} /> Print again
@@ -149,6 +249,7 @@ export function ReceiptPrint({
       <article
         className={`receipt-paper receipt-paper--${width.toLowerCase()}`}
         data-testid="receipt-paper"
+        ref={receiptPaperRef}
       >
         <header className="receipt-brand">
           <span className="receipt-brand-mark">{pharmacyMark}</span>
@@ -382,7 +483,7 @@ export function ReceiptPrint({
           ))}
         </section>
       )}
-    </div>,
-    document.body,
+    </div>
   );
+  return inPrintWindow ? receiptDocument : createPortal(receiptDocument, document.body);
 }

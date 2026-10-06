@@ -1812,6 +1812,110 @@ fn create_database_backup(
     })
 }
 
+fn write_medicine_import_template_at(
+    destination: &Path,
+    workbook_bytes: &[u8],
+) -> Result<(), String> {
+    if workbook_bytes.is_empty() || workbook_bytes.len() > 2_000_000 {
+        return Err("The Excel template is empty or larger than the allowed 2 MB.".to_owned());
+    }
+    if !workbook_bytes.starts_with(b"PK\x03\x04") {
+        return Err("The generated file is not a valid .xlsx workbook.".to_owned());
+    }
+    let extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("xlsx") {
+        return Err("Choose a destination ending in .xlsx.".to_owned());
+    }
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| "Choose a valid template filename.".to_owned())?;
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        return Err("The selected template folder does not exist or is unavailable.".to_owned());
+    }
+    let normalized_destination = fs::canonicalize(parent)
+        .map_err(|error| format!("Could not access the selected template folder: {error}"))?
+        .join(file_name);
+    match fs::symlink_metadata(&normalized_destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("The template destination cannot be a symbolic link.".to_owned());
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err("The template destination must be a regular file.".to_owned());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect the template destination: {error}"
+            ));
+        }
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&normalized_destination)
+        .map_err(|error| format!("Could not create the Excel template: {error}"))?;
+    file.write_all(workbook_bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("Could not finish writing the Excel template: {error}"))
+}
+
+#[tauri::command]
+fn save_medicine_import_template(
+    destination_path: String,
+    workbook_bytes: Vec<u8>,
+) -> Result<(), String> {
+    write_medicine_import_template_at(Path::new(&destination_path), &workbook_bytes)
+}
+
+#[cfg(test)]
+mod medicine_import_template_tests {
+    use super::*;
+
+    #[test]
+    fn saves_only_bounded_xlsx_templates_to_the_selected_folder() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "medicine-import-template-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("create template test directory");
+        let destination = directory.join("medicine-template.xlsx");
+        let contents = b"PK\x03\x04valid generated workbook bytes";
+
+        write_medicine_import_template_at(&destination, contents)
+            .expect("write selected workbook template");
+        assert_eq!(
+            fs::read(&destination).expect("read written template"),
+            contents
+        );
+        assert!(write_medicine_import_template_at(
+            &directory.join("medicine-template.csv"),
+            contents
+        )
+        .is_err());
+        assert!(write_medicine_import_template_at(
+            &directory.join("invalid-template.xlsx"),
+            b"not an Excel workbook"
+        )
+        .is_err());
+        assert!(write_medicine_import_template_at(&destination, &[]).is_err());
+
+        fs::remove_dir_all(directory).expect("remove template test directory");
+    }
+}
+
 fn rollback_database_replacement(
     active_database: &Path,
     previous_database: &Path,
@@ -2362,6 +2466,70 @@ fn restore_database_backup(
     )
 }
 
+#[derive(Clone, Default)]
+struct ReceiptPrintState(Arc<AtomicBool>);
+
+#[tauri::command]
+fn set_receipt_print_active(active: bool, state: tauri::State<'_, ReceiptPrintState>) {
+    state.0.store(active, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn open_receipt_print_window(
+    app: AppHandle,
+    invoice_no: String,
+    paper_width: String,
+) -> Result<(), String> {
+    if invoice_no.trim().is_empty() {
+        return Err("Choose an invoice before opening print preview.".to_owned());
+    }
+    if !matches!(paper_width.as_str(), "58" | "80" | "A4" | "A5") {
+        return Err("Choose a supported receipt paper size.".to_owned());
+    }
+    let print_active = app.state::<ReceiptPrintState>().0.clone();
+    print_active.store(false, Ordering::SeqCst);
+    if let Some(existing_window) = app.get_webview_window("receipt-print") {
+        existing_window
+            .close()
+            .map_err(|error| format!("Could not close the previous receipt window: {error}"))?;
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "receipt-print",
+        tauri::WebviewUrl::App(
+            format!("index.html?receiptPrint={invoice_no}&receiptWidth={paper_width}").into(),
+        ),
+    )
+    .title("MY MEDICAL — Receipt")
+    .inner_size(760.0, 860.0)
+    .center()
+    .focused(true)
+    .build()
+    .map_err(|error| format!("Could not open the receipt window: {error}"))?;
+
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::CloseRequested { .. }) {
+            print_active.store(false, Ordering::SeqCst);
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn close_receipt_print_window(
+    app: AppHandle,
+    state: tauri::State<'_, ReceiptPrintState>,
+) -> Result<(), String> {
+    state.0.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("receipt-print") {
+        window
+            .close()
+            .map_err(|error| format!("Could not close the receipt window: {error}"))?;
+    }
+    Ok(())
+}
+
 fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     migrate_pharmacy_database(app.handle())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
@@ -2369,6 +2537,7 @@ fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     let app_handle = app.handle().clone();
+    let receipt_print_active = app.state::<ReceiptPrintState>().0.clone();
     let backup_started = Arc::new(AtomicBool::new(false));
     let backup_complete = Arc::new(AtomicBool::new(false));
     let started_state = Arc::clone(&backup_started);
@@ -2379,6 +2548,10 @@ fn register_auto_backup_on_close(app: &mut tauri::App) -> Result<(), Box<dyn std
         let WindowEvent::CloseRequested { api, .. } = event else {
             return;
         };
+        if receipt_print_active.load(Ordering::SeqCst) {
+            api.prevent_close();
+            return;
+        }
         if complete_state.load(Ordering::SeqCst) {
             return;
         }
@@ -5931,6 +6104,7 @@ fn complete_purchase_legacy(app: AppHandle, purchase: PurchaseRequest) -> Result
 
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(ReceiptPrintState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(register_auto_backup_on_close);
@@ -5973,6 +6147,10 @@ pub fn run() {
             get_dashboard_purchase_summary,
             get_top_selling_medicines,
             reads::check_development_database_empty,
+            save_medicine_import_template,
+            set_receipt_print_active,
+            open_receipt_print_window,
+            close_receipt_print_window,
             apply_pharmacy_mutation,
             mutate_order_list,
             reset_business_data,
@@ -6031,6 +6209,10 @@ pub fn run() {
         get_dashboard_inventory_summary,
         get_dashboard_purchase_summary,
         get_top_selling_medicines,
+        save_medicine_import_template,
+        set_receipt_print_active,
+        open_receipt_print_window,
+        close_receipt_print_window,
         apply_pharmacy_mutation,
         mutate_order_list,
         reset_business_data,

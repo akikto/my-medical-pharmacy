@@ -1,4 +1,6 @@
 import ExcelJS from "exceljs";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import type { InventoryFilter, MedicineBatch, MedicineInventoryRow } from "../types";
 
 export interface MedicineImportValues {
@@ -78,6 +80,20 @@ function downloadWorkbook(bytes: ExcelJS.Buffer, filename: string): void {
   }
 }
 
+function workbookBytesToArray(bytes: ExcelJS.Buffer): number[] {
+  const value: unknown = bytes;
+  if (value instanceof ArrayBuffer) {
+    return Array.from(new Uint8Array(value));
+  }
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return Array.from(
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+    );
+  }
+  return Array.from(value as ArrayLike<number>);
+}
+
 function styleHeader(row: ExcelJS.Row): void {
   row.height = 25;
   row.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
@@ -89,7 +105,7 @@ function styleHeader(row: ExcelJS.Row): void {
   row.alignment = { vertical: "middle", wrapText: true };
 }
 
-export async function downloadMedicineImportTemplate(): Promise<void> {
+export async function downloadMedicineImportTemplate(): Promise<boolean> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "MY MEDICAL";
   workbook.subject = "Medicine master import template";
@@ -144,7 +160,18 @@ export async function downloadMedicineImportTemplate(): Promise<void> {
     if (rowNumber > 1) row.alignment = { vertical: "top", wrapText: true };
   });
   const bytes = await workbook.xlsx.writeBuffer();
-  downloadWorkbook(bytes, "my-medical-medicine-import-template.xlsx");
+  const destinationPath = await save({
+    defaultPath: "MY-MEDICAL-Medicine-Import-Template.xlsx",
+    filters: [{ name: "Excel workbook", extensions: ["xlsx"] }],
+  });
+  if (typeof destinationPath !== "string" || destinationPath.length === 0) {
+    return false;
+  }
+  await invoke("save_medicine_import_template", {
+    destinationPath,
+    workbookBytes: workbookBytesToArray(bytes),
+  });
+  return true;
 }
 
 function cellValue(cell: ExcelJS.Cell): unknown {

@@ -21,9 +21,11 @@ Module._load = function loadWithTauriReadMock(request, parent, isMain) {
       invoke: async (command, args = {}) => {
         if (
           command === "create_database_backup" ||
-          command === "restore_database_backup"
+          command === "restore_database_backup" ||
+          command === "save_medicine_import_template"
         ) {
           backupServiceState.invocations.push({ command, args });
+          if (command === "save_medicine_import_template") return;
           return command === "create_database_backup"
             ? {
                 path: args.destinationPath,
@@ -69,6 +71,20 @@ require.extensions[".ts"] = (loadedModule, filename) => {
   loadedModule._compile(compiled.outputText, filename);
 };
 
+require.extensions[".tsx"] = (loadedModule, filename) => {
+  const source = fs.readFileSync(filename, "utf8");
+  const compiled = ts.transpileModule(source, {
+    fileName: filename,
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+    },
+  });
+  loadedModule._compile(compiled.outputText, filename);
+};
+
 const {
   getInventoryMedicines,
   getMedicineBatches,
@@ -105,9 +121,15 @@ const {
   maximumBarcodeLabelQuantity,
 } = require("../src/services/barcodeLabelService.ts");
 const {
+  downloadMedicineImportTemplate,
   buildStockWorkbookBuffer,
   filterStockExportRows,
 } = require("../src/services/inventoryWorkbookService.ts");
+const {
+  getReceiptPageRule,
+  isReceiptWidth,
+} = require("../src/components/pos/receiptPrintModel.ts");
+const { ReceiptPrint } = require("../src/components/pos/ReceiptPrint.tsx");
 const {
   exportFinancialReportExcel,
 } = require("../src/services/financialReportExportService.ts");
@@ -118,6 +140,8 @@ const {
   selectRestoreSource,
 } = require("../src/services/backupService.ts");
 const ExcelJS = require("exceljs");
+const React = require("react");
+const { renderToStaticMarkup } = require("react-dom/server");
 let fixture;
 
 beforeEach(() => {
@@ -132,6 +156,145 @@ beforeEach(() => {
 afterEach(() => {
   fixture?.close();
   fixture = null;
+});
+
+describe("medicine import template download", () => {
+  it("saves a valid Excel workbook through the native dialog and handles cancellation", async () => {
+    assert.equal(await downloadMedicineImportTemplate(), false);
+    assert.deepEqual(backupServiceState.invocations, []);
+    assert.equal(
+      backupServiceState.saveOptions.defaultPath,
+      "MY-MEDICAL-Medicine-Import-Template.xlsx",
+    );
+    assert.deepEqual(backupServiceState.saveOptions.filters, [
+      { name: "Excel workbook", extensions: ["xlsx"] },
+    ]);
+
+    backupServiceState.saveSelection = "/local/my-medical-medicine-import-template.xlsx";
+    assert.equal(await downloadMedicineImportTemplate(), true);
+    assert.equal(backupServiceState.invocations[0].command, "save_medicine_import_template");
+    assert.equal(
+      backupServiceState.invocations[0].args.destinationPath,
+      "/local/my-medical-medicine-import-template.xlsx",
+    );
+    assert.ok(Array.isArray(backupServiceState.invocations[0].args.workbookBytes));
+    assert.deepEqual(
+      backupServiceState.invocations[0].args.workbookBytes.slice(0, 4),
+      [0x50, 0x4b, 0x03, 0x04],
+    );
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(
+      Buffer.from(backupServiceState.invocations[0].args.workbookBytes),
+    );
+    assert.equal(workbook.getWorksheet("Medicine Import").getCell("A1").value, "Medicine ID");
+    assert.equal(workbook.getWorksheet("Instructions").getCell("A1").value, "Field");
+  });
+});
+
+describe("invoice print document and page settings", () => {
+  const sale = {
+    sale: {
+      id: 81,
+      invoice_no: "INV-WIN-001",
+      created_at: "2026-10-05T12:00:00Z",
+      customer_name: "Print Test Customer",
+      customer_phone: "9876543210",
+      customer_state_code: null,
+      subtotal: 120,
+      discount: 0,
+      flat_discount: 0,
+      grand_total: 120,
+      payment_mode: "CASH",
+      cash_tendered: 200,
+      change_due: 80,
+      status: "ACTIVE",
+      payment_reference: null,
+      notes: null,
+      cancelled_at: null,
+      gst_enabled: false,
+    },
+    items: [
+      {
+        id: 91,
+        sale_id: 81,
+        batch_id: 31,
+        quantity: 2,
+        unit_price: 60,
+        item_discount: 0,
+        total_price: 120,
+        medicine_name: "Print Test Medicine",
+        generic_name: null,
+        batch_no: "LOT-PRINT-01",
+        expiry_date: "2027-10-31",
+        returned_quantity: 0,
+      },
+    ],
+    returns: [],
+    corrections: [],
+    void: null,
+  };
+
+  it("renders real invoice data in the print window", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ReceiptPrint, {
+        autoPrint: false,
+        inPrintWindow: true,
+        onClose: () => {},
+        sale,
+      }),
+    );
+    assert.match(markup, /data-testid="receipt-paper"/);
+    assert.match(markup, /INV-WIN-001/);
+    assert.match(markup, /Print Test Customer/);
+    assert.match(markup, /Print Test Medicine/);
+    assert.match(markup, /LOT-PRINT-01/);
+    assert.match(markup, /Grand total/);
+    assert.match(markup, /Cash received/);
+    assert.match(markup, /PHARMACY/);
+    assert.doesNotMatch(markup, /<style/);
+  });
+
+  it("preserves the selected page format and validates every supported width", () => {
+    assert.equal(getReceiptPageRule("58"), "@page { size: auto; margin: 0; }");
+    assert.equal(getReceiptPageRule("80"), "@page { size: auto; margin: 0; }");
+    assert.equal(
+      getReceiptPageRule("A4"),
+      "@page { size: A4 portrait; margin: 10mm; }",
+    );
+    assert.equal(
+      getReceiptPageRule("A5"),
+      "@page { size: A5 portrait; margin: 10mm; }",
+    );
+    for (const width of ["58", "80", "A4", "A5"]) {
+      assert.equal(isReceiptWidth(width), true);
+    }
+    assert.equal(isReceiptWidth("letter"), false);
+  });
+
+  it("keeps the directly mounted invoice window open after printing", () => {
+    const receiptPrintSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/pos/ReceiptPrint.tsx"),
+      "utf8",
+    );
+    const mainSource = fs.readFileSync(path.join(__dirname, "../src/main.tsx"), "utf8");
+    const receiptWindowSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/pos/ReceiptPrintWindow.tsx"),
+      "utf8",
+    );
+    assert.match(receiptPrintSource, /window\.addEventListener\("afterprint", handleAfterPrint\)/);
+    assert.match(receiptPrintSource, /set_receipt_print_active", \{ active: false \}/);
+    assert.doesNotMatch(receiptPrintSource, /close_receipt_print_window/);
+    assert.match(
+      receiptPrintSource,
+      /return inPrintWindow \? receiptDocument : createPortal\(receiptDocument, document\.body\)/,
+    );
+    assert.match(receiptPrintSource, /document\.head\.appendChild\(pageStyle\)/);
+    assert.match(mainSource, /receiptWidth/);
+    assert.match(receiptPrintSource, /paperWidth: width/);
+    assert.match(receiptWindowSource, /initialWidth=\{paperWidth\}/);
+    assert.match(receiptWindowSource, /className="receipt-print-host"/);
+  });
 });
 
 describe("local complete backup and restore service", () => {
