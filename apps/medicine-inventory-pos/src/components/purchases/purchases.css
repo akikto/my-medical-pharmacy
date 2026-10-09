@@ -313,14 +313,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.purchase-date-format {
-  display: block;
-  margin-top: 3px;
-  color: var(--purchase-muted);
-  font-size: 10px;
-  line-height: 1.2;
-}
-
 .purchase-lines-table td:first-child {
   min-width: 175px;
 }

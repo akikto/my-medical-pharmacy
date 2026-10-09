@@ -397,10 +397,45 @@ describe("invoice print document and page settings", () => {
     assert.match(openWindowSource, /existing_window\s*\.eval/);
     assert.match(openWindowSource, /existing_window\s*\.set_focus/);
     assert.doesNotMatch(openWindowSource, /existing_window\s*\.close/);
+    const closeWindowSource = rustSource.slice(closeWindowStart, closeWindowStart + 500);
+    assert.match(closeWindowSource, /window\s*\.destroy\(\)/);
+    assert.match(openWindowSource, /api\.prevent_close\(\)/);
+    assert.match(openWindowSource, /window_for_close\.destroy\(\)/);
   });
 });
 
 describe("consolidated pharmacy maintenance contracts", () => {
+  it("keeps workbook selection available while medicine matching loads", () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "../src/components/inventory/MedicineImportDialog.tsx"),
+      "utf8",
+    );
+    const fileInputStart = source.indexOf('data-testid="input-medicine-import-file"');
+    const fileInputEnd = source.indexOf('type="file"', fileInputStart);
+    const fileInputSource = source.slice(fileInputStart, fileInputEnd);
+    assert.match(source, /MEDICINE_LIST_LOAD_TIMEOUT_MS = 15_000/);
+    assert.doesNotMatch(fileInputSource, /isLoadingMedicines|medicineLoadError|isDownloadingTemplate/);
+    assert.match(source, /rows && medicineListReady/);
+    assert.match(source, /isSaving \|\| isParsing \|\| !medicineListReady/);
+    assert.match(source, /Workbook read: \{rows\.length\} rows/);
+  });
+
+  it("runs inventory, receipt, settings, and template I/O off the UI thread", () => {
+    const readsSource = fs.readFileSync(path.join(__dirname, "../src-tauri/src/reads.rs"), "utf8");
+    const rustSource = fs.readFileSync(path.join(__dirname, "../src-tauri/src/lib.rs"), "utf8");
+
+    for (const command of ["get_inventory_medicines", "get_store_settings", "get_sale_details"]) {
+      const start = readsSource.indexOf(`async fn ${command}`);
+      const nextCommand = readsSource.indexOf("#[tauri::command]", start + 1);
+      assert.ok(start >= 0 && nextCommand > start, `${command} should be an async native command`);
+      assert.match(readsSource.slice(start, nextCommand), /spawn_blocking/);
+    }
+    const templateStart = rustSource.indexOf("async fn save_medicine_import_template");
+    const templateEnd = rustSource.indexOf("#[cfg(test)]", templateStart);
+    assert.ok(templateStart >= 0 && templateEnd > templateStart);
+    assert.match(rustSource.slice(templateStart, templateEnd), /spawn_blocking/);
+  });
+
   it("reports whether saving the import workbook succeeded or was canceled", () => {
     const source = fs.readFileSync(
       path.join(__dirname, "../src/components/inventory/MedicineImportDialog.tsx"),
@@ -432,7 +467,7 @@ describe("consolidated pharmacy maintenance contracts", () => {
     assert.ok(positions.every((position) => position >= 0));
     assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
     assert.match(source, /data-testid=\{`row-purchase-line-\$\{index \+ 1\}`\}/);
-    assert.match(source, /dd-mm-yyyy/);
+    assert.doesNotMatch(source, /purchase-date-format|dd-mm-yyyy/);
     assert.match(source, /Add line/);
   });
 

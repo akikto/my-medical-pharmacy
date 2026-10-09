@@ -2142,8 +2142,12 @@ fn write_medicine_import_template_at(destination: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_medicine_import_template(destination_path: String) -> Result<(), String> {
-    write_medicine_import_template_at(Path::new(&destination_path))
+async fn save_medicine_import_template(destination_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        write_medicine_import_template_at(Path::new(&destination_path))
+    })
+    .await
+    .map_err(|error| format!("Could not finish writing the Excel template: {error}"))?
 }
 
 #[cfg(test)]
@@ -2823,9 +2827,16 @@ fn open_receipt_print_window(
     .build()
     .map_err(|error| format!("Could not open the receipt window: {error}"))?;
 
+    let window_for_close = window.clone();
     window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::CloseRequested { .. }) {
+        if let WindowEvent::CloseRequested { api, .. } = event {
             print_active.store(false, Ordering::SeqCst);
+            match window_for_close.destroy() {
+                Ok(()) => api.prevent_close(),
+                Err(error) => {
+                    eprintln!("Could not destroy the closing receipt window: {error}");
+                }
+            }
         }
     });
     Ok(())
@@ -2839,7 +2850,7 @@ fn close_receipt_print_window(
     state.0.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("receipt-print") {
         window
-            .close()
+            .destroy()
             .map_err(|error| format!("Could not close the receipt window: {error}"))?;
     }
     Ok(())

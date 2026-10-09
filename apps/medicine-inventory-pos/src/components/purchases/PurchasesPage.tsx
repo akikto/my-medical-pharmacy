@@ -440,7 +440,6 @@ export function PurchasesPage() {
                       <input
                         aria-label={`Expiry date on line ${index + 1}`}
                         className="purchase-line-input"
-                        aria-describedby={`purchase-expiry-format-${index + 1}`}
                         data-testid={`input-purchase-expiry-${index + 1}`}
                         min={localToday()}
                         onChange={(event) => updateLine(item.rowId, { expiry_date: event.target.value })}
@@ -448,9 +447,6 @@ export function PurchasesPage() {
                         type="date"
                         value={item.expiry_date}
                       />
-                      <small className="purchase-date-format" id={`purchase-expiry-format-${index + 1}`}>
-                        dd-mm-yyyy
-                      </small>
                     </td>
                     <td>
                       <input

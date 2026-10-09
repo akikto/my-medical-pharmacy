@@ -2228,11 +2228,15 @@ fn query_development_database_counts(
 }
 
 #[tauri::command]
-pub(crate) fn get_inventory_medicines(
+pub(crate) async fn get_inventory_medicines(
     app: AppHandle,
     search_term: String,
 ) -> Result<Vec<MedicineInventoryRecord>, String> {
-    query_inventory_medicines(&open_pharmacy_connection(&app)?, &search_term)
+    tauri::async_runtime::spawn_blocking(move || {
+        query_inventory_medicines(&open_pharmacy_connection(&app)?, &search_term)
+    })
+    .await
+    .map_err(|error| format!("Could not read the local medicine list: {error}"))?
 }
 
 #[tauri::command]
@@ -2323,8 +2327,12 @@ pub(crate) fn get_order_list(
 }
 
 #[tauri::command]
-pub(crate) fn get_store_settings(app: AppHandle) -> Result<Vec<StoreSettingRecord>, String> {
-    query_store_settings(&open_pharmacy_connection(&app)?)
+pub(crate) async fn get_store_settings(app: AppHandle) -> Result<Vec<StoreSettingRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        query_store_settings(&open_pharmacy_connection(&app)?)
+    })
+    .await
+    .map_err(|error| format!("Could not read store settings: {error}"))?
 }
 
 #[tauri::command]
@@ -2419,11 +2427,15 @@ pub(crate) fn get_sales_history(
 }
 
 #[tauri::command]
-pub(crate) fn get_sale_details(
+pub(crate) async fn get_sale_details(
     app: AppHandle,
     invoice_no: String,
 ) -> Result<Option<SaleDetailsRecord>, String> {
-    query_sale_details(&open_pharmacy_connection(&app)?, &invoice_no)
+    tauri::async_runtime::spawn_blocking(move || {
+        query_sale_details(&open_pharmacy_connection(&app)?, &invoice_no)
+    })
+    .await
+    .map_err(|error| format!("Could not read receipt details: {error}"))?
 }
 
 #[tauri::command]

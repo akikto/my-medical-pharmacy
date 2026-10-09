@@ -142,6 +142,8 @@ function toImportRecord(
   };
 }
 
+const MEDICINE_LIST_LOAD_TIMEOUT_MS = 15_000;
+
 export function MedicineImportDialog({
   error,
   isSaving,
@@ -181,9 +183,20 @@ export function MedicineImportDialog({
     let cancelled = false;
     setIsLoadingMedicines(true);
     setMedicineLoadError(null);
+    const timeoutId = window.setTimeout(() => {
+      if (!cancelled) {
+        setMedicineLoadError(
+          "The local medicine list did not respond within 15 seconds. You can select a workbook, but retry before reviewing or importing it.",
+        );
+        setIsLoadingMedicines(false);
+      }
+    }, MEDICINE_LIST_LOAD_TIMEOUT_MS);
     void getInventoryMedicines("")
       .then((records) => {
-        if (!cancelled) setMedicines(records);
+        if (!cancelled) {
+          setMedicines(records);
+          setMedicineLoadError(null);
+        }
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
@@ -193,12 +206,16 @@ export function MedicineImportDialog({
         }
       })
       .finally(() => {
+        window.clearTimeout(timeoutId);
         if (!cancelled) setIsLoadingMedicines(false);
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
   }, [medicineLoadAttempt]);
+
+  const medicineListReady = !isLoadingMedicines && medicineLoadError === null;
 
   const evaluatedRows = useMemo<EvaluatedRow[]>(() => {
     if (!rows) return [];
@@ -241,7 +258,9 @@ export function MedicineImportDialog({
     });
   }, [medicines, mode, resolutions, rows]);
 
-  const validRows = evaluatedRows.filter((row) => row.errors.length === 0);
+  const validRows = medicineListReady
+    ? evaluatedRows.filter((row) => row.errors.length === 0)
+    : [];
   const invalidCount = evaluatedRows.length - validRows.length;
   const createdCount = validRows.filter((row) => row.target === null).length;
   const updatedCount = validRows.length - createdCount;
@@ -303,13 +322,7 @@ export function MedicineImportDialog({
               <input
                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 data-testid="input-medicine-import-file"
-                disabled={
-                  isSaving ||
-                  isDownloadingTemplate ||
-                  isParsing ||
-                  isLoadingMedicines ||
-                  medicineLoadError !== null
-                }
+                disabled={isSaving || isParsing}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
@@ -351,7 +364,14 @@ export function MedicineImportDialog({
             </p>
           )}
 
-          {rows && (
+          {rows && !medicineListReady && (
+            <p className="workspace-muted" role="status">
+              Workbook read: {rows.length} rows. Duplicate matching and import review will continue
+              when the local medicine list is available.
+            </p>
+          )}
+
+          {rows && medicineListReady && (
             <>
               <div className="medicine-import-mode">
                 <label className="field-label" htmlFor="medicine-import-mode">
@@ -488,7 +508,7 @@ export function MedicineImportDialog({
                 <button
                   className="button button-primary"
                   data-testid="button-confirm-medicine-import"
-                  disabled={isSaving || validRows.length === 0}
+                  disabled={isSaving || !medicineListReady || validRows.length === 0}
                   onClick={() =>
                     onImport(
                       validRows.map((item) => toImportRecord(item.row, item.target)),
@@ -515,11 +535,11 @@ export function MedicineImportDialog({
               <button
                 className="button button-primary"
                 data-testid="button-review-medicine-import"
-                disabled={isSaving || isParsing || validRows.length === 0}
+                disabled={isSaving || isParsing || !medicineListReady || validRows.length === 0}
                 onClick={() => setShowConfirmation(true)}
                 type="button"
               >
-                Review import of {validRows.length}
+                Review import of {medicineListReady ? validRows.length : 0}
               </button>
             </footer>
           )}
