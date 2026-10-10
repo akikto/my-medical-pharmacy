@@ -1242,13 +1242,13 @@
     margin: 10mm;
   }
 
-  body,
-  body * {
+  body[data-inventory-print],
+  body[data-inventory-print] * {
     visibility: hidden !important;
   }
 
-  .inventory-print-root,
-  .inventory-print-root * {
+  body[data-inventory-print] .inventory-print-root,
+  body[data-inventory-print] .inventory-print-root * {
     visibility: visible !important;
   }
 

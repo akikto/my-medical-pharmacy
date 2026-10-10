@@ -2602,10 +2602,14 @@ kbd {
     display: none !important;
   }
 
+  .receipt-print-host,
+  .receipt-print-host * {
+    visibility: visible !important;
+  }
+
   .receipt-print-host {
     display: block !important;
     min-height: 0 !important;
-    visibility: visible !important;
   }
 
   .receipt-overlay {
