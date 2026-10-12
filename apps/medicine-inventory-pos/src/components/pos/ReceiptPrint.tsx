@@ -6,6 +6,7 @@ import { getStoreSettings } from "../../services/settingsService";
 import type { SaleDetails, StoreSettings } from "../../types";
 import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { formatDateTime, formatMoney } from "../../utils/money";
+import { recordPrintDiagnostic } from "../../utils/printDiagnostics";
 import { getReceiptPageRule, type ReceiptWidth } from "./receiptPrintModel";
 
 interface ReceiptPrintProps {
@@ -27,6 +28,7 @@ export function ReceiptPrint({
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
+  const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   const [printError, setPrintError] = useState<string | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
   const didAutoPrint = useRef(false);
@@ -69,8 +71,12 @@ export function ReceiptPrint({
   const resetPrintProtection = useCallback(async () => {
     try {
       await invoke("set_receipt_print_active", { active: false });
+      recordPrintDiagnostic("receipt_protection_reset");
       releasePrintLock();
     } catch (error) {
+      recordPrintDiagnostic("receipt_protection_reset_failed", {
+        errorCode: "native_invoke_rejected",
+      });
       setPrintError(
         error instanceof Error
           ? `Could not reset print protection: ${error.message}`
@@ -89,6 +95,7 @@ export function ReceiptPrint({
   const printReceipt = useCallback(async () => {
     if (printInProgress.current) return false;
     printInProgress.current = true;
+    recordPrintDiagnostic("receipt_print_started");
     setIsPrinting(true);
     setPrintError(null);
     if (!settingsLoaded || settingsLoadError) {
@@ -97,17 +104,28 @@ export function ReceiptPrint({
           ? `Could not load store receipt details: ${settingsLoadError}`
           : "Store receipt details are still loading. Try again in a moment.",
       );
+      recordPrintDiagnostic("receipt_print_failed", {
+        errorCode: settingsLoadError ? "settings_load_rejected" : "settings_not_ready",
+      });
       releasePrintLock();
       return false;
     }
     if (!inPrintWindow) {
       try {
+        recordPrintDiagnostic("receipt_window_open_started");
         await invoke("open_receipt_print_window", {
           invoiceNo: encodeURIComponent(invoice.invoice_no),
           paperWidth: width,
         });
+        recordPrintDiagnostic("receipt_window_open_succeeded");
         return true;
       } catch (error) {
+        recordPrintDiagnostic("receipt_window_open_failed", {
+          errorCode: "native_invoke_rejected",
+        });
+        recordPrintDiagnostic("receipt_print_failed", {
+          errorCode: "native_invoke_rejected",
+        });
         setPrintError(
           error instanceof Error
             ? `Could not open print preview: ${error.message}`
@@ -137,15 +155,26 @@ export function ReceiptPrint({
       if (bounds.width <= 0 || bounds.height <= 0) {
         throw new Error("The invoice has not finished rendering for print preview.");
       }
+      recordPrintDiagnostic("receipt_document_ready");
       await invoke("set_receipt_print_active", { active: true });
+      recordPrintDiagnostic("receipt_native_protection_enabled");
       printResetTimer.current = window.setTimeout(() => {
         printResetTimer.current = null;
+        recordPrintDiagnostic("receipt_afterprint_missing", {
+          elapsedMs: 120_000,
+        });
         void resetPrintProtection();
       }, 120_000);
       window.print();
+      recordPrintDiagnostic("receipt_window_print_called");
       return true;
     } catch (error) {
       void resetPrintProtection();
+      recordPrintDiagnostic("receipt_print_failed", {
+        errorCode: error instanceof Error && error.message.includes("ready")
+          ? "document_not_ready"
+          : "print_exception",
+      });
       setPrintError(
         error instanceof Error
           ? `Could not open print preview: ${error.message}`
@@ -166,6 +195,7 @@ export function ReceiptPrint({
   useEffect(() => {
     const handleAfterPrint = () => {
       if (!inPrintWindow) return;
+      recordPrintDiagnostic("receipt_afterprint");
       void resetPrintProtection();
     };
     window.addEventListener("afterprint", handleAfterPrint);
@@ -181,26 +211,51 @@ export function ReceiptPrint({
 
   useEffect(() => {
     let cancelled = false;
+    let timedOut = false;
+    const startedAt = Date.now();
     setSettingsLoaded(false);
     setSettingsLoadError(null);
+    recordPrintDiagnostic("receipt_settings_load_started");
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      if (!cancelled) {
+        recordPrintDiagnostic("receipt_settings_load_failed", {
+          elapsedMs: Date.now() - startedAt,
+          errorCode: "settings_load_rejected",
+        });
+        setSettingsLoadError("Store receipt details did not load within 15 seconds.");
+        setSettingsLoaded(true);
+      }
+    }, 15_000);
     getStoreSettings()
       .then((settings) => {
-        if (!cancelled) setStoreSettings(settings);
+        if (!cancelled && !timedOut) {
+          setStoreSettings(settings);
+          recordPrintDiagnostic("receipt_settings_load_succeeded", {
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && !timedOut) {
+          recordPrintDiagnostic("receipt_settings_load_failed", {
+            elapsedMs: Date.now() - startedAt,
+            errorCode: "settings_load_rejected",
+          });
           setSettingsLoadError(
             error instanceof Error ? error.message : "Store receipt settings could not be loaded.",
           );
         }
       })
       .finally(() => {
-        if (!cancelled) setSettingsLoaded(true);
+        window.clearTimeout(timeout);
+        if (!cancelled && !timedOut) setSettingsLoaded(true);
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
     };
-  }, [invoice.id]);
+  }, [invoice.id, settingsLoadAttempt]);
 
   useEffect(() => {
     if (!autoPrint) {
@@ -248,9 +303,16 @@ export function ReceiptPrint({
           <p>{invoice.invoice_no}</p>
         </div>
         {settingsLoadError && (
-          <p className="receipt-settings-warning" role="alert">
+          <div className="receipt-settings-warning" role="alert">
             Store receipt details could not be loaded: {settingsLoadError}
-          </p>
+            <button
+              className="button button-secondary"
+              onClick={() => setSettingsLoadAttempt((attempt) => attempt + 1)}
+              type="button"
+            >
+              Retry loading details
+            </button>
+          </div>
         )}
         {printError && (
           <p className="receipt-settings-warning" role="alert">

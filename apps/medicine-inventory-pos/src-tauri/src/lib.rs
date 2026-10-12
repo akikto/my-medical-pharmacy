@@ -26,6 +26,7 @@ mod backup_package;
 mod expenses;
 mod financial_reports;
 mod purchase_management;
+mod print_diagnostics;
 mod reads;
 pub(crate) use purchase_management::PurchaseRequest;
 #[cfg(test)]
@@ -6571,6 +6572,7 @@ pub fn run() {
             set_receipt_print_active,
             open_receipt_print_window,
             close_receipt_print_window,
+            print_diagnostics::record_print_diagnostic,
             apply_pharmacy_mutation,
             mutate_order_list,
             reset_business_data,
@@ -6633,6 +6635,7 @@ pub fn run() {
         set_receipt_print_active,
         open_receipt_print_window,
         close_receipt_print_window,
+        print_diagnostics::record_print_diagnostic,
         apply_pharmacy_mutation,
         mutate_order_list,
         reset_business_data,

@@ -402,6 +402,60 @@ describe("invoice print document and page settings", () => {
     assert.match(openWindowSource, /api\.prevent_close\(\)/);
     assert.match(openWindowSource, /window_for_close\.destroy\(\)/);
   });
+
+  it("traces safe print stages and offers recovery after receipt-load failures", () => {
+    const diagnosticsSource = fs.readFileSync(
+      path.join(__dirname, "../src/utils/printDiagnostics.ts"),
+      "utf8",
+    );
+    const nativeDiagnosticsSource = fs.readFileSync(
+      path.join(__dirname, "../src-tauri/src/print_diagnostics.rs"),
+      "utf8",
+    );
+    const receiptWindowSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/pos/ReceiptPrintWindow.tsx"),
+      "utf8",
+    );
+    const receiptSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/pos/ReceiptPrint.tsx"),
+      "utf8",
+    );
+    const barcodeSource = fs.readFileSync(
+      path.join(__dirname, "../src/utils/inventoryPrint.ts"),
+      "utf8",
+    );
+    const orderSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/orders/OrderListPage.tsx"),
+      "utf8",
+    );
+    const reportSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/reports/ReportsPage.tsx"),
+      "utf8",
+    );
+    assert.match(receiptWindowSource, /receipt_data_load_timed_out/);
+    assert.match(receiptWindowSource, /Retry loading/);
+    assert.match(receiptSource, /receipt_settings_load_failed/);
+    assert.match(receiptSource, /Retry loading details/);
+    assert.match(receiptSource, /receipt_afterprint_missing/);
+    assert.match(nativeDiagnosticsSource, /MAX_LOG_BYTES/);
+    assert.match(nativeDiagnosticsSource, /valid_record/);
+    assert.match(nativeDiagnosticsSource, /receipt_data_load_started/);
+    assert.doesNotMatch(diagnosticsSource, /invoiceNo|customer_phone|medicine_name/);
+    assert.match(barcodeSource, /barcode_print_afterprint/);
+    assert.match(orderSource, /order_list_print_started/);
+    assert.match(reportSource, /report_data_load_started/);
+
+    const checkoutSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/pos/POSBilling.tsx"),
+      "utf8",
+    );
+    const salesSource = fs.readFileSync(
+      path.join(__dirname, "../src/components/sales/SalesPage.tsx"),
+      "utf8",
+    );
+    assert.match(checkoutSource, /<ReceiptPrint/);
+    assert.match(salesSource, /<ReceiptPrint/);
+  });
 });
 
 describe("consolidated pharmacy maintenance contracts", () => {

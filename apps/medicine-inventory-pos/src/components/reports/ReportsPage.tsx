@@ -46,6 +46,7 @@ import type {
   ReportTransactionRow,
 } from "../../types/financialReports";
 import { formatDate, formatDateTime, formatMoney } from "../../utils/money";
+import { recordPrintDiagnostic } from "../../utils/printDiagnostics";
 import "./reports.css";
 
 const reportOptions: Array<{ id: FinancialReportType; title: string; group: string }> = [
@@ -460,6 +461,14 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
   }
 
   function startPrint(mode: PrintMode) {
+    const printNow = () => {
+      try {
+        recordPrintDiagnostic("report_print_started");
+        window.print();
+      } catch {
+        recordPrintDiagnostic("report_print_failed", { errorCode: "print_exception" });
+      }
+    };
     if (mode !== "main") {
       setPrintMode(mode);
       document.body.dataset.reportPrint = mode;
@@ -467,16 +476,21 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
         delete document.body.dataset.reportPrint;
         setPrintMode(null);
       };
-      window.addEventListener("afterprint", clear, { once: true });
-      window.setTimeout(() => window.print(), 80);
+      window.addEventListener("afterprint", () => {
+        recordPrintDiagnostic("report_print_afterprint");
+        clear();
+      }, { once: true });
+      window.setTimeout(printNow, 80);
       window.setTimeout(clear, 1800);
       return;
     }
     if (!request) return;
     setActionError(null);
     setExportBusy(true);
+    recordPrintDiagnostic("report_data_load_started");
     const completeRequest: FinancialReportRequest = "page" in request ? { ...request, page: 1 } : request;
     getCompleteFinancialReport(completeRequest).then((result) => {
+      recordPrintDiagnostic("report_data_load_succeeded");
       setPrintReport(result);
       setPrintMode("main");
       document.body.dataset.reportPrint = "main";
@@ -485,10 +499,16 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
         setPrintReport(null);
         setPrintMode(null);
       };
-      window.addEventListener("afterprint", clear, { once: true });
-      window.setTimeout(() => window.print(), 80);
+      window.addEventListener("afterprint", () => {
+        recordPrintDiagnostic("report_print_afterprint");
+        clear();
+      }, { once: true });
+      window.setTimeout(printNow, 80);
       window.setTimeout(clear, 1800);
     }).catch((error: unknown) => {
+      recordPrintDiagnostic("report_data_load_failed", {
+        errorCode: "data_load_rejected",
+      });
       setActionError(errorText(error, "The complete report could not be prepared for printing."));
     }).finally(() => setExportBusy(false));
   }

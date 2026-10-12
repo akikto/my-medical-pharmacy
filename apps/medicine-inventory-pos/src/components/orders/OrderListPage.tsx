@@ -29,6 +29,7 @@ import {
 import { searchMedicines } from "../../services/inventoryService";
 import { getStoreSettings } from "../../services/settingsService";
 import { getSuppliers } from "../../services/supplierService";
+import { recordPrintDiagnostic } from "../../utils/printDiagnostics";
 import type {
   MedicineSearchResult,
   OrderListItem,
@@ -342,6 +343,15 @@ export function OrderListPage({ onNavigateToSuppliers }: OrderListPageProps) {
     }
   }
 
+  function printOrderList() {
+    recordPrintDiagnostic("order_list_print_started");
+    try {
+      window.print();
+    } catch {
+      recordPrintDiagnostic("order_list_print_failed", { errorCode: "print_exception" });
+    }
+  }
+
   const printDate = dateLabel(orderDate);
 
   return (
@@ -356,7 +366,7 @@ export function OrderListPage({ onNavigateToSuppliers }: OrderListPageProps) {
           <button className="order-button order-button--outline" data-testid="button-order-suppliers" onClick={onNavigateToSuppliers} type="button">
             <Truck size={15} /> Suppliers
           </button>
-          <button className="order-button order-button--outline" data-testid="button-print-order-list" disabled={items.length === 0} onClick={() => window.print()} type="button">
+          <button className="order-button order-button--outline" data-testid="button-print-order-list" disabled={items.length === 0} onClick={printOrderList} type="button">
             <Printer size={15} /> Export PDF / Print
           </button>
         </div>
@@ -546,7 +556,7 @@ export function OrderListPage({ onNavigateToSuppliers }: OrderListPageProps) {
             <div className="order-guide-heading"><span className="order-guide-icon"><Share2 size={16} /></span><div><h2 id="order-guide-title">Share this order</h2><p>Keep a clear record before you send.</p></div></div>
             <div className="order-share-actions">
               <button className="order-share-action" data-testid="button-copy-order-text" disabled={items.length === 0} onClick={() => void copyOrderText()} type="button"><span><Copy size={15} /></span><span><strong>Copy order text</strong><small>Paste into any message</small></span><ArrowUpRight size={14} /></button>
-              <button className="order-share-action" data-testid="button-print-order-side" disabled={items.length === 0} onClick={() => window.print()} type="button"><span><Printer size={15} /></span><span><strong>Export PDF / Print</strong><small>Choose “Save as PDF” in the system dialog</small></span><ArrowUpRight size={14} /></button>
+              <button className="order-share-action" data-testid="button-print-order-side" disabled={items.length === 0} onClick={printOrderList} type="button"><span><Printer size={15} /></span><span><strong>Export PDF / Print</strong><small>Choose “Save as PDF” in the system dialog</small></span><ArrowUpRight size={14} /></button>
             </div>
             <div className="order-local-note"><CheckCircle2 size={14} /><span>No message is sent automatically. Review the WhatsApp message before sending.</span></div>
           </section>
