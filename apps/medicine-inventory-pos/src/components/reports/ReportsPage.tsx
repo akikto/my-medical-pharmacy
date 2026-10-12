@@ -472,16 +472,21 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
     if (mode !== "main") {
       setPrintMode(mode);
       document.body.dataset.reportPrint = mode;
+      let afterPrintSeen = false;
       const clear = () => {
         delete document.body.dataset.reportPrint;
         setPrintMode(null);
       };
       window.addEventListener("afterprint", () => {
+        afterPrintSeen = true;
         recordPrintDiagnostic("report_print_afterprint");
         clear();
       }, { once: true });
       window.setTimeout(printNow, 80);
-      window.setTimeout(clear, 1800);
+      window.setTimeout(() => {
+        if (!afterPrintSeen) recordPrintDiagnostic("report_print_afterprint_missing");
+        clear();
+      }, 1800);
       return;
     }
     if (!request) return;
@@ -494,17 +499,22 @@ export function ReportsPage({ onOpenCustomerLedger }: ReportsPageProps) {
       setPrintReport(result);
       setPrintMode("main");
       document.body.dataset.reportPrint = "main";
+      let afterPrintSeen = false;
       const clear = () => {
         delete document.body.dataset.reportPrint;
         setPrintReport(null);
         setPrintMode(null);
       };
       window.addEventListener("afterprint", () => {
+        afterPrintSeen = true;
         recordPrintDiagnostic("report_print_afterprint");
         clear();
       }, { once: true });
       window.setTimeout(printNow, 80);
-      window.setTimeout(clear, 1800);
+      window.setTimeout(() => {
+        if (!afterPrintSeen) recordPrintDiagnostic("report_print_afterprint_missing");
+        clear();
+      }, 1800);
     }).catch((error: unknown) => {
       recordPrintDiagnostic("report_data_load_failed", {
         errorCode: "data_load_rejected",

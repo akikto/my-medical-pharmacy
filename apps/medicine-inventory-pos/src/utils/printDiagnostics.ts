@@ -29,12 +29,15 @@ export type PrintDiagnosticEvent =
   | "barcode_print_timed_out"
   | "barcode_print_failed"
   | "order_list_print_started"
+  | "order_list_print_afterprint"
+  | "order_list_print_afterprint_missing"
   | "order_list_print_failed"
   | "report_data_load_started"
   | "report_data_load_succeeded"
   | "report_data_load_failed"
   | "report_print_started"
   | "report_print_afterprint"
+  | "report_print_afterprint_missing"
   | "report_print_failed";
 
 export type PrintDiagnosticErrorCode =

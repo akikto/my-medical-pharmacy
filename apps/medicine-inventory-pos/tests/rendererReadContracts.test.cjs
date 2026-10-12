@@ -442,8 +442,10 @@ describe("invoice print document and page settings", () => {
     assert.match(nativeDiagnosticsSource, /receipt_data_load_started/);
     assert.doesNotMatch(diagnosticsSource, /invoiceNo|customer_phone|medicine_name/);
     assert.match(barcodeSource, /barcode_print_afterprint/);
-    assert.match(orderSource, /order_list_print_started/);
+    assert.match(orderSource, /order_list_print_afterprint/);
+    assert.match(orderSource, /order_list_print_afterprint_missing/);
     assert.match(reportSource, /report_data_load_started/);
+    assert.match(reportSource, /report_print_afterprint_missing/);
 
     const checkoutSource = fs.readFileSync(
       path.join(__dirname, "../src/components/pos/POSBilling.tsx"),

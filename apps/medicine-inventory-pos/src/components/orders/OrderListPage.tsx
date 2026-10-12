@@ -344,11 +344,35 @@ export function OrderListPage({ onNavigateToSuppliers }: OrderListPageProps) {
   }
 
   function printOrderList() {
+    const startedAt = Date.now();
+    let afterPrintSeen = false;
+    let timeout: number | undefined;
+    const cleanup = () => {
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      window.removeEventListener("afterprint", handleAfterPrint);
+    };
+    const handleAfterPrint = () => {
+      afterPrintSeen = true;
+      recordPrintDiagnostic("order_list_print_afterprint", {
+        elapsedMs: Date.now() - startedAt,
+      });
+      cleanup();
+    };
+    window.addEventListener("afterprint", handleAfterPrint, { once: true });
+    timeout = window.setTimeout(() => {
+      if (!afterPrintSeen) {
+        recordPrintDiagnostic("order_list_print_afterprint_missing", {
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
+      cleanup();
+    }, 60_000);
     recordPrintDiagnostic("order_list_print_started");
     try {
       window.print();
     } catch {
       recordPrintDiagnostic("order_list_print_failed", { errorCode: "print_exception" });
+      cleanup();
     }
   }
 
