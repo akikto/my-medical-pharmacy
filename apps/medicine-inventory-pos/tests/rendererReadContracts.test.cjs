@@ -324,6 +324,8 @@ describe("invoice print document and page settings", () => {
       }),
     );
     assert.match(markup, /data-testid="receipt-paper"/);
+    assert.match(markup, /RECEIPT PREVIEW/);
+    assert.match(markup, /Print receipt/);
     assert.match(markup, /INV-WIN-001/);
     assert.match(markup, /Print Test Customer/);
     assert.match(markup, /Print Test Medicine/);
@@ -380,6 +382,9 @@ describe("invoice print document and page settings", () => {
     assert.match(receiptPrintSource, /paperWidth: width/);
     assert.match(receiptWindowSource, /initialWidth=\{paperWidth\}/);
     assert.match(receiptWindowSource, /className="receipt-print-host"/);
+    assert.doesNotMatch(receiptWindowSource, /autoPrint/);
+    assert.match(receiptPrintSource, /inPrintWindow \? "RECEIPT PREVIEW"/);
+    assert.match(receiptPrintSource, /inPrintWindow \? "Print receipt" : "Print again"/);
     assert.match(receiptPrintSource, /printInProgress\.current/);
     assert.match(
       receiptPrintSource,

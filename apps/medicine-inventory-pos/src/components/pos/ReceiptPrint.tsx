@@ -298,8 +298,12 @@ export function ReceiptPrint({
     >
       <div className="receipt-actions">
         <div>
-          <span className="eyebrow">{autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}</span>
-          <h2 id="receipt-dialog-title">{autoPrint ? "Receipt ready" : "Invoice"}</h2>
+          <span className="eyebrow">
+            {inPrintWindow ? "RECEIPT PREVIEW" : autoPrint ? "SALE COMPLETE" : "INVOICE DETAILS"}
+          </span>
+          <h2 id="receipt-dialog-title">
+            {inPrintWindow ? "Receipt preview" : autoPrint ? "Receipt ready" : "Invoice"}
+          </h2>
           <p>{invoice.invoice_no}</p>
         </div>
         {settingsLoadError && (
@@ -344,7 +348,7 @@ export function ReceiptPrint({
             onClick={() => void printReceipt()}
             type="button"
           >
-            <Printer size={16} /> {isPrinting ? "Printing…" : "Print again"}
+            <Printer size={16} /> {isPrinting ? "Printing…" : inPrintWindow ? "Print receipt" : "Print again"}
           </button>
           <button
             autoFocus

@@ -118,7 +118,6 @@ export function ReceiptPrintWindow({
   return (
     <main className="receipt-print-host" data-testid="receipt-print-host">
       <ReceiptPrint
-        autoPrint
         inPrintWindow
         initialWidth={paperWidth}
         onClose={closeWindow}
