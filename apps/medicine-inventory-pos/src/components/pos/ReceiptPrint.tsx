@@ -50,14 +50,12 @@ export function ReceiptPrint({
   }, [onClose]);
 
   useEffect(() => {
-    if (!inPrintWindow) return;
-
     const pageStyle = document.createElement("style");
     pageStyle.dataset.receiptPageSettings = "true";
     pageStyle.textContent = getReceiptPageRule(width);
     document.head.appendChild(pageStyle);
     return () => pageStyle.remove();
-  }, [inPrintWindow, width]);
+  }, [width]);
 
   const releasePrintLock = useCallback(() => {
     printInProgress.current = false;
@@ -110,33 +108,6 @@ export function ReceiptPrint({
       releasePrintLock();
       return false;
     }
-    if (!inPrintWindow) {
-      try {
-        recordPrintDiagnostic("receipt_window_open_started");
-        await invoke("open_receipt_print_window", {
-          invoiceNo: encodeURIComponent(invoice.invoice_no),
-          paperWidth: width,
-        });
-        recordPrintDiagnostic("receipt_window_open_succeeded");
-        return true;
-      } catch (error) {
-        recordPrintDiagnostic("receipt_window_open_failed", {
-          errorCode: "native_invoke_rejected",
-        });
-        recordPrintDiagnostic("receipt_print_failed", {
-          errorCode: "native_invoke_rejected",
-        });
-        setPrintError(
-          error instanceof Error
-            ? `Could not open print preview: ${error.message}`
-            : "Could not open print preview.",
-        );
-        return false;
-      } finally {
-        releasePrintLock();
-      }
-    }
-
     try {
       const paper = receiptPaperRef.current;
       if (!paper?.isConnected) {
@@ -194,13 +165,12 @@ export function ReceiptPrint({
 
   useEffect(() => {
     const handleAfterPrint = () => {
-      if (!inPrintWindow) return;
       recordPrintDiagnostic("receipt_afterprint");
       void resetPrintProtection();
     };
     window.addEventListener("afterprint", handleAfterPrint);
     return () => window.removeEventListener("afterprint", handleAfterPrint);
-  }, [inPrintWindow, resetPrintProtection]);
+  }, [resetPrintProtection]);
 
   useEffect(() => () => {
     if (printResetTimer.current !== null) {

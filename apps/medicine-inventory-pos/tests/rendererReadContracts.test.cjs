@@ -372,6 +372,8 @@ describe("invoice print document and page settings", () => {
     assert.match(receiptPrintSource, /const resetPrintProtection = useCallback/);
     assert.match(receiptPrintSource, /await invoke\("set_receipt_print_active", \{ active: false \}\)/);
     assert.match(receiptPrintSource, /void resetPrintProtection\(\)/);
+    assert.match(receiptPrintSource, /window\.print\(\)/);
+    assert.doesNotMatch(receiptPrintSource, /open_receipt_print_window/);
     assert.doesNotMatch(receiptPrintSource, /close_receipt_print_window/);
     assert.match(
       receiptPrintSource,
@@ -379,9 +381,6 @@ describe("invoice print document and page settings", () => {
     );
     assert.match(receiptPrintSource, /document\.head\.appendChild\(pageStyle\)/);
     assert.match(mainSource, /receiptWidth/);
-    assert.match(receiptPrintSource, /paperWidth: width/);
-    assert.match(receiptWindowSource, /initialWidth=\{paperWidth\}/);
-    assert.match(receiptWindowSource, /className="receipt-print-host"/);
     assert.doesNotMatch(receiptWindowSource, /autoPrint/);
     assert.match(receiptPrintSource, /inPrintWindow \? "RECEIPT PREVIEW"/);
     assert.match(receiptPrintSource, /inPrintWindow \? "Print receipt" : "Print again"/);
